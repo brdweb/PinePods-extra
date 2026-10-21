@@ -619,6 +619,7 @@ fn set_flag(shows: &UseStateHandle<Vec<ResolvedShow>>, key: &(String, String), s
 mod tests {
     use super::*;
     use crate::requests::pod_req::Podcasting2PodData;
+    use wasm_bindgen_test::*;
 
     fn hit(guid: &str, url: &str, title: &str) -> IndexHit {
         IndexHit {
@@ -711,5 +712,56 @@ mod tests {
         assert_eq!(data.value[0].r#type, "lightning");
         assert_eq!(format_split(&data.value[0].recipients[0].split), "90%");
         assert_eq!(format_split(&data.value[0].recipients[1].split), "10%");
+    }
+
+    /// The Podcasting 2.0 backend adds `guid` and `tags` and nests extra fields on the
+    /// same podroll and value objects. Those keys stay readable.
+    #[wasm_bindgen_test]
+    fn channel_payload_with_namespace_tags_still_reads_podroll_and_value() {
+        let raw = r#"{
+            "people": [],
+            "guests": [],
+            "podroll": [{
+                "feed_guid": "29cdca4a-32d8-56ba-b48b-09a011c5daa9",
+                "feed_url": "https://example.com/rss",
+                "item_guid": "ep-1",
+                "medium": "podcast",
+                "title": "Friend"
+            }],
+            "funding": [{"url": "https://fund.example", "description": "Support us"}],
+            "value": [{
+                "type": "lightning",
+                "method": "keysend",
+                "suggested": null,
+                "recipients": [{
+                    "name": "Alice",
+                    "type": "node",
+                    "address": "03ab",
+                    "split": "90",
+                    "custom_key": "696969",
+                    "custom_value": "x",
+                    "fee": false
+                }],
+                "time_splits": [{"start_time": "0", "duration": "10", "recipients": []}]
+            }],
+            "guid": "917393e3-1b1e-5cef-ace4-edaa54e1f810",
+            "tags": {
+                "medium": "music",
+                "podroll": [{"feed_guid": "29cdca4a-32d8-56ba-b48b-09a011c5daa9"}],
+                "value": [{"type": "lightning", "method": "keysend", "suggested": null, "recipients": []}]
+            }
+        }"#;
+        let data: Podcasting2PodData = serde_json::from_str(raw).unwrap();
+        assert_eq!(data.podroll[0].feed_guid, "29cdca4a-32d8-56ba-b48b-09a011c5daa9");
+        assert_eq!(data.podroll[0].feed_url.as_deref(), Some("https://example.com/rss"));
+        assert_eq!(data.podroll[0].title.as_deref(), Some("Friend"));
+        assert!(data.podroll[0].artwork_url.is_none());
+        assert_eq!(data.funding[0].description, "Support us");
+        assert_eq!(data.value[0].r#type, "lightning");
+        assert_eq!(data.value[0].method, "keysend");
+        assert!(data.value[0].suggested.is_none());
+        assert_eq!(data.value[0].recipients[0].name, "Alice");
+        assert_eq!(data.value[0].recipients[0].r#type, "node");
+        assert_eq!(format_split(&data.value[0].recipients[0].split), "90%");
     }
 }

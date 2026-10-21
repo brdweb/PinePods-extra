@@ -34,6 +34,68 @@ void main() {
     expect(channel.value.single.recipients[1].splitLabel, '10%');
   });
 
+  test('keeps podroll and value when the server also sends tags', () {
+    final channel = Podcasting2Channel.fromJson({
+      'people': [],
+      'guests': [],
+      'guid': '917393e3-1b1e-5cef-ace4-edaa54e1f810',
+      'podroll': [
+        {
+          'feed_guid': '29cdca4a-32d8-56ba-b48b-09a011c5daa9',
+          'feed_url': 'https://example.com/rss',
+          'item_guid': 'ep-1',
+          'medium': 'podcast',
+          'title': 'Friend',
+        },
+      ],
+      'funding': [
+        {'url': 'https://fund.example', 'description': 'Support us'},
+      ],
+      'value': [
+        {
+          'type': 'lightning',
+          'method': 'keysend',
+          'suggested': null,
+          'recipients': [
+            {
+              'name': 'Alice',
+              'type': 'node',
+              'address': '03ab',
+              'split': '90',
+              'custom_key': '696969',
+              'custom_value': 'x',
+              'fee': false,
+            },
+          ],
+          'time_splits': [
+            {'start_time': '0', 'duration': '10', 'recipients': []},
+          ],
+        },
+      ],
+      'tags': {
+        'medium': 'music',
+        'podroll': [
+          {'feed_guid': '29cdca4a-32d8-56ba-b48b-09a011c5daa9'},
+        ],
+        'value': [
+          {'type': 'lightning', 'method': 'keysend', 'suggested': null, 'recipients': []},
+        ],
+      },
+    });
+
+    expect(channel.podroll, hasLength(1));
+    expect(channel.podroll.single.feedGuid, '29cdca4a-32d8-56ba-b48b-09a011c5daa9');
+    expect(channel.podroll.single.feedUrl, 'https://example.com/rss');
+    expect(channel.podroll.single.title, 'Friend');
+    expect(channel.podroll.single.artworkUrl, isNull);
+    expect(channel.value.single.type, 'lightning');
+    expect(channel.value.single.method, 'keysend');
+    expect(channel.value.single.suggested, isNull);
+    expect(channel.value.single.recipients.single.displayName, 'Alice');
+    expect(channel.value.single.recipients.single.splitLabel, '90%');
+    expect(channel.value.single.methodLine('Suggested'), 'lightning · keysend');
+  });
+
   test('formatSplit appends a percent once', () {
     expect(formatSplit('90'), '90%');
     expect(formatSplit(' 33.5 '), '33.5%');
