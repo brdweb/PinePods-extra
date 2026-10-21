@@ -5953,3 +5953,50 @@ def migration_062_people_refactor(conn, db_type: str) -> None:
         logger.info("Migration 062 completed")
     finally:
         cursor.close()
+
+
+@register_migration(
+    "064",
+    "music_assistant_settings",
+    "Per-user Music Assistant server URL, Fernet-encrypted token, and external PinePods base URL",
+    requires=["003"],
+)
+def migration_064_music_assistant(conn, db_type: str) -> None:
+    """Opt-in Music Assistant output. No row means the feature is off for that user.
+
+    The API encrypts the long-lived token with the same Fernet key as other secrets
+    before writing TokenEncrypted. 063 is reserved for the Podcasting 2.0 migration.
+    """
+    logger.info("Starting migration 064: Music Assistant settings")
+    cursor = conn.cursor()
+    try:
+        if db_type == "postgresql":
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "MusicAssistant" (
+                    userid INT PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    serverurl TEXT,
+                    tokenencrypted TEXT,
+                    externalbaseurl TEXT,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS MusicAssistant (
+                    UserID INT PRIMARY KEY,
+                    Enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    ServerUrl TEXT,
+                    TokenEncrypted TEXT,
+                    ExternalBaseUrl TEXT,
+                    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+                """
+            )
+        logger.info("Migration 064 completed")
+    finally:
+        cursor.close()

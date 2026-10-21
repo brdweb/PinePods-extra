@@ -1,0 +1,244 @@
+# Music Assistant output
+
+PinePods can play episodes on [Music Assistant](https://www.music-assistant.io/) (MA) players and groups. The bridge is opt-in, per user, and off until that user saves an enabled configuration. Web and mobile remote-device screens already target any now-playing device; this document is the contract for the extra settings, volume, and grouping UI.
+
+Music Assistant 2.10.x is the tested server. The live transport is MA's WebSocket (`ws://host:8095/ws`). MA also accepts JSON-RPC `POST /api` with `Authorization: Bearer <token>`; PinePods does not call that path.
+
+## Settings
+
+All routes live under `/api/data` and require an `Api-Key` header (`Api-Key`, `api-key`, or `X-API-Key`) that belongs to `user_id`. A missing or invalid key is 401. A key for a different user is 403. Error bodies are `{ "error", "message", "status_code" }`.
+
+The long-lived MA token is stored with the same Fernet encryption as other secrets. Responses never include it; they include `has_token`.
+
+No row in `MusicAssistant` (migration `064`) means the feature is off. Postgres columns are lowercase (`userid`, `enabled`, `serverurl`, `tokenencrypted`, `externalbaseurl`). MySQL columns are `UserID`, `Enabled`, `ServerUrl`, `TokenEncrypted`, `ExternalBaseUrl`.
+
+### `GET /api/data/music_assistant/settings?user_id=`
+
+Returns the saved configuration and the live session, if any.
+
+```json
+{
+  "enabled": false,
+  "server_url": null,
+  "external_base_url": null,
+  "has_token": false,
+  "connected": false,
+  "server_version": null,
+  "schema_version": null,
+  "warning": null,
+  "last_error": null
+}
+```
+
+An unset user returns `enabled: false` with null URLs. `connected` is true only while this API process holds a live MA session.
+
+### `PUT /api/data/music_assistant/settings`
+
+```json
+{
+  "user_id": 1,
+  "enabled": true,
+  "server_url": "http://192.168.1.20:8095",
+  "external_base_url": "http://192.168.1.10:8040",
+  "token": "long-lived-token",
+  "clear_token": false
+}
+```
+
+- `enabled` defaults to `false` when omitted.
+- Omit `token`, or send `""`, to keep the stored token. `clear_token: true` deletes it.
+- Omit a URL to keep the stored one. Sent URLs are normalized before they are stored.
+- Enabling requires a server URL, an external base URL, and a token (new or already stored). Otherwise the call is 400.
+- A successful save asks the supervisor to reconnect. The response is the same shape as GET. `connected` may still be false until the handshake finishes; poll GET or the players route.
+
+`server_url` accepts `http`, `https`, `ws`, and `wss`. A missing port becomes `8095` for plain HTTP and `443` for HTTPS. The path may only be empty, `/`, `/ws`, or `/api`. Credentials are rejected. Loopback and private LAN addresses are allowed (Music Assistant usually sits on the LAN). Link-local addresses (`169.254.0.0/16`, `fe80::/10`) and `metadata.google.internal` are rejected. The stored value is the origin, for example `http://192.168.1.20:8095`.
+
+`external_base_url` is the origin Music Assistant uses to fetch PinePods. It must be `http` or `https`, with no path, query, fragment, or credentials. `localhost`, `*.localhost`, loopback, unspecified (`0.0.0.0`, `::`), and link-local hosts are rejected. Private LAN addresses are allowed. Music Assistant cannot play a stream that only exists on PinePods' loopback.
+
+### `POST /api/data/music_assistant/test`
+
+Probes a server without saving. `server_url` and `token` override the stored values for this call only. A missing URL or token returns HTTP 200 with `ok: false` (the user is not configured yet). An illegal URL is 400.
+
+```json
+{
+  "ok": true,
+  "detail": "connected",
+  "server_version": "2.10.3",
+  "schema_version": 80,
+  "player_count": 2,
+  "warning": null
+}
+```
+
+`ok` is false when authentication fails or the server is older than 2.6. A warning (older than 2.10, newer than 2.x, unparsable version, low schema) still has `ok: true`.
+
+### `GET /api/data/music_assistant/players?user_id=`
+
+```json
+{
+  "enabled": true,
+  "connected": true,
+  "players": [
+    {
+      "player_id": "kitchen",
+      "device_id": "ma:1:kitchen",
+      "name": "Kitchen",
+      "kind": "player",
+      "available": true,
+      "state": "idle",
+      "volume_level": 20,
+      "volume_muted": false,
+      "group_members": [],
+      "synced_to": null,
+      "can_group_with": ["living"],
+      "queue_id": "kitchen"
+    }
+  ]
+}
+```
+
+`kind` is `player` or `group` (MA `type` containing `group`). Sync leaders stay `player` and still list `group_members`. `queue_id` is `active_source` when the player is grouped, otherwise `player_id`. Unavailable players stay in this list. The call returns an empty `players` array when the feature is off or the session is not up yet; it does not 500.
+
+### `POST /api/data/music_assistant/command`
+
+```json
+{
+  "user_id": 1,
+  "player_id": "kitchen",
+  "action": "play_episode",
+  "args": { "episode_id": 42, "is_youtube": false }
+}
+```
+
+`player_id` may be the raw MA id or the relay device id `ma:{user_id}:{player_id}`. The same applies to `target_player` and to ids inside `player_ids`, `members`, `player_ids_to_add`, and `player_ids_to_remove`. Player ids can contain colons (MAC addresses); strip only the `ma:{user_id}:` prefix.
+
+Success:
+
+```json
+{ "ok": true, "detail": "ok", "warnings": [] }
+```
+
+| Status | When |
+| --- | --- |
+| 400 | Unknown action, missing arguments, MA rejected the command, or the episode does not exist |
+| 503 | This process has no session for the user |
+
+The first MA command must succeed. Follow-up seek and speed changes after `play_episode` are best-effort and show up in `warnings`.
+
+## Playback
+
+`play_episode` loads the episode, then sends MA `player_queues/play_media` with `option: "replace"` and this URL:
+
+```
+{external_base_url}/api/data/stream/{episode_id}?api_key={scoped_rss_key}&user_id={user_id}
+```
+
+YouTube episodes add `&type=youtube`. The key is a podcast-scoped RSS key for that episode's podcast (created if one does not already exist). It is not the user's full API key.
+
+If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as `player_queues/seek` after `play_media`. Playback speed comes from the user's speed for that podcast; a speed other than 1.0 is sent as `player_queues/set_playback_speed`. On MA 2.6–2.9 that command may be missing; the failure is a warning, not a failed play.
+
+## Now-playing relay
+
+Each **available** player and group is registered as a virtual device on the existing socket:
+
+`/ws/api/nowplaying/{user_id}?api_key=…&device_id=…&device_name=…`
+
+| Field | Value |
+| --- | --- |
+| `device_id` | `ma:{user_id}:{player_id}` |
+| `device_type` | `music_assistant` |
+| `device_name` | MA display name |
+| `capabilities` | listed below |
+
+Unavailable players are listed by the HTTP players route and are not registered as devices. A transient MA disconnect keeps the registration so in-flight commands can queue; devices disappear when the user disables the bridge or changes the server.
+
+Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, `set_speed`, and `play_episode`. Send them the same way as for any other device:
+
+```json
+{
+  "type": "command",
+  "target_device_id": "ma:1:kitchen",
+  "action": "play_episode",
+  "args": { "episode_id": 42, "is_youtube": false, "position_sec": 90 },
+  "cmd_id": "optional"
+}
+```
+
+The ack `{"type":"ack","ok":true,"detail":"relayed"}` means the virtual device accepted the frame. It does not mean MA finished the command. `ok: false` means the device is not registered.
+
+### New actions
+
+Other device types ignore these. Only send them when `capabilities` contains the name.
+
+| Action | Args | MA command |
+| --- | --- | --- |
+| `volume_set` | `volume_level` or `volume` (0–100, clamped) | `players/cmd/volume_set` |
+| `volume_mute` | `muted` or `mute` (bool) | `players/cmd/volume_mute` |
+| `group` | `target_player` (required) | `players/cmd/group` |
+| `group_many` | `player_ids` or `members` (required), `target_player` optional | `players/cmd/group_many` |
+| `ungroup` | none | `players/cmd/ungroup` |
+| `set_members` | `player_ids_to_add` and/or `player_ids_to_remove`, `target_player` optional | `players/cmd/set_members` |
+| `group_volume` | `volume_level` or `volume` (0–100) | `players/cmd/group_volume` |
+
+Transport args match the existing relay: `seek` uses `position_sec` (or `position`), `skip_forward` defaults to 30 seconds, `skip_back` defaults to 15, `set_speed` requires `speed` between 0.5 and 4.
+
+### Snapshot fields
+
+`NowPlayingSnapshot` gains optional fields. They are omitted when absent, so older clients can ignore them.
+
+| Field | Meaning |
+| --- | --- |
+| `volume_level` | 0–100 |
+| `volume_muted` | bool |
+| `ma_player_id` | raw MA player id |
+| `group_members` | member player ids (empty array when the player is not a group or sync leader) |
+
+`episode_id` is `0` until the queue is playing a PinePods stream URL. Title, artwork, and duration are filled from episode metadata once that URL is seen. `playing` is true for MA states `playing` and `buffering`.
+
+## Progress
+
+The session listens for `player_updated`, `player_added`, `player_removed`, `queue_updated`, and `queue_time_updated`, and refreshes `players/all` every 20 seconds (inside the 45 second snapshot TTL).
+
+Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
+
+## Versions
+
+| Server | Result |
+| --- | --- |
+| 2.10.x | connected, no warning |
+| 2.6–2.9 | connected, warning |
+| older than 2.6 | refused |
+| 3.x or newer | connected, warning |
+| missing or unparsable version | connected, warning |
+| `schema_version` below 20 | connected, warning added |
+
+A refused version does not register players. The session retries with backoff (2 seconds, doubling up to 60 seconds).
+
+## Trying it against a real 2.10 server
+
+1. Run migrations so `064` creates `MusicAssistant`. `063` is intentionally unused here.
+2. In Music Assistant: Settings → Profile, create a long-lived access token.
+3. Pick a PinePods origin that the MA host can fetch. `http://127.0.0.1:…` will be rejected.
+4. Save settings:
+
+```bash
+curl -sS -X PUT "$PINEPODS/api/data/music_assistant/settings" \
+  -H "Api-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"user_id":1,"enabled":true,"server_url":"http://192.168.1.20:8095","external_base_url":"http://192.168.1.10:8040","token":"'"$MA_TOKEN"'"}'
+```
+
+5. Probe first if you want, with `POST /api/data/music_assistant/test` and the same URL and token. Then `GET /api/data/music_assistant/players?user_id=1` until `connected` is true.
+6. Play with `POST /api/data/music_assistant/command` (`action: "play_episode"`) or from an existing remote-device UI once `device_type` `music_assistant` appears. Volume and grouping use the actions above; current remote UIs do not send them yet.
+
+MA must be able to open the stream URL. If playback starts and immediately stops, check that `external_base_url` is reachable from the MA host and that the episode's podcast is the one the scoped RSS key allows.
+
+## Deferred
+
+- No web or mobile settings, volume, or grouping UI. Existing remote UIs can play, pause, seek, skip, change speed, and `play_episode` once the device is listed.
+- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket.
+- No `player_queues/get` poll. Progress comes from queue events plus the 20 second player refresh.
+- No power, source select, or MA library sync.
+- `set_playback_speed` on servers older than 2.10 is best-effort.
+- Seek right after `play_media` can race; a failed seek is a warning.
+- Each API replica opens its own MA session. A command runs on the replica that holds the commanding client. Progress writes are absolute, so overlapping replicas do not stack time. There is no lock electing a single connection.
+- YouTube uses the same stream proxy (`type=youtube`) and is not covered by a separate test.

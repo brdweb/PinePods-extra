@@ -267,6 +267,17 @@ pub struct NowPlayingSnapshot {
     /// parameter). Empty means it didn't say: assume the original action set.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// 0–100 when the device reported a volume (Music Assistant players).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_level: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_muted: Option<bool>,
+    /// Music Assistant player id when `device_type` is `music_assistant`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ma_player_id: Option<String>,
+    /// Other player ids grouped with this one, when the device is a Music Assistant group or sync leader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_members: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
