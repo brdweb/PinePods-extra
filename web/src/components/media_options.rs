@@ -91,11 +91,10 @@ fn option_label(
     if let Some(lang) = option.lang.as_ref().filter(|c| !c.is_empty()) {
         parts.push(lang.clone());
     }
-    if !option.playable {
-        let reason = option
-            .sources
-            .iter()
-            .find_map(|source| source.unsupported_reason.as_deref());
+    let reason = option.sources.iter().find_map(|source| {
+        source.unsupported_reason.as_deref().filter(|reason| *reason == "ipfs" || *reason == "torrent")
+    });
+    if !option.playable || reason.is_some() {
         parts.push(
             match reason {
                 Some("ipfs") => ipfs,
