@@ -42,6 +42,16 @@ class NowPlayingDevice {
   /// connect parameter, so it handles [legacyActions].
   final List<String> capabilities;
 
+  /// 0–100 when the device reported a volume (Music Assistant).
+  final double? volumeLevel;
+  final bool? volumeMuted;
+
+  /// Raw Music Assistant player id when [deviceType] is `music_assistant`.
+  final String? maPlayerId;
+
+  /// Other player ids grouped with this one.
+  final List<String> groupMembers;
+
   /// What every client applied before devices could list their actions.
   static const legacyActions = [
     'play',
@@ -67,6 +77,10 @@ class NowPlayingDevice {
     required this.speed,
     required this.updatedAt,
     this.capabilities = const [],
+    this.volumeLevel,
+    this.volumeMuted,
+    this.maPlayerId,
+    this.groupMembers = const [],
   });
 
   /// Whether this device applies [action], so the UI can hide controls it lacks.
@@ -94,6 +108,15 @@ class NowPlayingDevice {
       capabilities:
           (json['capabilities'] as List?)?.whereType<String>().toList() ??
               const [],
+      volumeLevel: json['volume_level'] is num
+          ? (json['volume_level'] as num).toDouble()
+          : null,
+      volumeMuted: json['volume_muted'] as bool?,
+      maPlayerId: json['ma_player_id'] as String?,
+      groupMembers: (json['group_members'] as List?)
+              ?.map((entry) => entry.toString())
+              .toList() ??
+          const [],
     );
   }
 }
@@ -170,6 +193,11 @@ class NowPlayingService {
   int _connectGen = 0;
 
   String? get selfDeviceId => _deviceId;
+
+  /// Episode this device last reported, for "play current on a speaker".
+  int? get reportedEpisodeId => _reportedEpisodeId;
+  bool get reportedIsYoutube => _reportedIsYoutube;
+  double get reportedPositionSec => _reportedPositionSec;
 
   /// Stable per-install device id, persisted in secure storage.
   Future<String> _getOrCreateDeviceId() async {

@@ -271,6 +271,20 @@ pub fn settings() -> Html {
                             </div>
                             <div class="settings-section">
                                 <div class="settings-section-head">
+                                    <i class="ph ph-speaker-high"></i>
+                                    <div>
+                                        <div class="settings-section-title-row">
+                                            <div class="settings-section-title">{ &i18n.t("music_assistant.title") }</div>
+                                            <button class="info-btn" title={i18n.t("music_assistant.description").to_string()}>{"?"}</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="settings-section-body">
+                                    <setting_components::music_assistant::MusicAssistantSettings />
+                                </div>
+                            </div>
+                            <div class="settings-section">
+                                <div class="settings-section-head">
                                     <i class="ph ph-trash"></i>
                                     <div>
                                         <div class="settings-section-title-row">

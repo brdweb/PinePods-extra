@@ -15,6 +15,8 @@ use yewdux::prelude::*;
 
 use crate::components::audio::on_play_click;
 use crate::components::context::{AppState, UIState};
+use crate::components::music_assistant::{device_is_ma, VolumeControl};
+use crate::requests::music_assistant::MusicAssistantState;
 use crate::requests::now_playing::{
     send_command, send_playback_to, NowPlayingDevice, NowPlayingState, PendingRemotePlay,
 };
@@ -44,6 +46,7 @@ pub fn device_icon(device_type: &str) -> &'static str {
         "web" => "ph ph-browser",
         "ios" | "android" | "mobile" => "ph ph-device-mobile",
         "firewood" => "ph ph-terminal-window",
+        "music_assistant" => "ph ph-speaker-high",
         _ => "ph ph-monitor",
     }
 }
@@ -106,6 +109,23 @@ pub fn remote_devices_panel() -> Html {
     let i18n_other_devices = i18n.t("remote_devices.other_devices").to_string();
     let i18n_no_other_devices = i18n.t("remote_devices.no_other_devices").to_string();
     let i18n_no_devices_description = i18n.t("remote_devices.no_devices_description").to_string();
+    let i18n_speakers = i18n.t("music_assistant.speakers").to_string();
+    let i18n_volume = i18n.t("music_assistant.volume").to_string();
+    let i18n_group_volume = i18n.t("music_assistant.group_volume").to_string();
+    let i18n_stop = i18n.t("music_assistant.stop").to_string();
+    let i18n_seek = i18n.t("music_assistant.seek").to_string();
+    let i18n_speed = i18n.t("music_assistant.speed").to_string();
+    let ma_enabled = use_selector(|s: &MusicAssistantState| s.enabled);
+    let open_speakers = {
+        let np_dispatch = np_dispatch.clone();
+        Callback::from(move |_: MouseEvent| {
+            np_dispatch.reduce_mut(|s| s.panel_open = false);
+            Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
+                s.pending_episode = None;
+                s.picker_open = true;
+            });
+        })
+    };
 
     // Observe "Play here" / inbound remote-play requests and start playback on THIS
     // device. This lives here (not in AudioPlayer) because AudioPlayer only mounts
@@ -190,6 +210,11 @@ pub fn remote_devices_panel() -> Html {
         let i18n_play_here = i18n_play_here.clone();
         let i18n_send_here = i18n_send_here.clone();
         let i18n_sent_to = i18n_sent_to.clone();
+        let i18n_volume = i18n_volume.clone();
+        let i18n_group_volume = i18n_group_volume.clone();
+        let i18n_stop = i18n_stop.clone();
+        let i18n_seek = i18n_seek.clone();
+        let i18n_speed = i18n_speed.clone();
         let notif_dispatch = notif_dispatch.clone();
         move |device: &NowPlayingDevice| -> Html {
             let id = device.device_id.clone();
@@ -273,6 +298,34 @@ pub fn remote_devices_panel() -> Html {
             } else {
                 fmt_time(device.position_sec)
             };
+            let ma = device_is_ma(&device.device_type);
+            let grouped = device
+                .group_members
+                .as_ref()
+                .map(|members| !members.is_empty())
+                .unwrap_or(false);
+            let on_seek = {
+                let id = id.clone();
+                Callback::from(move |e: Event| {
+                    if let Some(input) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
+                        if let Ok(pos) = input.value().parse::<f64>() {
+                            send_command(&id, "seek", json!({ "position_sec": pos }));
+                        }
+                    }
+                })
+            };
+            let on_speed = {
+                let id = id.clone();
+                Callback::from(move |e: Event| {
+                    if let Some(input) = e.target_dyn_into::<web_sys::HtmlSelectElement>() {
+                        if let Ok(speed) = input.value().parse::<f64>() {
+                            send_command(&id, "set_speed", json!({ "speed": speed }));
+                        }
+                    }
+                })
+            };
+            let speed = if device.speed > 0.0 { device.speed } else { 1.0 };
+            let speeds = [0.5_f64, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
 
             html! {
                 <div class="rd-row">
@@ -309,6 +362,16 @@ pub fn remote_devices_panel() -> Html {
                             <i class="ph ph-skip-forward"></i>
                         </button>
                         }
+                        if device_is_ma(&device.device_type) && device.supports("stop") {
+                        <button type="button" class="iconbtn" title={i18n_stop.clone()} onclick={{
+                            let id = id.clone();
+                            Callback::from(move |_: MouseEvent| {
+                                send_command(&id, "stop", json!({}));
+                            })
+                        }}>
+                            <i class="ph ph-stop"></i>
+                        </button>
+                        }
                         }
                         <div class="rd-actions">
                             if can_send_here {
@@ -324,6 +387,46 @@ pub fn remote_devices_panel() -> Html {
                         </div>
                     </div>
                     }
+                    if ma && !is_idle && device.duration_sec > 0.0 && device.supports("seek") {
+                        <input
+                            class="ma-seek"
+                            type="range"
+                            min="0"
+                            max={device.duration_sec.to_string()}
+                            step="1"
+                            value={device.position_sec.min(device.duration_sec).max(0.0).to_string()}
+                            onchange={on_seek}
+                            aria-label={i18n_seek.clone()}
+                        />
+                    }
+                    if ma && !is_idle && device.supports("set_speed") {
+                        <select class="select ma-speed" onchange={on_speed} aria-label={i18n_speed.clone()}>
+                            { for speeds.iter().map(|rate| html! {
+                                <option value={rate.to_string()} selected={(speed - rate).abs() < 0.05}>{ format!("{rate:.2}x") }</option>
+                            }) }
+                        </select>
+                    }
+                    if ma {
+                        if let Some(level) = device.volume_level {
+                            if grouped && device.supports("group_volume") {
+                                <VolumeControl
+                                    device_id={id.clone()}
+                                    level={level}
+                                    muted={device.volume_muted.unwrap_or(false)}
+                                    group={true}
+                                    label={i18n_group_volume.clone()}
+                                />
+                            } else if device.supports("volume_set") {
+                                <VolumeControl
+                                    device_id={id.clone()}
+                                    level={level}
+                                    muted={device.volume_muted.unwrap_or(false)}
+                                    group={false}
+                                    label={i18n_volume.clone()}
+                                />
+                            }
+                        }
+                    }
                 </div>
             }
         }
@@ -338,6 +441,11 @@ pub fn remote_devices_panel() -> Html {
                  data-density="compact" onclick={stop}>
                 <div class="nc-header">
                     <h3 class="nc-h-title">{ &i18n_other_devices }</h3>
+                    if *ma_enabled {
+                        <button type="button" class="rd-play-here" onclick={open_speakers}>
+                            <i class="ph ph-speaker-high mr-1"></i>{ &i18n_speakers }
+                        </button>
+                    }
                     <div class="nc-h-spacer"></div>
                     <button type="button" class="nc-h-btn" title="Close" onclick={close.clone()}>
                         <i class="ph ph-arrow-line-right"></i>

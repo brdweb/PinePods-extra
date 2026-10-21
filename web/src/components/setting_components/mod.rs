@@ -9,6 +9,7 @@ pub mod email_settings;
 pub mod export_settings;
 pub mod import_options;
 pub mod mfa_settings;
+pub mod music_assistant;
 pub mod nextcloud_options;
 pub mod notifications;
 pub mod oidc;

@@ -53,6 +53,17 @@ pub struct NowPlayingDevice {
     /// connect parameter, so it handles `LEGACY_ACTIONS`.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// 0–100 when the device reported a volume (Music Assistant).
+    #[serde(default)]
+    pub volume_level: Option<f64>,
+    #[serde(default)]
+    pub volume_muted: Option<bool>,
+    /// Raw Music Assistant player id when this row is an MA device.
+    #[serde(default)]
+    pub ma_player_id: Option<String>,
+    /// Other player ids grouped with this one.
+    #[serde(default)]
+    pub group_members: Option<Vec<String>>,
 }
 
 /// What every client applied before devices could list their actions.
@@ -533,6 +544,36 @@ fn apply_command(action: &str, args: &Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NowPlayingDevice;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn music_assistant_snapshot_fields_and_capabilities() {
+        let raw = r#"{
+            "device_id":"ma:1:kitchen",
+            "device_type":"music_assistant",
+            "volume_level":20,
+            "volume_muted":false,
+            "ma_player_id":"kitchen",
+            "group_members":["living"],
+            "capabilities":["play","pause","volume_set","group_volume"]
+        }"#;
+        let device: NowPlayingDevice = serde_json::from_str(raw).unwrap();
+        assert_eq!(device.volume_level, Some(20.0));
+        assert_eq!(device.volume_muted, Some(false));
+        assert_eq!(device.ma_player_id.as_deref(), Some("kitchen"));
+        assert_eq!(
+            device.group_members.as_deref(),
+            Some(["living".to_string()].as_slice())
+        );
+        assert!(device.supports("volume_set"));
+        assert!(!device.supports("seek"));
     }
 }
 
