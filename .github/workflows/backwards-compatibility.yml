@@ -12,6 +12,10 @@ on:
 env:
   TEST_DB_PASSWORD: "test_password_123!"
   TEST_DB_NAME: "pinepods_test_db"
+  # Compose names the bridge `{project}_test_network`. The validator joins
+  # `pinepods_test_network`, so the project name has to stay `pinepods`
+  # (the checkout directory name is not).
+  COMPOSE_PROJECT_NAME: pinepods
 
 jobs:
   test-mysql-compatibility:
