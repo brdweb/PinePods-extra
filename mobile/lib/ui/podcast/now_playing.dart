@@ -10,6 +10,9 @@ import 'package:pinepods_mobile/l10n/L.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/ui/podcast/chapter_selector.dart';
 import 'package:pinepods_mobile/ui/podcast/dot_decoration.dart';
+import 'package:pinepods_mobile/core/alternate_media.dart';
+import 'package:pinepods_mobile/services/global_services.dart';
+import 'package:pinepods_mobile/ui/pinepods/alternate_media_picker.dart';
 import 'package:pinepods_mobile/ui/podcast/now_playing_floating_player.dart';
 import 'package:pinepods_mobile/ui/podcast/now_playing_options.dart';
 import 'package:pinepods_mobile/ui/podcast/person_avatar.dart';
@@ -321,6 +324,23 @@ class NowPlayingEpisodeDetails extends StatelessWidget {
             ),
           ),
         ),
+        if (MediaChoiceSession.plan != null &&
+            MediaChoiceSession.episodeId != null &&
+            MediaChoiceSession.episodeId == GlobalServices.pinepodsAudioService?.currentEpisodeId)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: AlternateMediaPicker(
+              plan: MediaChoiceSession.plan!,
+              onSelected: (id) async {
+                final episodeId = MediaChoiceSession.episodeId;
+                final audio = GlobalServices.pinepodsAudioService;
+                final playing = audio?.currentPinepodsEpisode;
+                if (episodeId == null || audio == null || playing == null) return;
+                await storePreferredMediaOption(episodeId, id);
+                await audio.playPinepodsEpisode(pinepodsEpisode: playing, resume: true);
+              },
+            ),
+          ),
         if (episode!.hasChapters)
           Expanded(
             flex: 4,

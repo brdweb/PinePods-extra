@@ -127,13 +127,17 @@ The first MA command must succeed. Follow-up seek and speed changes after `play_
 
 ## Playback
 
-`play_episode` loads the episode, then sends MA `player_queues/play_media` with `option: "replace"` and this URL:
+`play_episode` loads the episode, then sends MA `player_queues/play_media` with `option: "replace"`.
+
+When the episode is already downloaded on PinePods, or it is a YouTube video, the URL is the PinePods stream:
 
 ```
 {external_base_url}/api/data/stream/{episode_id}?api_key={scoped_rss_key}&user_id={user_id}
 ```
 
 YouTube episodes add `&type=youtube`. The key is a podcast-scoped RSS key for that episode's podcast (created if one does not already exist). It is not the user's full API key.
+
+When the episode is not downloaded, Music Assistant is given a playable `http`/`https` file directly. The choice prefers a progressive audio file over a default HLS stream, and it never sends IPFS or a torrent. Optional `args.media_option_id` (`primary` or `alt-N`, the same ids as `GET /api/data/episode_media_options`) selects that version when it is a file a speaker can fetch. Feed username and password are not added to the direct URL. Download the episode in PinePods first when the host requires those credentials; Music Assistant then streams the saved file.
 
 If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as `player_queues/seek` after `play_media`. Playback speed comes from the user's speed for that podcast; a speed other than 1.0 is sent as `player_queues/set_playback_speed`. On MA 2.6–2.9 that command may be missing; the failure is a warning, not a failed play.
 

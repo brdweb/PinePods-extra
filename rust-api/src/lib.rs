@@ -194,6 +194,7 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::podcasts::get_episode_id_ep_name))
         .routes(routes!(handlers::podcasts::get_episode_metadata))
         .routes(routes!(handlers::podcasts::fetch_podcasting_2_data))
+        .routes(routes!(handlers::podcasts::episode_media_options))
         .routes(routes!(handlers::podcasts::get_auto_download_status))
         .routes(routes!(handlers::podcasts::get_auto_queue_status))
         .routes(routes!(handlers::podcasts::get_auto_play_next_status))

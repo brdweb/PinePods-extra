@@ -1,4 +1,5 @@
 pub mod ad_detection;
+pub mod alternate_media;
 pub mod ai_client;
 pub mod ai_settings;
 pub mod audio_processing;

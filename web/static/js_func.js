@@ -82,3 +82,45 @@ function toggle_description(guid) {
     button.textContent = "";
   }
 }
+
+// Attach a progressive file or an HLS playlist. hls.js is vendored so a homelab
+// does not need a CDN. Safari plays HLS natively. A fatal hls.js error becomes a
+// media error so the player can try the next source.
+window.pinepodsAttachMedia = function (media, url, hls) {
+  if (media._pinepodsHls) {
+    try {
+      media._pinepodsHls.destroy();
+    } catch (e) {}
+    media._pinepodsHls = null;
+  }
+  if (!url) {
+    media.removeAttribute("src");
+    try {
+      media.load();
+    } catch (e) {}
+    return false;
+  }
+  if (!hls) {
+    media.src = url;
+    return true;
+  }
+  const native = media.canPlayType("application/vnd.apple.mpegurl");
+  if (native === "probably" || native === "maybe") {
+    media.src = url;
+    return true;
+  }
+  if (window.Hls && window.Hls.isSupported()) {
+    const player = new window.Hls({ enableWorker: false });
+    player.loadSource(url);
+    player.attachMedia(media);
+    player.on(window.Hls.Events.ERROR, function (_event, data) {
+      if (data && data.fatal) {
+        media.dispatchEvent(new Event("error"));
+      }
+    });
+    media._pinepodsHls = player;
+    return true;
+  }
+  media.src = url;
+  return false;
+};

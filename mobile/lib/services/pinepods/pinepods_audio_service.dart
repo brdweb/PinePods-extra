@@ -12,6 +12,7 @@ import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
 import 'package:pinepods_mobile/services/offline/offline_action_queue.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:logging/logging.dart';
 
 class PinepodsAudioService {
@@ -48,6 +49,14 @@ class PinepodsAudioService {
   int? get currentEpisodeId => _currentEpisodeId;
   bool get isYoutube => _isYoutube;
 
+  /// Episode object for the current play, so a media-version change can restart it.
+  PinepodsEpisode? _currentPinepodsEpisode;
+  PinepodsEpisode? get currentPinepodsEpisode => _currentPinepodsEpisode;
+
+  List<PlaybackStep> _playbackSteps = const [];
+  int _playbackIndex = 0;
+  bool _fallingBack = false;
+
   /// The playlist the current episode is being played from, if any. Used to
   /// continue playback through the playlist when an episode completes.
   /// (NativeAudioPlayerService.setPlaylistContext is a no-op, so we track it here.)
@@ -77,6 +86,31 @@ class PinepodsAudioService {
       _isPlaying =
           state == AudioState.playing || state == AudioState.buffering;
     });
+    _audioPlayerService.playbackError?.listen((_) {
+      unawaited(_fallbackToNextSource());
+    });
+  }
+
+  /// The current source failed. Try the next playable URL from the same episode
+  /// (another host, then another enclosure). Local files and YouTube have no chain.
+  Future<void> _fallbackToNextSource() async {
+    if (_fallingBack) return;
+    final next = _playbackIndex + 1;
+    if (next >= _playbackSteps.length) return;
+    final current = _audioPlayerService.nowPlaying;
+    if (current == null) return;
+    _fallingBack = true;
+    _playbackIndex = next;
+    final step = _playbackSteps[next];
+    current.contentUrl = step.uri;
+    log.info('Source failed; trying ${step.uri}');
+    try {
+      await _audioPlayerService.playEpisode(episode: current, resume: false);
+    } catch (e) {
+      log.warning('Fallback source failed: $e');
+    } finally {
+      _fallingBack = false;
+    }
   }
 
   /// Wire up the offline outbox (called once during app start-up).
@@ -140,6 +174,7 @@ class PinepodsAudioService {
       }
 
       _currentEpisodeId = episodeId;
+      _currentPinepodsEpisode = pinepodsEpisode;
       _currentEpisodeDuration = pinepodsEpisode.episodeDuration;
       _currentTitle = pinepodsEpisode.episodeTitle;
       _currentArtwork = pinepodsEpisode.episodeArtwork;
@@ -154,6 +189,8 @@ class PinepodsAudioService {
       // means tapping a downloaded episode with the server unreachable begins
       // playback right away instead of stalling ~30s on API timeouts.
       if (hasLocalDownload) {
+        _playbackSteps = const [];
+        _playbackIndex = 0;
         final localEpisode = _convertToEpisode(
           pinepodsEpisode,
           PlayEpisodeDetails(playbackSpeed: 1.0, startSkip: 0, endSkip: 0),
@@ -222,6 +259,23 @@ class PinepodsAudioService {
       final podcastId = results[0] as int;
       final podcast2Data = results[1] as Map<String, dynamic>?;
 
+      MediaPlan? mediaPlan;
+      if (!pinepodsEpisode.isYoutube && !pinepodsEpisode.downloaded) {
+        final prefer = await preferredMediaOption(episodeId);
+        final tags = podcast2Data?['tags'];
+        mediaPlan = planFromTags(
+          primaryUri: pinepodsEpisode.episodeUrl,
+          tags: tags is Map<String, dynamic> ? tags : (tags is Map ? tags.cast<String, dynamic>() : null),
+          preferOptionId: prefer,
+        );
+        MediaChoiceSession.remember(episodeId, mediaPlan);
+        _playbackSteps = mediaPlan.playback;
+        _playbackIndex = 0;
+      } else {
+        _playbackSteps = const [];
+        _playbackIndex = 0;
+      }
+
       // Get playback settings (speed, skip times). This already returns sane
       // defaults on failure.
       final playDetails = await _pinepodsService.getPlayEpisodeDetails(
@@ -232,6 +286,10 @@ class PinepodsAudioService {
 
       // Convert PinepodsEpisode to Episode for the audio player
       final episode = _convertToEpisode(pinepodsEpisode, playDetails, podcast2Data);
+      final chosen = mediaPlan?.playback;
+      if (chosen != null && chosen.isNotEmpty) {
+        episode.contentUrl = chosen.first.uri;
+      }
 
       // Start playing with the existing audio service
       await _audioPlayerService.playEpisode(episode: episode, resume: resume);

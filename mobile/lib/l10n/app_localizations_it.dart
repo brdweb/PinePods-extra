@@ -604,4 +604,46 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get podroll_subscribe_failed => 'Impossibile iscriversi';
+
+  @override
+  String get media_choose_version => 'Scegli una versione';
+
+  @override
+  String get media_original => 'Originale';
+
+  @override
+  String get media_audio => 'Audio';
+
+  @override
+  String get media_video => 'Video';
+
+  @override
+  String get media_hls => 'Stream HLS';
+
+  @override
+  String get media_dash => 'Stream DASH';
+
+  @override
+  String get media_other => 'Altro';
+
+  @override
+  String get media_ipfs => 'IPFS — solo visualizzazione';
+
+  @override
+  String get media_torrent => 'Torrent — solo visualizzazione';
+
+  @override
+  String get media_cannot_play => 'Impossibile riprodurre su questo dispositivo';
+
+  @override
+  String get media_integrity =>
+      'L\'hash di integrità viene verificato quando il file viene scaricato';
+
+  @override
+  String get media_stream_only =>
+      'Questa versione è uno stream e non può essere salvata come file';
+
+  @override
+  String get media_fell_back =>
+      'Quella sorgente non ha funzionato. Riproduzione di un\'altra versione.';
 }

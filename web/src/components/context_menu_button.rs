@@ -9,6 +9,7 @@ use crate::pages::downloads_tauri::{
 use crate::requests::episode::Episode;
 
 use crate::components::gen_funcs::format_error_message;
+use crate::components::media_options::preferred_media_option;
 use crate::components::remote_devices::device_label;
 use crate::requests::notify::toast_info;
 use crate::requests::music_assistant::{open_speaker_picker, MusicAssistantState};
@@ -632,6 +633,7 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
                 episode_id: episode.episodeid,
                 user_id: user_id.unwrap(), // replace with the actual user ID
                 is_youtube: episode.is_youtube,
+                media_option_id: preferred_media_option(episode.episodeid),
             };
             let server_name = server_name_copy; // replace with the actual server name
             let api_key = api_key_copy; // replace with the actual API key
@@ -675,6 +677,7 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
                 episode_id: episode.episodeid,
                 user_id: user_id.unwrap(), // replace with the actual user ID
                 is_youtube: episode.is_youtube,
+                media_option_id: None,
             };
             let server_name = server_name_copy; // replace with the actual server name
             let api_key = api_key_copy; // replace with the actual API key

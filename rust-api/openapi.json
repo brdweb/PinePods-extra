@@ -3102,6 +3102,70 @@
         ]
       }
     },
+    "/api/data/episode_media_options": {
+      "get": {
+        "tags": [
+          "podcasts"
+        ],
+        "summary": "List playable and downloadable media versions for an episode",
+        "operationId": "episode_media_options",
+        "parameters": [
+          {
+            "name": "episode_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "prefer",
+            "in": "query",
+            "description": "`primary` or `alt-N`. Unknown ids are ignored and auto-selection is used.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media versions, the auto-selected id, and fallback lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaPlan"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "404": {
+            "description": "Episode not found"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/data/episode_skip_segments": {
       "get": {
         "tags": [
@@ -13898,6 +13962,48 @@
               "boolean",
               "null"
             ]
+          },
+          "media_option_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`primary` or `alt-N` from `episode_media_options`. Omit for auto-selection."
+          }
+        }
+      },
+      "DownloadStep": {
+        "type": "object",
+        "required": [
+          "option_id",
+          "source_index",
+          "uri",
+          "mime_type"
+        ],
+        "properties": {
+          "option_id": {
+            "type": "string"
+          },
+          "source_index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "uri": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "integrity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MediaIntegrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -15661,6 +15767,183 @@
           }
         }
       },
+      "MediaIntegrity": {
+        "type": "object",
+        "required": [
+          "type",
+          "value",
+          "verifiable"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "verifiable": {
+            "type": "boolean",
+            "description": "True when a full-file SRI (sha256/sha384/sha512) check is possible after download."
+          }
+        }
+      },
+      "MediaOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "mime_type",
+          "default",
+          "kind",
+          "sources",
+          "playable",
+          "downloadable"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "bitrate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codecs": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`audio`, `video`, `hls`, `dash`, or `other`."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaSource"
+            }
+          },
+          "integrity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MediaIntegrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "playable": {
+            "type": "boolean"
+          },
+          "downloadable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MediaPlan": {
+        "type": "object",
+        "required": [
+          "options",
+          "selected_id",
+          "playback",
+          "download"
+        ],
+        "properties": {
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MediaOption"
+            }
+          },
+          "selected_id": {
+            "type": "string"
+          },
+          "playback": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaybackStep"
+            },
+            "description": "Playable sources, selected option first. Empty when nothing can be played."
+          },
+          "download": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownloadStep"
+            },
+            "description": "Progressive files only. An explicit choice that is HLS/IPFS/torrent yields an empty list."
+          }
+        }
+      },
+      "MediaSource": {
+        "type": "object",
+        "required": [
+          "uri",
+          "scheme",
+          "playable",
+          "downloadable"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scheme": {
+            "type": "string"
+          },
+          "playable": {
+            "type": "boolean"
+          },
+          "downloadable": {
+            "type": "boolean"
+          },
+          "unsupported_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`ipfs`, `torrent`, `unsupported_scheme`, or `unsupported_type` when it cannot be played."
+          }
+        }
+      },
       "MergePodcastsRequest": {
         "type": "object",
         "required": [
@@ -16323,6 +16606,39 @@
             "format": "int32"
           },
           "playback_speed_customized": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PlaybackStep": {
+        "type": "object",
+        "required": [
+          "option_id",
+          "source_index",
+          "uri",
+          "mime_type",
+          "kind",
+          "is_video"
+        ],
+        "properties": {
+          "option_id": {
+            "type": "string"
+          },
+          "source_index": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "uri": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "is_video": {
             "type": "boolean"
           }
         }

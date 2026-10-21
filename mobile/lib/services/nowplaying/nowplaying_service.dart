@@ -19,6 +19,7 @@ import 'package:logging/logging.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
@@ -452,11 +453,15 @@ class NowPlayingService {
     final live = _audioPlayerService.playPosition?.valueOrNull;
     final positionSec =
         live?.position.inSeconds.toDouble() ?? _reportedPositionSec;
-    _pendingHandoffCmdId = sendCommand(targetDeviceId, 'play_episode', {
+    final args = <String, dynamic>{
       'episode_id': episodeId,
       'is_youtube': _reportedIsYoutube,
       'position_sec': positionSec,
-    });
+    };
+    if (MediaChoiceSession.episodeId == episodeId && MediaChoiceSession.optionId != null) {
+      args['media_option_id'] = MediaChoiceSession.optionId;
+    }
+    _pendingHandoffCmdId = sendCommand(targetDeviceId, 'play_episode', args);
     return true;
   }
 

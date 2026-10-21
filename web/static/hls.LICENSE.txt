@@ -1,0 +1,3 @@
+hls.js light build (https://github.com/video-dev/hls.js) Apache-2.0
+Copyright (c) hls.js authors
+Vendored so the web player can play HLS without a third-party CDN.

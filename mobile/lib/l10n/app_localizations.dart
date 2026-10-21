@@ -1185,6 +1185,68 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Could not subscribe'**
   String get podroll_subscribe_failed;
+
+  /// Heading for the alternate enclosure picker
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a version'**
+  String get media_choose_version;
+
+  /// The RSS enclosure, as opposed to an alternate file
+  ///
+  /// In en, this message translates to:
+  /// **'Original'**
+  String get media_original;
+
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get media_audio;
+
+  /// In en, this message translates to:
+  /// **'Video'**
+  String get media_video;
+
+  /// In en, this message translates to:
+  /// **'HLS stream'**
+  String get media_hls;
+
+  /// In en, this message translates to:
+  /// **'DASH stream'**
+  String get media_dash;
+
+  /// In en, this message translates to:
+  /// **'Other'**
+  String get media_other;
+
+  /// IPFS sources are listed and not played
+  ///
+  /// In en, this message translates to:
+  /// **'IPFS — shown only'**
+  String get media_ipfs;
+
+  /// Torrent sources are listed and not played
+  ///
+  /// In en, this message translates to:
+  /// **'Torrent — shown only'**
+  String get media_torrent;
+
+  /// In en, this message translates to:
+  /// **'Cannot play on this device'**
+  String get media_cannot_play;
+
+  /// SRI is verified after a full download, not while streaming
+  ///
+  /// In en, this message translates to:
+  /// **'Integrity hash is checked when the file is downloaded'**
+  String get media_integrity;
+
+  /// In en, this message translates to:
+  /// **'This version is a stream and cannot be saved as a file'**
+  String get media_stream_only;
+
+  /// In en, this message translates to:
+  /// **'That source failed. Playing another.'**
+  String get media_fell_back;
 }
 
 class _AppLocalizationsDelegate

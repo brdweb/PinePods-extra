@@ -588,4 +588,45 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get podroll_subscribe_failed => 'Could not subscribe';
+
+  @override
+  String get media_choose_version => 'Choose a version';
+
+  @override
+  String get media_original => 'Original';
+
+  @override
+  String get media_audio => 'Audio';
+
+  @override
+  String get media_video => 'Video';
+
+  @override
+  String get media_hls => 'HLS stream';
+
+  @override
+  String get media_dash => 'DASH stream';
+
+  @override
+  String get media_other => 'Other';
+
+  @override
+  String get media_ipfs => 'IPFS — shown only';
+
+  @override
+  String get media_torrent => 'Torrent — shown only';
+
+  @override
+  String get media_cannot_play => 'Cannot play on this device';
+
+  @override
+  String get media_integrity =>
+      'Integrity hash is checked when the file is downloaded';
+
+  @override
+  String get media_stream_only =>
+      'This version is a stream and cannot be saved as a file';
+
+  @override
+  String get media_fell_back => 'That source failed. Playing another.';
 }

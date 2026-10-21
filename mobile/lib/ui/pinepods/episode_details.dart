@@ -22,7 +22,9 @@ import 'package:pinepods_mobile/ui/podcast/mini_player.dart';
 import 'package:pinepods_mobile/ui/utils/player_utils.dart';
 import 'package:pinepods_mobile/ui/utils/local_download_utils.dart';
 import 'package:pinepods_mobile/ui/utils/action_guard.dart';
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
+import 'package:pinepods_mobile/ui/pinepods/alternate_media_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 
@@ -49,6 +51,8 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
   bool _canAddPeople = false;
   bool _isDownloadedLocally = false;
   int? _userId; // set once credentials are established in _loadEpisodeDetails
+  Map<String, dynamic>? _mediaTags;
+  MediaPlan? _mediaPlan;
 
   // Play-button loading feedback: true while we've kicked off playback for this
   // episode but the audio system hasn't yet acknowledged it as now-playing.
@@ -273,6 +277,7 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
           _episode = episodeDetails;
           _isLoading = false;
         });
+        await _loadMediaOptions(userId);
       } else {
         // Metadata unavailable: fall back to the episode passed in so the page
         // (and playback of a local download) still works.
@@ -289,6 +294,31 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
         }
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _loadMediaOptions(int userId) async {
+    final episode = _episode;
+    if (episode == null || episode.episodeId <= 0 || episode.isYoutube) return;
+    try {
+      final data = await _pinepodsService.fetchPodcasting2Data(episode.episodeId, userId);
+      final tags = data?['tags'];
+      final tagMap = tags is Map<String, dynamic>
+          ? tags
+          : (tags is Map ? tags.cast<String, dynamic>() : null);
+      final prefer = await preferredMediaOption(episode.episodeId);
+      final plan = planFromTags(
+        primaryUri: episode.episodeUrl,
+        tags: tagMap,
+        preferOptionId: prefer,
+      );
+      if (!mounted) return;
+      setState(() {
+        _mediaTags = tagMap;
+        _mediaPlan = plan.options.length > 1 ? plan : null;
+      });
+    } catch (e) {
+      debugPrint('Error loading alternate media: $e');
     }
   }
 
@@ -596,6 +626,7 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
           _episode!.episodeId,
           userId,
           _episode!.isYoutube,
+          mediaOptionId: _mediaPlan != null && _mediaPlan!.options.length > 1 ? _mediaPlan!.selectedId : null,
         );
         if (success) {
           setState(() {
@@ -899,7 +930,25 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
             ),
             
             const SizedBox(height: 24),
-            
+            if (_mediaPlan != null)
+              AlternateMediaPicker(
+                plan: _mediaPlan!,
+                onSelected: (id) async {
+                  final episode = _episode;
+                  final tags = _mediaTags;
+                  if (episode == null) return;
+                  await storePreferredMediaOption(episode.episodeId, id);
+                  final plan = planFromTags(
+                    primaryUri: episode.episodeUrl,
+                    tags: tags,
+                    preferOptionId: id,
+                  );
+                  MediaChoiceSession.remember(episode.episodeId, plan);
+                  if (mounted) setState(() => _mediaPlan = plan);
+                },
+              ),
+            const SizedBox(height: 16),
+
             // Action buttons
             Column(
               children: [

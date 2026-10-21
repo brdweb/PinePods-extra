@@ -180,5 +180,18 @@
   "value_recipients": "Empfänger",
   "value_suggested": "Vorschlag {amount}",
   "value_display_only": "Nur zur Anzeige. PinePods sendet keine Zahlungen.",
-  "podroll_subscribe_failed": "Abonnieren fehlgeschlagen"
+  "podroll_subscribe_failed": "Abonnieren fehlgeschlagen",
+  "media_choose_version": "Version wählen",
+  "media_original": "Original",
+  "media_audio": "Audio",
+  "media_video": "Video",
+  "media_hls": "HLS-Stream",
+  "media_dash": "DASH-Stream",
+  "media_other": "Andere",
+  "media_ipfs": "IPFS — nur anzeigen",
+  "media_torrent": "Torrent — nur anzeigen",
+  "media_cannot_play": "Wiedergabe auf diesem Gerät nicht möglich",
+  "media_integrity": "Der Integritätshash wird beim Herunterladen der Datei geprüft",
+  "media_stream_only": "Diese Version ist ein Stream und kann nicht als Datei gespeichert werden",
+  "media_fell_back": "Diese Quelle ist fehlgeschlagen. Eine andere Version wird abgespielt."
 }

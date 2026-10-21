@@ -11,6 +11,7 @@ use yew::prelude::*;
 use yewdux::prelude::*;
 
 use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
+use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
     choose_playback, explain_test, focus_player, format_clock, is_music_assistant, plan_group,
     player_name, refresh_music_assistant, send_player_command, GroupPlanError,
@@ -499,6 +500,11 @@ fn speaker_picker() -> Html {
             });
             if let Some(position) = position {
                 args["position_sec"] = json!(position);
+            }
+            if !is_youtube {
+                if let Some(option_id) = preferred_media_option(episode_id) {
+                    args["media_option_id"] = json!(option_id);
+                }
             }
             focus_player(&player.device_id);
             ma_dispatch.reduce_mut(|s| {

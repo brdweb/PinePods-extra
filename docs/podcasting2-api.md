@@ -44,6 +44,23 @@ Query: `podcast_id`, `user_id`.
 
 `podroll`, `funding`, and `value` stay at the top level so existing clients keep working. New clients can read `tags` alone.
 
+### `GET /api/data/episode_media_options`
+
+Query: `episode_id`, `user_id`, optional `prefer` (`primary` or `alt-N`).
+
+Returns a plan built from the RSS enclosure and every `podcast:alternateEnclosure` stored on the episode. No extra database column: the choice is computed each time.
+
+| Field | Meaning |
+| --- | --- |
+| `options[]` | One entry for the RSS enclosure (`id: "primary"`) and one per alternate (`id: "alt-0"`, `alt-1`, …). IPFS and torrent sources are listed with `playable: false` and `unsupported_reason`. |
+| `selected_id` | The version playback starts with. `prefer` wins when that version can be played. Otherwise an alternate with `default: true`, then the RSS enclosure, then the first playable audio, video, HLS, or DASH source. |
+| `playback[]` | Playable `http`/`https` sources, selected version first, then the other playable versions. Clients should try the next entry when a source fails. |
+| `download[]` | Progressive files only. Empty when the chosen version is HLS, DASH, IPFS, or a torrent and the client asked for that version explicitly. Auto-selection falls through to another progressive file. |
+
+HLS (`kind: "hls"`) is playable in the web player (native on Safari, vendored hls.js elsewhere) and the mobile player. It is not saved as one file. DASH is offered to the browser and is not downloaded. Integrity objects with `type` `sri`, `sha256`, `sha384`, or `sha512` set `verifiable: true`. The hash is checked when a file is downloaded to the server, downloaded on demand, or saved on the phone. Streaming playback does not hash the whole file.
+
+`POST /api/data/download_podcast` and `GET /api/episodes/{id}/download` take optional `media_option_id`. Alternate hosts that differ from the stored episode URL are refused when they point at a private or loopback address. The original RSS enclosure is left unchanged so a homelab feed on the LAN still downloads. A feed username and password are sent only to that original URL, not to an alternate host. Web and mobile remember `prefer` on the device (`pinepods.mediaOption.{episodeId}`); it is not synced.
+
 ## JSON shape
 
 Names are snake_case. Attribute names that differ from the spec:

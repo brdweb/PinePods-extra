@@ -1082,8 +1082,9 @@ class PinepodsService {
   Future<bool> downloadEpisode(
     int episodeId,
     int userId,
-    bool isYoutube,
-  ) async {
+    bool isYoutube, {
+    String? mediaOptionId,
+  }) async {
     if (_server == null || _apiKey == null) {
       throw Exception('Not authenticated');
     }
@@ -1092,11 +1093,15 @@ class PinepodsService {
     _devLog('Making API call to: $url');
 
     try {
-      final requestBody = jsonEncode({
+      final payload = <String, dynamic>{
         'episode_id': episodeId,
         'user_id': userId,
         'is_youtube': isYoutube,
-      });
+      };
+      if (mediaOptionId != null && mediaOptionId.isNotEmpty) {
+        payload['media_option_id'] = mediaOptionId;
+      }
+      final requestBody = jsonEncode(payload);
 
       final response = await _post(
         url,

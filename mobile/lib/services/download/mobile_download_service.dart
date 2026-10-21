@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/core/utils.dart';
 import 'package:pinepods_mobile/entities/downloadable.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
@@ -187,6 +188,25 @@ class MobileDownloadService extends DownloadService {
           if (await hasStoragePermission()) {
             final filename = await resolvePath(episode);
 
+            final episodeId = _episodeIdFromGuid(episode.guid);
+            final integrity = MediaChoiceSession.pendingIntegrity[episodeId];
+            if (integrity != null) {
+              final matched = await fileMatchesSri(File(filename), integrity);
+              MediaChoiceSession.pendingIntegrity.remove(episodeId);
+              if (matched == false) {
+                log.warning('Integrity check failed for ${episode.title}');
+                try {
+                  await File(filename).delete();
+                } catch (e) {
+                  log.fine('Could not delete mismatched download: $e');
+                }
+                episode.downloadState = DownloadState.failed;
+                episode.downloadPercentage = 0;
+                await repository.saveEpisode(episode);
+                return;
+              }
+            }
+
             // If we do not have a duration for this file - let's calculate it
             if (episode.duration == 0) {
               var mp3Info = MP3Processor.fromFile(File(filename));
@@ -203,6 +223,12 @@ class MobileDownloadService extends DownloadService {
         await repository.saveEpisode(episode);
       }
     }
+  }
+
+  int _episodeIdFromGuid(String guid) {
+    if (!guid.startsWith('pinepods_')) return 0;
+    final rest = guid.substring('pinepods_'.length);
+    return int.tryParse(rest.split('_').first) ?? 0;
   }
 
   /// Best-effort download of the episode artwork so covers render offline (#935).

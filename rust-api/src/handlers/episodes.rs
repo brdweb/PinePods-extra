@@ -200,7 +200,7 @@ pub async fn bulk_download_episodes(
             let result = if is_youtube {
                 state.task_spawner.spawn_download_youtube_video(episode_id, request.user_id).await
             } else {
-                state.task_spawner.spawn_download_podcast_episode(episode_id, request.user_id).await
+                state.task_spawner.spawn_download_podcast_episode(episode_id, request.user_id, None).await
             };
 
             match result {
@@ -440,51 +440,105 @@ pub async fn download_episode_file(
         }
     };
 
-    let (episode_url, episode_title, podcast_name, pub_date, author, episode_artwork, artwork_url, description, feed_username, feed_password, feed_url, episode_guid, episode_duration) = episode_info;
+    let (mut episode_url, episode_title, podcast_name, pub_date, author, episode_artwork, artwork_url, description, feed_username, feed_password, feed_url, episode_guid, episode_duration) = episode_info;
+    let original_episode_url = episode_url.clone();
+    let prefer = params.get("media_option_id").map(|s| s.as_str()).filter(|s| !s.is_empty());
+    let tags = crate::services::people::store::episode_extras(&state.db_pool, episode_id)
+        .await
+        .unwrap_or_default();
+    let plan = crate::services::alternate_media::plan_media(
+        &crate::services::alternate_media::PrimaryEnclosure {
+            uri: original_episode_url.clone(),
+            mime_type: None,
+            is_video: false,
+        },
+        &tags.alternate_enclosures,
+        prefer,
+        crate::services::alternate_media::Audience::Player,
+    );
+    if plan.download.is_empty() {
+        return Err(AppError::bad_request(
+            "This version has no file to save. HLS and DASH can be played, and IPFS or torrent sources are shown but not downloaded.",
+        ));
+    }
 
     // Download the episode file. Send a podcast-client User-Agent first; some hosts
     // (e.g. Buzzsprout) reject requests without one with 403 Forbidden.
     let client = reqwest::Client::new();
-    let build_request = |user_agent: &str| {
-        let mut request = client
-            .get(&episode_url)
-            .header("User-Agent", user_agent)
-            .header("Accept", "*/*");
-        if let (Some(ref username), Some(ref password)) = (&feed_username, &feed_password) {
-            if !username.is_empty() {
-                request = request.basic_auth(username, Some(password));
+    let mut audio_bytes = None;
+    let mut chosen_mime = String::from("audio/mpeg");
+    let mut last_error = String::from("No source could be downloaded");
+    for step in &plan.download {
+        if step.uri != original_episode_url {
+            if let Err(reason) = crate::services::url_guard::ensure_safe_public_url_async(&step.uri).await {
+                last_error = format!("Refusing alternate source: {reason}");
+                continue;
             }
         }
-        request
-    };
-
-    let mut response = build_request("PinePods/1.0")
-        .send()
-        .await
-        .map_err(|e| AppError::internal(&format!("Failed to download episode: {}", e)))?;
-
-    // If we get a 403, retry with a browser User-Agent as a fallback.
-    if response.status() == reqwest::StatusCode::FORBIDDEN {
-        let browser_response = build_request("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .send()
-            .await
-            .map_err(|e| AppError::internal(&format!("Failed to download episode: {}", e)))?;
-        if browser_response.status().is_success() {
-            response = browser_response;
+        let build_request = |user_agent: &str| {
+            let mut request = client
+                .get(&step.uri)
+                .header("User-Agent", user_agent)
+                .header("Accept", "*/*");
+            // Feed credentials stay on the original enclosure, not alternate hosts.
+            if step.uri == original_episode_url {
+                if let (Some(ref username), Some(ref password)) = (&feed_username, &feed_password) {
+                    if !username.is_empty() {
+                        request = request.basic_auth(username, Some(password));
+                    }
+                }
+            }
+            request
+        };
+        let fetched = async {
+            let mut response = build_request("PinePods/1.0")
+                .send()
+                .await
+                .map_err(|e| format!("Failed to download episode: {e}"))?;
+            if response.status() == reqwest::StatusCode::FORBIDDEN {
+                let browser_response = build_request("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to download episode: {e}"))?;
+                if browser_response.status().is_success() {
+                    response = browser_response;
+                }
+            }
+            if !response.status().is_success() {
+                return Err(format!("Server returned error: {}", response.status()));
+            }
+            response
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to download audio content: {e}"))
+        }
+        .await;
+        match fetched {
+            Ok(bytes) => {
+                let mut hasher = crate::services::alternate_media::RunningIntegrity::from_integrity(step.integrity.as_ref());
+                hasher.update(&bytes);
+                if hasher.matches() == Some(false) {
+                    last_error = "Downloaded file did not match its integrity hash".into();
+                    continue;
+                }
+                episode_url = step.uri.clone();
+                chosen_mime = if step.mime_type.is_empty() {
+                    "audio/mpeg".into()
+                } else {
+                    step.mime_type.clone()
+                };
+                audio_bytes = Some(bytes);
+                break;
+            }
+            Err(err) => last_error = err,
         }
     }
-
-    if !response.status().is_success() {
-        return Err(AppError::internal(&format!("Server returned error: {}", response.status())));
-    }
-
-    let audio_bytes = response.bytes()
-        .await
-        .map_err(|e| AppError::internal(&format!("Failed to download audio content: {}", e)))?;
+    let audio_bytes = audio_bytes.ok_or_else(|| AppError::internal(last_error))?;
+    let file_ext = crate::services::alternate_media::file_extension(&chosen_mime, &episode_url);
     
     // Create a temporary file for metadata processing
     let temp_dir = std::env::temp_dir();
-    let temp_filename = format!("episode_{}_{}_{}.mp3", episode_id, user_id, chrono::Utc::now().timestamp());
+    let temp_filename = format!("episode_{}_{}_{}.{}", episode_id, user_id, chrono::Utc::now().timestamp(), file_ext);
     let temp_path = temp_dir.join(&temp_filename);
     
     // Write audio content to temp file
@@ -506,11 +560,13 @@ pub async fn download_episode_file(
         episode_artwork: episode_artwork.clone(),
         podcast_artwork: artwork_url.clone(),
     };
-    if let Err(e) = crate::services::download_metadata::add_podcast_metadata(
-        &temp_path,
-        &episode_meta,
-    ).await {
-        tracing::warn!("Failed to add metadata to downloaded episode: {}", e);
+    if file_ext == "mp3" {
+        if let Err(e) = crate::services::download_metadata::add_podcast_metadata(
+            &temp_path,
+            &episode_meta,
+        ).await {
+            tracing::warn!("Failed to add metadata to downloaded episode: {}", e);
+        }
     }
     
     // Read the file with metadata back
@@ -539,12 +595,12 @@ pub async fn download_episode_file(
         chrono::Utc::now().format("%Y-%m-%d").to_string()
     };
     
-    let filename = format!("{}_{}_-_{}.mp3", pub_date_str, safe_podcast_name, safe_episode_title);
+    let filename = format!("{}_{}_-_{}.{}", pub_date_str, safe_podcast_name, safe_episode_title, file_ext);
     
     // Return the file with appropriate headers
     let response = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "audio/mpeg")
+        .header(header::CONTENT_TYPE, chosen_mime)
         .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename))
         .header(header::CONTENT_LENGTH, final_bytes.len())
         .body(axum::body::Body::from(final_bytes))

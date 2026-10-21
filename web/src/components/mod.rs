@@ -11,6 +11,7 @@ pub(crate) mod loading;
 pub mod misc_func;
 pub(crate) mod navigation;
 pub(crate) mod notification_center;
+pub(crate) mod media_options;
 pub(crate) mod music_assistant;
 pub(crate) mod remote_devices;
 pub(crate) mod oauth_callback;

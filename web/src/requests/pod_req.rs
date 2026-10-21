@@ -1443,11 +1443,14 @@ pub async fn call_get_episode_downloads(
     Ok(response_data.episodes)
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DownloadEpisodeRequest {
     pub episode_id: i32,
     pub user_id: i32,
     pub is_youtube: bool, // Add is_youtube field
+    /// `primary` or `alt-N`. Omitted for auto-selection and for delete requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_option_id: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1737,6 +1740,125 @@ pub struct Transcript {
     pub mime_type: String,
     pub language: Option<String>,
     pub rel: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MediaSource {
+    pub uri: String,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    pub scheme: String,
+    pub playable: bool,
+    pub downloadable: bool,
+    #[serde(default)]
+    pub unsupported_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MediaIntegrity {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub value: String,
+    pub verifiable: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MediaOption {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub mime_type: String,
+    #[serde(default)]
+    pub bitrate: Option<i64>,
+    #[serde(default)]
+    pub height: Option<i64>,
+    #[serde(default)]
+    pub lang: Option<String>,
+    #[serde(default)]
+    pub codecs: Option<String>,
+    #[serde(default)]
+    pub rel: Option<String>,
+    #[serde(rename = "default")]
+    pub is_default: bool,
+    pub kind: String,
+    pub sources: Vec<MediaSource>,
+    #[serde(default)]
+    pub integrity: Option<MediaIntegrity>,
+    pub playable: bool,
+    pub downloadable: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct PlaybackStep {
+    pub option_id: String,
+    pub source_index: u32,
+    pub uri: String,
+    pub mime_type: String,
+    pub kind: String,
+    pub is_video: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct DownloadStep {
+    pub option_id: String,
+    pub source_index: u32,
+    pub uri: String,
+    pub mime_type: String,
+    #[serde(default)]
+    pub integrity: Option<MediaIntegrity>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct MediaPlan {
+    pub options: Vec<MediaOption>,
+    pub selected_id: String,
+    pub playback: Vec<PlaybackStep>,
+    pub download: Vec<DownloadStep>,
+}
+
+pub async fn call_episode_media_options(
+    server_name: &str,
+    api_key: &Option<String>,
+    episode_id: i32,
+    user_id: i32,
+    prefer: Option<&str>,
+) -> Result<MediaPlan, Error> {
+    let mut url = format!(
+        "{}/api/data/episode_media_options?episode_id={}&user_id={}",
+        server_name, episode_id, user_id
+    );
+    if let Some(prefer) = prefer.map(str::trim).filter(|id| !id.is_empty()) {
+        url.push_str("&prefer=");
+        url.push_str(
+            &js_sys::encode_uri_component(prefer)
+                .as_string()
+                .unwrap_or_else(|| prefer.to_string()),
+        );
+    }
+
+    let api_key_ref = api_key
+        .as_deref()
+        .ok_or_else(|| Error::msg("API key is missing"))?;
+
+    let response = Request::get(&url)
+        .header("Api-Key", api_key_ref)
+        .send()
+        .await
+        .map_err(|e| Error::msg(format!("Request Error: {}", e)))?;
+
+    if !response.ok() {
+        return Err(Error::msg(format!(
+            "Failed to fetch media versions: {}",
+            response.status()
+        )));
+    }
+
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| Error::msg(format!("Failed to read response text: {}", e)))?;
+    serde_json::from_str(&response_text)
+        .map_err(|e| Error::msg(format!("Deserialization Error: {}", e)))
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -2518,6 +2640,7 @@ pub async fn call_download_episode_file(
     server_name: &String,
     api_key: &Option<String>,
     episode_id: i32,
+    media_option_id: Option<&str>,
 ) -> Result<(), Error> {
     let url = format!("{}/api/episodes/{}/download", server_name, episode_id);
     let api_key_ref = api_key
@@ -2531,8 +2654,17 @@ pub async fn call_download_episode_file(
     let mut opts = web_sys::RequestInit::new();
     opts.method("GET");
 
+    let mut fetch_url = format!("{}?api_key={}", url, api_key_ref);
+    if let Some(option_id) = media_option_id.map(str::trim).filter(|id| !id.is_empty()) {
+        fetch_url.push_str("&media_option_id=");
+        fetch_url.push_str(
+            &js_sys::encode_uri_component(option_id)
+                .as_string()
+                .unwrap_or_else(|| option_id.to_string()),
+        );
+    }
     let request = web_sys::Request::new_with_str_and_init(
-        &format!("{}?api_key={}", url, api_key_ref),
+        &fetch_url,
         &opts,
     ).map_err(|e| anyhow::Error::msg(format!("Request creation failed: {:?}", e)))?;
 
