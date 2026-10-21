@@ -676,5 +676,62 @@
   "search_episodes_label": "Search episodes",
   "@search_episodes_label": {
     "description": "Hint text for episode search box"
+  },
+  "podroll_title": "Podroll",
+  "@podroll_title": {
+    "description": "Heading for Podcasting 2.0 recommended shows"
+  },
+  "podroll_hint": "Shows this podcast recommends",
+  "@podroll_hint": {
+    "description": "Subtitle under the podroll heading"
+  },
+  "podroll_open": "Open",
+  "@podroll_open": {
+    "description": "Opens a recommended podcast"
+  },
+  "podroll_subscribe": "Subscribe",
+  "@podroll_subscribe": {
+    "description": "Subscribes to a recommended podcast"
+  },
+  "podroll_subscribed": "Subscribed",
+  "@podroll_subscribed": {
+    "description": "Recommended podcast is already subscribed"
+  },
+  "podroll_subscribing": "Subscribing…",
+  "@podroll_subscribing": {
+    "description": "Subscribe request is in progress"
+  },
+  "podroll_unresolved": "Couldn't look this show up",
+  "@podroll_unresolved": {
+    "description": "Shown when a podroll feed could not be resolved to a title"
+  },
+  "value_for_value_title": "Value for Value",
+  "@value_for_value_title": {
+    "description": "Heading for a Podcasting 2.0 value block"
+  },
+  "value_for_value_supported": "This show supports Value4Value",
+  "@value_for_value_supported": {
+    "description": "Explains that the podcast publishes a value block"
+  },
+  "value_recipients": "Recipients",
+  "@value_recipients": {
+    "description": "Heading for value-block recipients"
+  },
+  "value_suggested": "Suggested {amount}",
+  "@value_suggested": {
+    "description": "Suggested value amount from the podcast value block",
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+  "value_display_only": "Display only. PinePods does not send payments.",
+  "@value_display_only": {
+    "description": "Value block is informational and does not start a payment"
+  },
+  "podroll_subscribe_failed": "Could not subscribe",
+  "@podroll_subscribe_failed": {
+    "description": "Shown when subscribing to a recommended podcast fails"
   }
 }

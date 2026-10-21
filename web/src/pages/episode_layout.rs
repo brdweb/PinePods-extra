@@ -10,6 +10,7 @@ use crate::components::gen_funcs::{
 use crate::components::loading::Loading;
 use crate::components::episode_list_view::EpisodeListView;
 use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
+use crate::components::podcasting2::Podcasting2Extras;
 use crate::requests::people_req::{CreditedPerson, PodcastCredits};
 use crate::pages::podcast_layout::ClickedFeedURL;
 use crate::requests::pod_req::{
@@ -563,6 +564,8 @@ pub fn episode_layout() -> Html {
     let people_loaded = state.podcast_people.is_some();
     let people_rc = Rc::new(state.podcast_people.clone().unwrap_or_default());
     let guests_rc = Rc::new(state.podcast_guests.clone().unwrap_or_default());
+    let podroll_items = state.podcast_podroll.clone().unwrap_or_default();
+    let value_blocks = state.podcast_value4value.clone().unwrap_or_default();
     let close_add_people = {
         let show_add_people = show_add_people.clone();
         Callback::from(move |_: ()| show_add_people.set(false))
@@ -4616,6 +4619,7 @@ pub fn episode_layout() -> Html {
                                                                     class={classes!("ep-mobile-hosts")}
                                                                 />
                                                             } } }
+                                                            <Podcasting2Extras podroll={podroll_items.clone()} value={value_blocks.clone()} />
                                                             </>
                                                         }
                                                     } else { html! {} }}
@@ -4772,6 +4776,7 @@ pub fn episode_layout() -> Html {
                                                                         class={classes!("pd-banner-guests")}
                                                                     />
                                                                 } } }
+                                                                <Podcasting2Extras podroll={podroll_items.clone()} value={value_blocks.clone()} />
                                                                 </>
                                                             }
                                                         } else { html! {} } }

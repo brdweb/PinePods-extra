@@ -72,6 +72,15 @@ void main() {
       expect(podcast.toJson(), json);
     });
 
+    test('keeps podcastGuid so a podroll lookup can match the feed', () {
+      final podcast = PinepodsPodcast.fromJson({
+        'id': 9,
+        'podcastGuid': 'b70bdef0-695a-501b-9eab-693afdc245e6',
+      });
+      expect(podcast.podcastGuid, 'b70bdef0-695a-501b-9eab-693afdc245e6');
+      expect(podcast.toJson()['podcastGuid'], podcast.podcastGuid);
+    });
+
     test('categories defaults to null when absent', () {
       final podcast = _pinepodsPodcast();
       expect(podcast.categories, isNull);

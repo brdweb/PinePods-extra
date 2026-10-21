@@ -546,4 +546,46 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get search_episodes_label => 'Search episodes';
+
+  @override
+  String get podroll_title => 'Podroll';
+
+  @override
+  String get podroll_hint => 'Shows this podcast recommends';
+
+  @override
+  String get podroll_open => 'Open';
+
+  @override
+  String get podroll_subscribe => 'Subscribe';
+
+  @override
+  String get podroll_subscribed => 'Subscribed';
+
+  @override
+  String get podroll_subscribing => 'Subscribing…';
+
+  @override
+  String get podroll_unresolved => 'Couldn\'t look this show up';
+
+  @override
+  String get value_for_value_title => 'Value for Value';
+
+  @override
+  String get value_for_value_supported => 'This show supports Value4Value';
+
+  @override
+  String get value_recipients => 'Recipients';
+
+  @override
+  String value_suggested(String amount) {
+    return 'Suggested $amount';
+  }
+
+  @override
+  String get value_display_only =>
+      'Display only. PinePods does not send payments.';
+
+  @override
+  String get podroll_subscribe_failed => 'Could not subscribe';
 }

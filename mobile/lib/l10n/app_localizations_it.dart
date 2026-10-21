@@ -562,4 +562,46 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get search_episodes_label => 'Cerca episodi';
+
+  @override
+  String get podroll_title => 'Podroll';
+
+  @override
+  String get podroll_hint => 'Show consigliati da questo podcast';
+
+  @override
+  String get podroll_open => 'Apri';
+
+  @override
+  String get podroll_subscribe => 'Iscriviti';
+
+  @override
+  String get podroll_subscribed => 'Iscritto';
+
+  @override
+  String get podroll_subscribing => 'Iscrizione…';
+
+  @override
+  String get podroll_unresolved => 'Impossibile trovare questo show';
+
+  @override
+  String get value_for_value_title => 'Value for Value';
+
+  @override
+  String get value_for_value_supported => 'Questo show supporta Value4Value';
+
+  @override
+  String get value_recipients => 'Destinatari';
+
+  @override
+  String value_suggested(String amount) {
+    return 'Suggerito $amount';
+  }
+
+  @override
+  String get value_display_only =>
+      'Solo visualizzazione. PinePods non invia pagamenti.';
+
+  @override
+  String get podroll_subscribe_failed => 'Impossibile iscriversi';
 }

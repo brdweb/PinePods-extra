@@ -1107,6 +1107,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Search episodes'**
   String get search_episodes_label;
+
+  /// Heading for Podcasting 2.0 recommended shows
+  ///
+  /// In en, this message translates to:
+  /// **'Podroll'**
+  String get podroll_title;
+
+  /// Subtitle under the podroll heading
+  ///
+  /// In en, this message translates to:
+  /// **'Shows this podcast recommends'**
+  String get podroll_hint;
+
+  /// Opens a recommended podcast
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get podroll_open;
+
+  /// Subscribes to a recommended podcast
+  ///
+  /// In en, this message translates to:
+  /// **'Subscribe'**
+  String get podroll_subscribe;
+
+  /// Recommended podcast is already subscribed
+  ///
+  /// In en, this message translates to:
+  /// **'Subscribed'**
+  String get podroll_subscribed;
+
+  /// Subscribe request is in progress
+  ///
+  /// In en, this message translates to:
+  /// **'Subscribing…'**
+  String get podroll_subscribing;
+
+  /// Shown when a podroll feed could not be resolved to a title
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t look this show up'**
+  String get podroll_unresolved;
+
+  /// Heading for a Podcasting 2.0 value block
+  ///
+  /// In en, this message translates to:
+  /// **'Value for Value'**
+  String get value_for_value_title;
+
+  /// Explains that the podcast publishes a value block
+  ///
+  /// In en, this message translates to:
+  /// **'This show supports Value4Value'**
+  String get value_for_value_supported;
+
+  /// Heading for value-block recipients
+  ///
+  /// In en, this message translates to:
+  /// **'Recipients'**
+  String get value_recipients;
+
+  /// Suggested value amount from the podcast value block
+  ///
+  /// In en, this message translates to:
+  /// **'Suggested {amount}'**
+  String value_suggested(String amount);
+
+  /// Value block is informational and does not start a payment
+  ///
+  /// In en, this message translates to:
+  /// **'Display only. PinePods does not send payments.'**
+  String get value_display_only;
+
+  /// Shown when subscribing to a recommended podcast fails
+  ///
+  /// In en, this message translates to:
+  /// **'Could not subscribe'**
+  String get podroll_subscribe_failed;
 }
 
 class _AppLocalizationsDelegate

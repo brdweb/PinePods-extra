@@ -6,6 +6,7 @@ pub(crate) mod collection_picker_modal;
 pub(crate) mod episode_list_item;
 pub(crate) mod episode_list_view;
 pub(crate) mod people;
+pub(crate) mod podcasting2;
 pub(crate) mod loading;
 pub mod misc_func;
 pub(crate) mod navigation;

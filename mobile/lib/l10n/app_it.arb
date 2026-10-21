@@ -167,5 +167,18 @@
   "scrim_episode_details_selector": "Chiudi i dettagli dell'episodio",
   "scrim_episode_sort_selector": "Chiudi ordinamento degli episodi",
   "scrim_episode_filter_selector": "Chiudi il filtro degli episodi",
-  "search_episodes_label": "Cerca episodi"
+  "search_episodes_label": "Cerca episodi",
+  "podroll_title": "Podroll",
+  "podroll_hint": "Show consigliati da questo podcast",
+  "podroll_open": "Apri",
+  "podroll_subscribe": "Iscriviti",
+  "podroll_subscribed": "Iscritto",
+  "podroll_subscribing": "Iscrizione…",
+  "podroll_unresolved": "Impossibile trovare questo show",
+  "value_for_value_title": "Value for Value",
+  "value_for_value_supported": "Questo show supporta Value4Value",
+  "value_recipients": "Destinatari",
+  "value_suggested": "Suggerito {amount}",
+  "value_display_only": "Solo visualizzazione. PinePods non invia pagamenti.",
+  "podroll_subscribe_failed": "Impossibile iscriversi"
 }
