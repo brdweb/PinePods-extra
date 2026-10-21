@@ -1107,6 +1107,312 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Search episodes'**
   String get search_episodes_label;
+
+  /// No description provided for @p2_season.
+  ///
+  /// In en, this message translates to:
+  /// **'Season'**
+  String get p2_season;
+
+  /// No description provided for @p2_episode.
+  ///
+  /// In en, this message translates to:
+  /// **'Episode'**
+  String get p2_episode;
+
+  /// No description provided for @p2_soundbites.
+  ///
+  /// In en, this message translates to:
+  /// **'Soundbites'**
+  String get p2_soundbites;
+
+  /// No description provided for @p2_play_clip.
+  ///
+  /// In en, this message translates to:
+  /// **'Play clip'**
+  String get p2_play_clip;
+
+  /// No description provided for @p2_clip_n.
+  ///
+  /// In en, this message translates to:
+  /// **'Clip {n}'**
+  String p2_clip_n(String n);
+
+  /// No description provided for @p2_links.
+  ///
+  /// In en, this message translates to:
+  /// **'Links'**
+  String get p2_links;
+
+  /// No description provided for @p2_location.
+  ///
+  /// In en, this message translates to:
+  /// **'Location'**
+  String get p2_location;
+
+  /// No description provided for @p2_open_map.
+  ///
+  /// In en, this message translates to:
+  /// **'Open map'**
+  String get p2_open_map;
+
+  /// No description provided for @p2_chat.
+  ///
+  /// In en, this message translates to:
+  /// **'Chat'**
+  String get p2_chat;
+
+  /// No description provided for @p2_join_chat.
+  ///
+  /// In en, this message translates to:
+  /// **'Join chat'**
+  String get p2_join_chat;
+
+  /// No description provided for @p2_comments.
+  ///
+  /// In en, this message translates to:
+  /// **'Comments'**
+  String get p2_comments;
+
+  /// No description provided for @p2_comment_thread.
+  ///
+  /// In en, this message translates to:
+  /// **'Comment thread'**
+  String get p2_comment_thread;
+
+  /// No description provided for @p2_license.
+  ///
+  /// In en, this message translates to:
+  /// **'License'**
+  String get p2_license;
+
+  /// No description provided for @p2_open_license.
+  ///
+  /// In en, this message translates to:
+  /// **'Read license'**
+  String get p2_open_license;
+
+  /// No description provided for @p2_medium.
+  ///
+  /// In en, this message translates to:
+  /// **'Show type'**
+  String get p2_medium;
+
+  /// No description provided for @p2_medium_podcast.
+  ///
+  /// In en, this message translates to:
+  /// **'Podcast'**
+  String get p2_medium_podcast;
+
+  /// No description provided for @p2_medium_music.
+  ///
+  /// In en, this message translates to:
+  /// **'Music'**
+  String get p2_medium_music;
+
+  /// No description provided for @p2_medium_video.
+  ///
+  /// In en, this message translates to:
+  /// **'Video'**
+  String get p2_medium_video;
+
+  /// No description provided for @p2_medium_film.
+  ///
+  /// In en, this message translates to:
+  /// **'Film'**
+  String get p2_medium_film;
+
+  /// No description provided for @p2_medium_audiobook.
+  ///
+  /// In en, this message translates to:
+  /// **'Audiobook'**
+  String get p2_medium_audiobook;
+
+  /// No description provided for @p2_medium_newsletter.
+  ///
+  /// In en, this message translates to:
+  /// **'Newsletter'**
+  String get p2_medium_newsletter;
+
+  /// No description provided for @p2_medium_blog.
+  ///
+  /// In en, this message translates to:
+  /// **'Blog'**
+  String get p2_medium_blog;
+
+  /// No description provided for @p2_medium_publisher.
+  ///
+  /// In en, this message translates to:
+  /// **'Publisher'**
+  String get p2_medium_publisher;
+
+  /// No description provided for @p2_trailers.
+  ///
+  /// In en, this message translates to:
+  /// **'Trailers'**
+  String get p2_trailers;
+
+  /// No description provided for @p2_trailer.
+  ///
+  /// In en, this message translates to:
+  /// **'Trailer'**
+  String get p2_trailer;
+
+  /// No description provided for @p2_play_trailer.
+  ///
+  /// In en, this message translates to:
+  /// **'Play trailer'**
+  String get p2_play_trailer;
+
+  /// No description provided for @p2_publisher.
+  ///
+  /// In en, this message translates to:
+  /// **'Publisher'**
+  String get p2_publisher;
+
+  /// No description provided for @p2_open_feed.
+  ///
+  /// In en, this message translates to:
+  /// **'Open feed'**
+  String get p2_open_feed;
+
+  /// No description provided for @p2_schedule.
+  ///
+  /// In en, this message translates to:
+  /// **'Schedule'**
+  String get p2_schedule;
+
+  /// No description provided for @p2_schedule_complete.
+  ///
+  /// In en, this message translates to:
+  /// **'This show is complete'**
+  String get p2_schedule_complete;
+
+  /// No description provided for @p2_every_one.
+  ///
+  /// In en, this message translates to:
+  /// **'Every {unit}'**
+  String p2_every_one(String unit);
+
+  /// No description provided for @p2_every_n.
+  ///
+  /// In en, this message translates to:
+  /// **'Every {n} {unit}'**
+  String p2_every_n(String n, String unit);
+
+  /// No description provided for @p2_unit_hour.
+  ///
+  /// In en, this message translates to:
+  /// **'hour'**
+  String get p2_unit_hour;
+
+  /// No description provided for @p2_unit_hours.
+  ///
+  /// In en, this message translates to:
+  /// **'hours'**
+  String get p2_unit_hours;
+
+  /// No description provided for @p2_unit_day.
+  ///
+  /// In en, this message translates to:
+  /// **'day'**
+  String get p2_unit_day;
+
+  /// No description provided for @p2_unit_days.
+  ///
+  /// In en, this message translates to:
+  /// **'days'**
+  String get p2_unit_days;
+
+  /// No description provided for @p2_unit_week.
+  ///
+  /// In en, this message translates to:
+  /// **'week'**
+  String get p2_unit_week;
+
+  /// No description provided for @p2_unit_weeks.
+  ///
+  /// In en, this message translates to:
+  /// **'weeks'**
+  String get p2_unit_weeks;
+
+  /// No description provided for @p2_unit_month.
+  ///
+  /// In en, this message translates to:
+  /// **'month'**
+  String get p2_unit_month;
+
+  /// No description provided for @p2_unit_months.
+  ///
+  /// In en, this message translates to:
+  /// **'months'**
+  String get p2_unit_months;
+
+  /// No description provided for @p2_unit_year.
+  ///
+  /// In en, this message translates to:
+  /// **'year'**
+  String get p2_unit_year;
+
+  /// No description provided for @p2_unit_years.
+  ///
+  /// In en, this message translates to:
+  /// **'years'**
+  String get p2_unit_years;
+
+  /// No description provided for @p2_related.
+  ///
+  /// In en, this message translates to:
+  /// **'Related'**
+  String get p2_related;
+
+  /// No description provided for @p2_time_splits.
+  ///
+  /// In en, this message translates to:
+  /// **'Time splits'**
+  String get p2_time_splits;
+
+  /// No description provided for @p2_remote_percent.
+  ///
+  /// In en, this message translates to:
+  /// **'{pct}% remote'**
+  String p2_remote_percent(String pct);
+
+  /// No description provided for @p2_chapter_link.
+  ///
+  /// In en, this message translates to:
+  /// **'Open chapter link'**
+  String get p2_chapter_link;
+
+  /// No description provided for @p2_funding.
+  ///
+  /// In en, this message translates to:
+  /// **'Support'**
+  String get p2_funding;
+
+  /// No description provided for @p2_season_group.
+  ///
+  /// In en, this message translates to:
+  /// **'Season {n}'**
+  String p2_season_group(String n);
+
+  /// No description provided for @p2_other_episodes.
+  ///
+  /// In en, this message translates to:
+  /// **'Other episodes'**
+  String get p2_other_episodes;
+
+  /// No description provided for @p2_sort_season.
+  ///
+  /// In en, this message translates to:
+  /// **'Season'**
+  String get p2_sort_season;
+
+  /// No description provided for @p2_chapters.
+  ///
+  /// In en, this message translates to:
+  /// **'Chapters'**
+  String get p2_chapters;
 }
 
 class _AppLocalizationsDelegate

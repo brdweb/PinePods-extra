@@ -546,4 +546,167 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get search_episodes_label => 'Search episodes';
+
+  @override
+  String get p2_season => 'Season';
+
+  @override
+  String get p2_episode => 'Episode';
+
+  @override
+  String get p2_soundbites => 'Soundbites';
+
+  @override
+  String get p2_play_clip => 'Play clip';
+
+  @override
+  String p2_clip_n(String n) {
+    return 'Clip $n';
+  }
+
+  @override
+  String get p2_links => 'Links';
+
+  @override
+  String get p2_location => 'Location';
+
+  @override
+  String get p2_open_map => 'Open map';
+
+  @override
+  String get p2_chat => 'Chat';
+
+  @override
+  String get p2_join_chat => 'Join chat';
+
+  @override
+  String get p2_comments => 'Comments';
+
+  @override
+  String get p2_comment_thread => 'Comment thread';
+
+  @override
+  String get p2_license => 'License';
+
+  @override
+  String get p2_open_license => 'Read license';
+
+  @override
+  String get p2_medium => 'Show type';
+
+  @override
+  String get p2_medium_podcast => 'Podcast';
+
+  @override
+  String get p2_medium_music => 'Music';
+
+  @override
+  String get p2_medium_video => 'Video';
+
+  @override
+  String get p2_medium_film => 'Film';
+
+  @override
+  String get p2_medium_audiobook => 'Audiobook';
+
+  @override
+  String get p2_medium_newsletter => 'Newsletter';
+
+  @override
+  String get p2_medium_blog => 'Blog';
+
+  @override
+  String get p2_medium_publisher => 'Publisher';
+
+  @override
+  String get p2_trailers => 'Trailers';
+
+  @override
+  String get p2_trailer => 'Trailer';
+
+  @override
+  String get p2_play_trailer => 'Play trailer';
+
+  @override
+  String get p2_publisher => 'Publisher';
+
+  @override
+  String get p2_open_feed => 'Open feed';
+
+  @override
+  String get p2_schedule => 'Schedule';
+
+  @override
+  String get p2_schedule_complete => 'This show is complete';
+
+  @override
+  String p2_every_one(String unit) {
+    return 'Every $unit';
+  }
+
+  @override
+  String p2_every_n(String n, String unit) {
+    return 'Every $n $unit';
+  }
+
+  @override
+  String get p2_unit_hour => 'hour';
+
+  @override
+  String get p2_unit_hours => 'hours';
+
+  @override
+  String get p2_unit_day => 'day';
+
+  @override
+  String get p2_unit_days => 'days';
+
+  @override
+  String get p2_unit_week => 'week';
+
+  @override
+  String get p2_unit_weeks => 'weeks';
+
+  @override
+  String get p2_unit_month => 'month';
+
+  @override
+  String get p2_unit_months => 'months';
+
+  @override
+  String get p2_unit_year => 'year';
+
+  @override
+  String get p2_unit_years => 'years';
+
+  @override
+  String get p2_related => 'Related';
+
+  @override
+  String get p2_time_splits => 'Time splits';
+
+  @override
+  String p2_remote_percent(String pct) {
+    return '$pct% remote';
+  }
+
+  @override
+  String get p2_chapter_link => 'Open chapter link';
+
+  @override
+  String get p2_funding => 'Support';
+
+  @override
+  String p2_season_group(String n) {
+    return 'Season $n';
+  }
+
+  @override
+  String get p2_other_episodes => 'Other episodes';
+
+  @override
+  String get p2_sort_season => 'Season';
+
+  @override
+  String get p2_chapters => 'Chapters';
 }

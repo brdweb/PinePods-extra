@@ -505,6 +505,10 @@ pub struct UIState {
     pub podcast_funding: Option<Vec<Funding>>,
     pub podcast_podroll: Option<Vec<PodrollItem>>,
     pub podcast_value4value: Option<Vec<Value>>,
+    pub episode_page_tags: Option<crate::requests::podcasting2::ItemTags>,
+    pub podcast_tags: Option<crate::requests::podcasting2::ChannelTags>,
+    /// When set, playback pauses once `current_time_seconds` reaches this clip end.
+    pub soundbite_stop_at: Option<f64>,
     pub is_mobile: Option<bool>,
     pub loading_episode_id: Option<i32>,
     pub queue_panel_open: bool,

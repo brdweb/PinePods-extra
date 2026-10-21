@@ -10,6 +10,10 @@ import 'package:pinepods_mobile/entities/pinepods_search.dart';
 import 'package:pinepods_mobile/entities/podcast.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/entities/people.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart';
+import 'package:pinepods_mobile/l10n/L.dart';
+import 'package:pinepods_mobile/ui/widgets/podcasting2_panel.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
 import 'package:pinepods_mobile/services/podcast/podcast_service.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
@@ -37,6 +41,7 @@ enum EpisodeSortDirection {
   longestFirst,
   titleAZ,
   titleZA,
+  season,
 }
 
 // 3-state completed filter
@@ -80,6 +85,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   // server that supports adding people.
   PodcastCredits _credits = const PodcastCredits();
   int? _peoplePodcastId;
+  ChannelTags? _showTags;
 
   // Sort and filter state
   EpisodeSortDirection _sortDirection = EpisodeSortDirection.newestFirst;
@@ -137,6 +143,9 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
             break;
           case 'title_za':
             _sortDirection = EpisodeSortDirection.titleZA;
+            break;
+          case 'season':
+            _sortDirection = EpisodeSortDirection.season;
             break;
         }
         _filterEpisodes();
@@ -411,6 +420,9 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       case EpisodeSortDirection.titleZA:
         value = 'title_za';
         break;
+      case EpisodeSortDirection.season:
+        value = 'season';
+        break;
     }
     await prefs.setString(key, value);
   }
@@ -477,10 +489,24 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           return a.episodeTitle.toLowerCase().compareTo(b.episodeTitle.toLowerCase());
         case EpisodeSortDirection.titleZA:
           return b.episodeTitle.toLowerCase().compareTo(a.episodeTitle.toLowerCase());
+        case EpisodeSortDirection.season:
+          final seasonOrder = _compareSeason(a, b);
+          if (seasonOrder != 0) return seasonOrder;
+          return _compareDates(b.episodePubDate, a.episodePubDate);
       }
     });
 
     _filteredEpisodes = filtered;
+  }
+
+  int _compareSeason(PinepodsEpisode a, PinepodsEpisode b) {
+    final aKey = seasonSortKey(resolveNumbers(itunesSeason: a.itunesSeason, itunesEpisode: a.itunesEpisode));
+    final bKey = seasonSortKey(resolveNumbers(itunesSeason: b.itunesSeason, itunesEpisode: b.itunesEpisode));
+    final unnumbered = aKey.$1.compareTo(bKey.$1);
+    if (unnumbered != 0) return unnumbered;
+    final season = aKey.$2.compareTo(bKey.$2);
+    if (season != 0) return season;
+    return aKey.$3.compareTo(bKey.$3);
   }
 
   int _compareDates(String dateA, String dateB) {
@@ -641,6 +667,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       queued: false,
       downloaded: false,
       isYoutube: false,
+      itunesSeason: episode.season > 0 ? episode.season : null,
+      itunesEpisode: episode.episode > 0 ? episode.episode : null,
     );
   }
 
@@ -680,6 +708,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           if (podcastId != null && podcastId > 0) {
             // People load alongside the episodes rather than after them.
             unawaited(_loadPeople(podcastId));
+            unawaited(_loadShowTags(podcastId));
             // Get episodes from server
             episodes = await _pinepodsService.getPodcastEpisodes(userId, podcastId);
             print('Loaded ${episodes.length} episodes from server for podcastId: $podcastId');
@@ -781,6 +810,42 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     } catch (e) {
       debugPrint('Error loading podcast people: $e');
     }
+  }
+
+  Future<void> _loadShowTags(int podcastId) async {
+    final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+    if (userId == null) return;
+    try {
+      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
+      final tags = ChannelTags.fromJson(data?['tags'] as Map<String, dynamic>?);
+      if (mounted) setState(() => _showTags = tags);
+    } catch (e) {
+      debugPrint('Error loading show tags: $e');
+    }
+  }
+
+  String get _coverUrl => artworkChoice(_showTags?.image ?? const [], _showTags?.images, widget.podcast.artwork).src;
+
+  Future<void> _playTrailer(Trailer trailer) async {
+    final url = httpLink(trailer.url) ?? safeLink(trailer.url);
+    if (url == null) return;
+    if (trailer.isVideo) {
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final episode = Episode(
+      guid: 'p2-trailer-${url.hashCode}',
+      podcast: widget.podcast.title,
+      title: trailer.title.trim().isEmpty ? 'Trailer' : trailer.title,
+      contentUrl: url,
+      imageUrl: widget.podcast.artwork,
+    );
+    episode.streaming = true;
+    await audioPlayerService.playEpisode(episode: episode, resume: false);
   }
 
   Future<void> _addPeople() async {
@@ -1300,6 +1365,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       downloaded: downloaded ?? episode.downloaded,
       isYoutube: episode.isYoutube,
       podcastId: episode.podcastId,
+      itunesSeason: episode.itunesSeason,
+      itunesEpisode: episode.itunesEpisode,
     );
   }
 
@@ -1330,9 +1397,9 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
               background: Stack(
                 fit: StackFit.expand,
                 children: [
-                  widget.podcast.artwork.isNotEmpty
+                  _coverUrl.isNotEmpty
                       ? Image.network(
-                          widget.podcast.artwork,
+                          _coverUrl,
                           fit: BoxFit.cover,
                           errorBuilder: (context, error, stackTrace) {
                             return Container(
@@ -1546,6 +1613,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                     PeopleStrip(title: 'Guests', people: _credits.guests, showEpisodeCount: true),
                   ],
 
+                  ShowPodcasting2Panel(tags: _showTags, onPlayTrailer: _playTrailer),
+
                   const SizedBox(height: 24),
                   
                   // Episodes section header
@@ -1733,7 +1802,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                     child: DropdownButton<EpisodeSortDirection>(
                       value: _sortDirection,
                       icon: const Icon(Icons.sort),
-                      items: const [
+                      items: [
                         DropdownMenuItem(
                           value: EpisodeSortDirection.newestFirst,
                           child: Text('Newest'),
@@ -1757,6 +1826,10 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                         DropdownMenuItem(
                           value: EpisodeSortDirection.titleZA,
                           child: Text('Title Z-A'),
+                        ),
+                        DropdownMenuItem(
+                          value: EpisodeSortDirection.season,
+                          child: Text(L.of(context)?.p2_sort_season ?? 'Season'),
                         ),
                       ],
                       onChanged: (value) {
@@ -1954,21 +2027,56 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       );
     }
 
-    return SliverList(
-      delegate: SliverChildBuilderDelegate(
-        (context, index) {
-          final episode = _filteredEpisodes[index];
-          // Find the original index for context menu operations
-          final originalIndex = _episodes.indexOf(episode);
-          final bool hasValidServerEpisodeId = episode.episodeId > 0;
-          
-          if (!hasValidServerEpisodeId) {
-            print('Episode "${episode.episodeTitle}" has no server ID (RSS fallback) - disabling episode details navigation');
-          }
-          
-          return PinepodsEpisodeCard(
-            episode: episode,
-            onTap: _isFollowing && hasValidServerEpisodeId ? () {
+    final numbers = [
+      for (final episode in _filteredEpisodes)
+        resolveNumbers(itunesSeason: episode.itunesSeason, itunesEpisode: episode.itunesEpisode),
+    ];
+    final groupBySeason = _sortDirection == EpisodeSortDirection.season && shouldGroupBySeason(numbers);
+    if (!groupBySeason) {
+      return SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) => _episodeTile(_filteredEpisodes[index]),
+          childCount: _filteredEpisodes.length,
+        ),
+      );
+    }
+
+    final children = <Widget>[];
+    int? previousSeason;
+    var havePrevious = false;
+    for (var i = 0; i < _filteredEpisodes.length; i++) {
+      final seasonNumber = numbers[i].seasonNumber;
+      if (!havePrevious || seasonNumber != previousSeason) {
+        havePrevious = true;
+        previousSeason = seasonNumber;
+        final l10n = L.of(context);
+        final label = seasonNumber == null
+            ? (l10n?.p2_other_episodes ?? 'Other episodes')
+            : (l10n?.p2_season_group('$seasonNumber') ?? 'Season $seasonNumber');
+        children.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+            child: Text(label, style: Theme.of(context).textTheme.titleSmall),
+          ),
+        );
+      }
+      children.add(_episodeTile(_filteredEpisodes[i]));
+    }
+    return SliverList(delegate: SliverChildListDelegate(children));
+  }
+
+  Widget _episodeTile(PinepodsEpisode episode) {
+    final originalIndex = _episodes.indexOf(episode);
+    final bool hasValidServerEpisodeId = episode.episodeId > 0;
+
+    if (!hasValidServerEpisodeId) {
+      print('Episode "${episode.episodeTitle}" has no server ID (RSS fallback) - disabling episode details navigation');
+    }
+
+    return PinepodsEpisodeCard(
+      episode: episode,
+      onTap: _isFollowing && hasValidServerEpisodeId
+          ? () {
               Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -1977,17 +2085,18 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                   ),
                 ),
               );
-            } : null,
-            onLongPress: _isFollowing && hasValidServerEpisodeId ? () {
+            }
+          : null,
+      onLongPress: _isFollowing && hasValidServerEpisodeId
+          ? () {
               _showEpisodeContextMenu(originalIndex);
-            } : null,
-            onPlayPressed: _isFollowing ? () {
+            }
+          : null,
+      onPlayPressed: _isFollowing
+          ? () {
               _playEpisode(episode);
-            } : null,
-          );
-        },
-        childCount: _filteredEpisodes.length,
-      ),
+            }
+          : null,
     );
   }
 }

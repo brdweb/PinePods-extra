@@ -1675,7 +1675,23 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                                                 }
                                             </button>
                                             <div class="chapter-info">
+                                                { if let Some(img) = chapter.img.as_deref().and_then(crate::requests::podcasting2::http_link) {
+                                                    let src = server_name.as_deref().map(|server| {
+                                                        format!("{}/api/proxy/image?url={}", server, urlencoding::encode(img))
+                                                    }).unwrap_or_else(|| img.to_string());
+                                                    html! { <img src={src} class="ep-chapter-thumb" alt="" /> }
+                                                } else { html! {} } }
                                                 <span class="chapter-title">{ &chapter.title }</span>
+                                                { if let Some(href) = chapter.url.as_deref().and_then(crate::requests::podcasting2::http_link) {
+                                                    let href = href.to_string();
+                                                    html! {
+                                                        <a class="ep-chapter-link" href={href} target="_blank" rel="noopener noreferrer"
+                                                            title={i18n.t("podcasting2.chapter_link").to_string()}
+                                                            onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                                                            <i class="ph ph-arrow-square-out"></i>
+                                                        </a>
+                                                    }
+                                                } else { html! {} } }
                                                 <span class="chapter-time">{ formatted_start }</span>
                                                 // Progress bar
                                                 <div class="chapter-progress-container">

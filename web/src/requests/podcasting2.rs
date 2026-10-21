@@ -1,0 +1,1046 @@
+//! Podcasting 2.0 tag documents from `tags` on the episode and podcast endpoints.
+//!
+//! Field names match `docs/podcasting2-api.md`. Empty tags deserialize as defaults so a
+//! response that only has the older top-level keys still loads.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ItemTags {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosure_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapters_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapters_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub soundbites: Vec<Soundbite>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locations: Vec<Location>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<Season>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<EpisodeNumber>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<License>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image: Vec<PodcastImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<ImageSet>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_links: Vec<ContentLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub social_interacts: Vec<SocialInteract>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub funding: Vec<FundingLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<Chat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value: Vec<ValueBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_items: Vec<RemoteItem>,
+    /// Kept so a feed that sends them still deserializes. Not shown in the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<IgnoredTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txts: Vec<IgnoredTag>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChannelTags {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked: Option<Locked>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locations: Vec<Location>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trailers: Vec<Trailer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<License>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image: Vec<PodcastImage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<ImageSet>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub social_interacts: Vec<SocialInteract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_frequency: Option<UpdateFrequency>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<RemoteItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<Chat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_items: Vec<RemoteItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub funding: Vec<FundingLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value: Vec<ValueBlock>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<IgnoredTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub txts: Vec<IgnoredTag>,
+}
+
+/// A tag we accept so parsing doesn't fail, and do not render.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IgnoredTag {
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Locked {
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Soundbite {
+    pub start_time: String,
+    pub duration: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Location {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub osm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Season {
+    pub number: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpisodeNumber {
+    pub number: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct License {
+    #[serde(default)]
+    pub identifier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PodcastImage {
+    pub href: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aspect_ratio: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageSource {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageSet {
+    #[serde(default)]
+    pub srcset: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ImageSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentLink {
+    pub href: String,
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SocialInteract {
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FundingLink {
+    pub url: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Chat {
+    #[serde(default)]
+    pub server: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemoteItem {
+    #[serde(default)]
+    pub feed_guid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueRecipient {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub split: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueTimeSplit {
+    #[serde(default)]
+    pub start_time: String,
+    #[serde(default)]
+    pub duration: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_start_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_percentage: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<ValueRecipient>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_item: Option<RemoteItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValueBlock {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub suggested: Option<String>,
+    #[serde(default)]
+    pub recipients: Vec<ValueRecipient>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub time_splits: Vec<ValueTimeSplit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trailer {
+    #[serde(default)]
+    pub title: String,
+    pub url: String,
+    #[serde(default)]
+    pub pubdate: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateFrequency {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dtstart: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rrule: Option<String>,
+}
+
+/// Season and episode numbers after Podcasting 2.0 values win and iTunes fills the gaps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNumbers {
+    pub season_number: Option<i64>,
+    pub season_name: Option<String>,
+    pub episode_number: Option<i64>,
+    /// Podcasting 2.0 `display`, or the numeric episode text when display is absent.
+    pub episode_text: Option<String>,
+    pub from_podcasting2: bool,
+}
+
+impl ResolvedNumbers {
+    pub fn is_empty(&self) -> bool {
+        self.season_number.is_none() && self.season_name.is_none() && self.episode_text.is_none()
+    }
+}
+
+/// How often a show says it publishes, parsed from `podcast:updateFrequency`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cadence {
+    Hourly(u32),
+    Daily(u32),
+    Weekly(u32),
+    Monthly(u32),
+    Yearly(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtworkChoice {
+    pub src: String,
+    pub srcset: Option<String>,
+    pub alt: Option<String>,
+}
+
+/// A soundbite window in seconds. `end` is start + duration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipWindow {
+    pub start: f64,
+    pub end: f64,
+}
+
+pub fn resolve_numbers(
+    season: Option<&Season>,
+    episode: Option<&EpisodeNumber>,
+    itunes_season: Option<i64>,
+    itunes_episode: Option<i64>,
+) -> ResolvedNumbers {
+    let season_number = season
+        .and_then(|s| parse_whole(&s.number))
+        .or(itunes_season.filter(|n| *n > 0));
+    let season_name = season.and_then(|s| {
+        s.name
+            .as_ref()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+    });
+    let (episode_number, episode_text, episode_from_p2) = if let Some(ep) = episode {
+        let number = parse_whole(&ep.number).or(itunes_episode.filter(|n| *n > 0));
+        let display = ep
+            .display
+            .as_ref()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty());
+        let text = display.or_else(|| {
+            number
+                .map(|n| n.to_string())
+                .or_else(|| non_empty(&ep.number))
+        });
+        (number, text, true)
+    } else if let Some(n) = itunes_episode.filter(|n| *n > 0) {
+        (Some(n), Some(n.to_string()), false)
+    } else {
+        (None, None, false)
+    };
+    ResolvedNumbers {
+        season_number,
+        season_name,
+        episode_number,
+        episode_text,
+        from_podcasting2: season.is_some() || episode_from_p2,
+    }
+}
+
+/// Sort key: numbered episodes first, then season, then episode. Unnumbered sort last.
+pub fn season_sort_key(numbers: &ResolvedNumbers) -> (u8, i64, i64) {
+    let unnumbered = if numbers.season_number.is_none() && numbers.episode_number.is_none() {
+        1
+    } else {
+        0
+    };
+    (
+        unnumbered,
+        numbers.season_number.unwrap_or(i64::MAX),
+        numbers.episode_number.unwrap_or(i64::MAX),
+    )
+}
+
+/// Group when at least two episodes carry a season number and they are not all the same
+/// single bucket of one. A single season still groups so the header can show its name.
+pub fn should_group_by_season(numbers: &[ResolvedNumbers]) -> bool {
+    numbers.iter().any(|n| n.season_number.is_some() || n.season_name.is_some())
+}
+
+pub fn season_group_key(numbers: &ResolvedNumbers) -> Option<i64> {
+    numbers.season_number
+}
+
+pub fn soundbite_window(start_time: &str, duration: &str) -> Option<ClipWindow> {
+    let start = parse_seconds(start_time)?;
+    let duration = parse_seconds(duration).unwrap_or(0.0);
+    if start < 0.0 || duration < 0.0 {
+        return None;
+    }
+    Some(ClipWindow {
+        start,
+        end: start + duration,
+    })
+}
+
+pub fn format_clock(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "0:00".to_string();
+    }
+    let total = seconds.round() as i64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let secs = total % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
+    }
+}
+
+/// OpenStreetMap link for a location. Geo coordinates win; an OSM id is the fallback.
+pub fn location_map_url(location: &Location) -> Option<String> {
+    if let Some(geo) = location.geo.as_deref() {
+        if let Some((lat, lon)) = parse_geo(geo) {
+            return Some(format!(
+                "https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=14/{lat}/{lon}"
+            ));
+        }
+    }
+    location.osm.as_deref().and_then(osm_url)
+}
+
+pub fn chat_url(chat: &Chat) -> Option<String> {
+    let server = chat.server.trim();
+    let protocol = chat.protocol.trim().to_ascii_lowercase();
+    let space = chat.space.as_deref().unwrap_or("").trim();
+    if is_dangerous(server) {
+        return None;
+    }
+    if server.starts_with("http://") || server.starts_with("https://") {
+        return Some(server.to_string());
+    }
+    match protocol.as_str() {
+        "irc" if !server.is_empty() => {
+            let room = space.trim_start_matches('#');
+            if room.is_empty() {
+                Some(format!("irc://{server}"))
+            } else {
+                Some(format!("irc://{server}/{room}"))
+            }
+        }
+        "matrix" => {
+            let room = if space.starts_with('#') || space.starts_with('!') {
+                if space.contains(':') || server.is_empty() {
+                    space.to_string()
+                } else {
+                    format!("{space}:{server}")
+                }
+            } else if !space.is_empty() && !server.is_empty() {
+                format!("#{space}:{server}")
+            } else if let Some(id) = chat.account_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                id.to_string()
+            } else if !server.is_empty() {
+                return Some(format!("https://{server}"));
+            } else {
+                return None;
+            };
+            Some(format!("https://matrix.to/#/{}", urlencoding::encode(&room)))
+        }
+        "xmpp" => {
+            let room = if !space.is_empty() { space } else { chat.account_id.as_deref().unwrap_or("") };
+            if room.is_empty() {
+                None
+            } else if space.is_empty() {
+                Some(format!("xmpp:{room}"))
+            } else {
+                Some(format!("xmpp:{room}?join"))
+            }
+        }
+        "nostr" => chat.account_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|id| {
+            if id.starts_with("npub") {
+                format!("https://njump.me/{id}")
+            } else {
+                format!("nostr:{id}")
+            }
+        }),
+        _ if !server.is_empty() => Some(format!("https://{server}")),
+        _ => None,
+    }
+}
+
+pub fn social_url(social: &SocialInteract) -> Option<String> {
+    if social.protocol.eq_ignore_ascii_case("disabled") {
+        return None;
+    }
+    for candidate in [social.uri.as_deref(), social.account_url.as_deref()] {
+        if let Some(url) = candidate.map(str::trim).filter(|s| !s.is_empty()) {
+            if !is_dangerous(url) && url.contains(':') {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn safe_link(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.is_empty() || is_dangerous(url) || !url.contains(':') {
+        None
+    } else {
+        Some(url)
+    }
+}
+
+pub fn http_link(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.starts_with("https://") || url.starts_with("http://") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
+pub fn artwork_choice(images: &[PodcastImage], set: Option<&ImageSet>, fallback: &str) -> ArtworkChoice {
+    let preferred = images.iter().find(|img| {
+        img.purpose
+            .as_deref()
+            .map(|p| p.eq_ignore_ascii_case("artwork") || p.eq_ignore_ascii_case("cover"))
+            .unwrap_or(false)
+            && http_link(&img.href).is_some()
+    });
+    let first = images.iter().find(|img| http_link(&img.href).is_some());
+    let chosen = preferred.or(first);
+    let srcset = set.and_then(srcset_of);
+    let src = chosen
+        .map(|img| img.href.trim().to_string())
+        .or_else(|| srcset.as_deref().and_then(largest_srcset_url))
+        .unwrap_or_else(|| fallback.to_string());
+    ArtworkChoice {
+        alt: chosen.and_then(|img| img.alt.clone()),
+        srcset,
+        src,
+    }
+}
+
+pub fn cadence_of(rrule: &str) -> Option<Cadence> {
+    let mut freq: Option<String> = None;
+    let mut interval = 1u32;
+    for part in rrule.split(';') {
+        let mut kv = part.splitn(2, '=');
+        let Some(key) = kv.next() else { continue };
+        let Some(value) = kv.next() else { continue };
+        match key.trim().to_ascii_uppercase().as_str() {
+            "FREQ" => freq = Some(value.trim().to_ascii_uppercase()),
+            "INTERVAL" => {
+                if let Ok(n) = value.trim().parse::<u32>() {
+                    if n > 0 {
+                        interval = n;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    match freq.as_deref() {
+        Some("HOURLY") => Some(Cadence::Hourly(interval)),
+        Some("DAILY") => Some(Cadence::Daily(interval)),
+        Some("WEEKLY") => Some(Cadence::Weekly(interval)),
+        Some("MONTHLY") => Some(Cadence::Monthly(interval)),
+        Some("YEARLY") => Some(Cadence::Yearly(interval)),
+        _ => None,
+    }
+}
+
+pub fn trailer_is_video(mime: Option<&str>) -> bool {
+    mime.unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("video/")
+}
+
+pub fn time_splits_of(blocks: &[ValueBlock]) -> Vec<&ValueTimeSplit> {
+    blocks.iter().flat_map(|b| b.time_splits.iter()).collect()
+}
+
+/// "Season 4: The Pilot · Ch.3". Words come from the caller so this stays free of i18n.
+pub fn format_numbers_badge(season_word: &str, episode_word: &str, numbers: &ResolvedNumbers) -> Option<String> {
+    if numbers.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(num) = numbers.season_number {
+        if let Some(name) = &numbers.season_name {
+            parts.push(format!("{season_word} {num}: {name}"));
+        } else {
+            parts.push(format!("{season_word} {num}"));
+        }
+    } else if let Some(name) = &numbers.season_name {
+        parts.push(name.clone());
+    }
+    if let Some(text) = &numbers.episode_text {
+        let numeric = text.chars().all(|c| c.is_ascii_digit());
+        if numeric {
+            parts.push(format!("{episode_word} {text}"));
+        } else {
+            parts.push(text.clone());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
+
+/// Trailers grouped by their season attribute, in the order seasons first appear.
+pub fn trailer_groups(trailers: &[Trailer]) -> Vec<(Option<String>, Vec<usize>)> {
+    let mut groups: Vec<(Option<String>, Vec<usize>)> = Vec::new();
+    for (index, trailer) in trailers.iter().enumerate() {
+        let key = trailer
+            .season
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if let Some(group) = groups.iter_mut().find(|(season, _)| season == &key) {
+            group.1.push(index);
+        } else {
+            groups.push((key, vec![index]));
+        }
+    }
+    groups
+}
+
+fn srcset_of(set: &ImageSet) -> Option<String> {
+    if !set.sources.is_empty() {
+        let parts: Vec<String> = set
+            .sources
+            .iter()
+            .filter(|s| http_link(&s.url).is_some())
+            .map(|s| match s.descriptor.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                Some(d) => format!("{} {d}", s.url.trim()),
+                None => s.url.trim().to_string(),
+            })
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
+    } else if set.srcset.trim().is_empty() {
+        None
+    } else {
+        let parts: Vec<String> = set
+            .srcset
+            .split(',')
+            .filter_map(|part| {
+                let part = part.trim();
+                let url = part.split_whitespace().next().unwrap_or("");
+                if http_link(url).is_some() {
+                    Some(part.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
+    }
+}
+
+fn largest_srcset_url(srcset: &str) -> Option<String> {
+    let mut best: Option<(u32, String)> = None;
+    for part in srcset.split(',') {
+        let mut bits = part.split_whitespace();
+        let url = bits.next()?.trim().to_string();
+        let width = bits
+            .next()
+            .and_then(|d| d.trim_end_matches(['w', 'W']).parse::<u32>().ok())
+            .unwrap_or(0);
+        if best.as_ref().map(|(w, _)| width >= *w).unwrap_or(true) {
+            best = Some((width, url));
+        }
+    }
+    best.map(|(_, url)| url)
+}
+
+fn parse_geo(raw: &str) -> Option<(String, String)> {
+    let raw = raw.trim().trim_start_matches("geo:").trim_start_matches("GEO:");
+    let mut parts = raw.split(',');
+    let lat: f64 = parts.next()?.trim().parse().ok()?;
+    let lon: f64 = parts.next()?.trim().parse().ok()?;
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
+    }
+    Some((trim_coord(lat), trim_coord(lon)))
+}
+
+fn trim_coord(n: f64) -> String {
+    let s = format!("{n:.6}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn osm_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let (kind, rest) = raw.split_at_checked(1)?;
+    let id = rest.trim().parse::<u64>().ok()?;
+    let path = match kind {
+        "N" | "n" => "node",
+        "W" | "w" => "way",
+        "R" | "r" => "relation",
+        _ => return None,
+    };
+    Some(format!("https://www.openstreetmap.org/{path}/{id}"))
+}
+
+fn parse_seconds(raw: &str) -> Option<f64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+fn parse_whole(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(n) = raw.parse::<i64>() {
+        return Some(n).filter(|n| *n > 0);
+    }
+    raw.parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| n.floor() as i64)
+}
+
+fn non_empty(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+fn is_dangerous(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("javascript:") || lower.starts_with("data:") || lower.starts_with("vbscript:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    fn season(number: &str, name: Option<&str>) -> Season {
+        Season {
+            number: number.to_string(),
+            name: name.map(|s| s.to_string()),
+        }
+    }
+
+    fn episode(number: &str, display: Option<&str>) -> EpisodeNumber {
+        EpisodeNumber {
+            number: number.to_string(),
+            display: display.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn podcasting2_numbers_beat_itunes() {
+        let resolved = resolve_numbers(
+            Some(&season("4", Some("The Pilot"))),
+            Some(&episode("12", Some("Ch.3"))),
+            Some(9),
+            Some(4),
+        );
+        assert_eq!(resolved.season_number, Some(4));
+        assert_eq!(resolved.season_name.as_deref(), Some("The Pilot"));
+        assert_eq!(resolved.episode_number, Some(12));
+        assert_eq!(resolved.episode_text.as_deref(), Some("Ch.3"));
+        assert!(resolved.from_podcasting2);
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn itunes_fills_a_missing_podcasting2_number() {
+        let resolved = resolve_numbers(None, None, Some(2), Some(8));
+        assert_eq!(resolved.season_number, Some(2));
+        assert_eq!(resolved.episode_number, Some(8));
+        assert_eq!(resolved.episode_text.as_deref(), Some("8"));
+        assert!(!resolved.from_podcasting2);
+
+        let only_episode = resolve_numbers(None, Some(&episode("3", None)), Some(9), Some(1));
+        assert_eq!(only_episode.season_number, Some(9));
+        assert_eq!(only_episode.episode_number, Some(3));
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn season_sort_puts_numbered_episodes_in_order() {
+        let a = resolve_numbers(Some(&season("2", None)), Some(&episode("1", None)), None, None);
+        let b = resolve_numbers(Some(&season("1", None)), Some(&episode("10", None)), None, None);
+        let c = resolve_numbers(None, None, None, None);
+        let mut rows = vec![c.clone(), a.clone(), b.clone()];
+        rows.sort_by_key(season_sort_key);
+        assert_eq!(rows[0].season_number, Some(1));
+        assert_eq!(rows[1].season_number, Some(2));
+        assert!(rows[2].is_empty());
+        assert!(should_group_by_season(&[a, b]));
+        assert!(!should_group_by_season(&[c]));
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn soundbite_window_and_clock() {
+        let clip = soundbite_window("73.0", "60.0").unwrap();
+        assert_eq!(clip.start, 73.0);
+        assert_eq!(clip.end, 133.0);
+        assert_eq!(format_clock(73.0), "1:13");
+        assert_eq!(format_clock(3661.0), "1:01:01");
+        assert!(soundbite_window("nope", "1").is_none());
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn location_links_prefer_geo_then_osm() {
+        let both = Location {
+            name: "Austin, TX".into(),
+            rel: None,
+            geo: Some("geo:30.2672,-97.7431".into()),
+            osm: Some("R113314".into()),
+            country: Some("US".into()),
+        };
+        assert_eq!(
+            location_map_url(&both).as_deref(),
+            Some("https://www.openstreetmap.org/?mlat=30.2672&mlon=-97.7431#map=14/30.2672/-97.7431")
+        );
+        let osm_only = Location {
+            name: "Node".into(),
+            rel: None,
+            geo: None,
+            osm: Some("N123".into()),
+            country: None,
+        };
+        assert_eq!(
+            location_map_url(&osm_only).as_deref(),
+            Some("https://www.openstreetmap.org/node/123")
+        );
+        assert!(location_map_url(&Location {
+            name: "Nowhere".into(),
+            rel: None,
+            geo: Some("not-geo".into()),
+            osm: None,
+            country: None,
+        })
+        .is_none());
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn chat_and_social_links() {
+        let irc = Chat {
+            server: "irc.example.invalid".into(),
+            protocol: "irc".into(),
+            account_id: Some("@ada".into()),
+            space: Some("#show".into()),
+        };
+        assert_eq!(chat_url(&irc).as_deref(), Some("irc://irc.example.invalid/show"));
+        let matrix = Chat {
+            server: "matrix.example.invalid".into(),
+            protocol: "matrix".into(),
+            account_id: None,
+            space: Some("#ep".into()),
+        };
+        assert_eq!(
+            chat_url(&matrix).as_deref(),
+            Some("https://matrix.to/#/%23ep%3Amatrix.example.invalid")
+        );
+        let disabled = SocialInteract {
+            protocol: "disabled".into(),
+            uri: None,
+            account_id: None,
+            account_url: None,
+            priority: None,
+        };
+        assert!(social_url(&disabled).is_none());
+        let thread = SocialInteract {
+            protocol: "activitypub".into(),
+            uri: Some("https://example.invalid/ap/ep".into()),
+            account_id: None,
+            account_url: None,
+            priority: Some("2".into()),
+        };
+        assert_eq!(social_url(&thread).as_deref(), Some("https://example.invalid/ap/ep"));
+        assert!(safe_link("javascript:alert(1)").is_none());
+        assert!(safe_link("ipfs://bafy").is_some());
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn artwork_uses_srcset_and_drops_unsafe_urls() {
+        let images = vec![PodcastImage {
+            href: "https://cdn.example.invalid/art.jpg".into(),
+            alt: Some("Cover".into()),
+            aspect_ratio: None,
+            width: Some("1400".into()),
+            height: None,
+            purpose: Some("artwork".into()),
+        }];
+        let set = ImageSet {
+            srcset: "javascript:alert(1) 10w, https://cdn.example.invalid/img/small.jpg 300w, https://cdn.example.invalid/img/big.jpg 1500w".into(),
+            sources: vec![],
+        };
+        let choice = artwork_choice(&images, Some(&set), "https://fallback.example/a.jpg");
+        assert_eq!(choice.src, "https://cdn.example.invalid/art.jpg");
+        assert_eq!(choice.alt.as_deref(), Some("Cover"));
+        assert_eq!(
+            choice.srcset.as_deref(),
+            Some("https://cdn.example.invalid/img/small.jpg 300w, https://cdn.example.invalid/img/big.jpg 1500w")
+        );
+        let from_set = artwork_choice(&[], Some(&set), "https://fallback.example/a.jpg");
+        assert_eq!(from_set.src, "https://cdn.example.invalid/img/big.jpg");
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn schedule_and_time_splits() {
+        assert_eq!(cadence_of("FREQ=WEEKLY;INTERVAL=2"), Some(Cadence::Weekly(2)));
+        assert_eq!(cadence_of("INTERVAL=3;FREQ=DAILY"), Some(Cadence::Daily(3)));
+        assert!(cadence_of("FREQ=SECONDLY").is_none());
+        let block = ValueBlock {
+            kind: "lightning".into(),
+            method: "keysend".into(),
+            suggested: None,
+            recipients: vec![],
+            time_splits: vec![ValueTimeSplit {
+                start_time: "63".into(),
+                duration: "388".into(),
+                remote_start_time: None,
+                remote_percentage: Some("40".into()),
+                recipients: vec![ValueRecipient {
+                    name: "Guest Split".into(),
+                    kind: "node".into(),
+                    address: "02ff".into(),
+                    split: "50".into(),
+                }],
+                remote_item: None,
+            }],
+        };
+        let blocks = vec![block];
+        let splits = time_splits_of(&blocks);
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].recipients[0].name, "Guest Split");
+        assert!(trailer_is_video(Some("video/mp4")));
+        assert!(!trailer_is_video(Some("audio/mpeg")));
+        let labeled = resolve_numbers(
+            Some(&season("4", Some("The Pilot"))),
+            Some(&episode("12", Some("Ch.3"))),
+            None,
+            None,
+        );
+        assert_eq!(
+            format_numbers_badge("Season", "Episode", &labeled).as_deref(),
+            Some("Season 4: The Pilot · Ch.3")
+        );
+        let trailers = vec![
+            Trailer {
+                title: "A".into(),
+                url: "https://example.invalid/a.mp3".into(),
+                pubdate: String::new(),
+                length: None,
+                mime_type: None,
+                season: None,
+            },
+            Trailer {
+                title: "B".into(),
+                url: "https://example.invalid/b.mp4".into(),
+                pubdate: String::new(),
+                length: None,
+                mime_type: Some("video/mp4".into()),
+                season: Some("4".into()),
+            },
+        ];
+        let groups = trailer_groups(&trailers);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].0.is_none());
+        assert_eq!(groups[1].0.as_deref(), Some("4"));
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn sample_episode_tags_deserialize() {
+        let raw = r##"{
+            "soundbites": [{"start_time": "73.0", "duration": "60.0"}, {"start_time": "1234.5", "duration": "42.25", "title": "Rock & Roll"}],
+            "season": {"number": "4", "name": "The Pilot"},
+            "episode": {"number": "12", "display": "Ch.3"},
+            "content_links": [{"href": "https://example.invalid/watch", "text": "Watch this episode"}],
+            "social_interacts": [{"protocol": "disabled"}, {"protocol": "activitypub", "uri": "https://example.invalid/ap/ep", "priority": "2"}],
+            "chat": {"server": "matrix.example.invalid", "protocol": "matrix", "space": "#ep"},
+            "remote_items": [{"feed_guid": "b40ffcf7-2c48-5cfe-8daa-b65d766b2c25", "item_guid": "other-item", "medium": "podcast"}],
+            "value": [{"type": "lightning", "method": "keysend", "suggested": "0.00000001000", "recipients": [], "time_splits": [{"start_time": "63", "duration": "388", "remote_percentage": "40", "recipients": [{"name": "Guest Split", "type": "node", "address": "02ff", "split": "50"}]}]}],
+            "locations": [{"name": "New York", "geo": "geo:40.7,-74.0", "osm": "N123", "country": "US"}]
+        }"##;
+        let tags: ItemTags = serde_json::from_str(raw).unwrap();
+        assert_eq!(tags.soundbites.len(), 2);
+        assert_eq!(tags.season.unwrap().name.as_deref(), Some("The Pilot"));
+        assert_eq!(tags.episode.unwrap().display.as_deref(), Some("Ch.3"));
+        assert_eq!(social_url(&tags.social_interacts[0]), None);
+        assert!(social_url(&tags.social_interacts[1]).is_some());
+        assert_eq!(tags.value[0].time_splits[0].recipients[0].name, "Guest Split");
+        assert!(location_map_url(&tags.locations[0]).is_some());
+
+        let wrapped = r#"{"chapters": [], "transcripts": [], "people": [], "tags": {"medium": "music"}}"#;
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[serde(default)]
+            tags: ItemTags,
+        }
+        let wrap: Wrap = serde_json::from_str(wrapped).unwrap();
+        assert_eq!(wrap.tags.medium.as_deref(), Some("music"));
+        let legacy = r#"{"chapters": [], "transcripts": [], "people": []}"#;
+        let legacy: Wrap = serde_json::from_str(legacy).unwrap();
+        assert!(legacy.tags.soundbites.is_empty());
+    }
+}

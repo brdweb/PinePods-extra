@@ -3,13 +3,14 @@ use crate::components::audio::on_play_click;
 use crate::components::audio::AudioPlayer;
 use crate::components::click_events::create_on_title_click;
 use crate::components::context::{AppState, EpisodeDetailState, EpisodeNavigationState, EpisodeStatusState, NotificationState, PageLoadState, UIState, UserPreferencesState};
-use crate::components::gen_components::{empty_message, FallbackImage, Search_nav, UseScrollToTop};
+use crate::components::gen_components::{empty_message, Search_nav, UseScrollToTop};
 use crate::components::gen_funcs::format_error_message;
 use crate::components::gen_funcs::{
     format_datetime, format_time, match_date_format, parse_date, sanitize_html_with_blank_target,
 };
 use crate::components::loading::Loading;
 use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
+use crate::components::podcasting2::{cover_art, cover_html, EpisodeTagsPanel};
 use crate::components::safehtml::SafeHtml;
 use crate::requests::people_req::{call_get_episode_people, CreditedPerson};
 use crate::requests::pod_req;
@@ -108,6 +109,7 @@ async fn fallback_to_podcast_parsing(
                                                 Some(response.transcripts);
                                             state.episode_page_people = Some(response.people);
                                             state.episode_page_chapters = Some(response.chapters);
+                                            state.episode_page_tags = Some(response.tags);
                                         });
                                         ep_2_loading_clone.set(false);
                                     }
@@ -120,6 +122,8 @@ async fn fallback_to_podcast_parsing(
                                             state.episode_page_transcript = None;
                                             state.episode_page_people = None;
                                             state.episode_page_chapters = None;
+                                            state.episode_page_tags = None;
+                                            state.soundbite_stop_at = None;
                                         });
                                     }
                                 }
@@ -1254,6 +1258,7 @@ pub fn epsiode() -> Html {
                         audio_dispatch.reduce_mut(|state| {
                             state.episode_page_transcript = Some(response.transcripts);
                             state.episode_page_chapters = Some(response.chapters);
+                            state.episode_page_tags = Some(response.tags);
                         });
                         ep_2_loading.set(false);
                     }
@@ -1264,6 +1269,8 @@ pub fn epsiode() -> Html {
                         audio_dispatch.reduce_mut(|state| {
                             state.episode_page_transcript = None;
                             state.episode_page_chapters = None;
+                            state.episode_page_tags = None;
+                            state.soundbite_stop_at = None;
                         });
                         ep_2_loading.set(false);
                     }
@@ -2256,17 +2263,24 @@ pub fn epsiode() -> Html {
                             html! {}
                         };
 
+                        let episode_tags = audio_state.episode_page_tags.clone().unwrap_or_default();
+                        let cover = cover_art(&episode_tags.image, episode_tags.images.as_ref(), &episode.episodeartwork);
+                        let cover_alt = format!("{}{}", i18n_cover_alt_text, episode.episodetitle);
+                        let numbers_line = crate::components::podcasting2::episode_numbers_text(
+                            &i18n,
+                            episode_tags.season.as_ref(),
+                            episode_tags.episode.as_ref(),
+                            episode.itunes_season.map(|n| n as i64),
+                            episode.itunes_episode.map(|n| n as i64),
+                        );
+
                         let layout = if audio_state.is_mobile.unwrap_or(false) {
                             html! {
                                 <div class="mobile-layout ep-mobile-page">
 
                                     // ── Compact header: artwork + meta ──
                                     <div class="ep-mobile-header">
-                                        <FallbackImage
-                                            src={episode.episodeartwork.clone()}
-                                            alt={format!("{}{}", i18n_cover_alt_text, episode.episodeartwork.clone())}
-                                            class="ep-mobile-art rounded-corners"
-                                        />
+                                        { cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string()) }
                                         <div class="ep-mobile-meta">
                                             <p class="ep-mobile-podcast-name" onclick={on_title_click.clone()}>
                                                 { &episode.podcastname }
@@ -2280,6 +2294,9 @@ pub fn epsiode() -> Html {
                                             <p class="ep-mobile-subinfo">
                                                 { format!("{} · {}", format_duration, format_release) }
                                             </p>
+                                            { if let Some(numbers_line) = numbers_line.clone() {
+                                                html! { <p class="p2-badge">{ numbers_line }</p> }
+                                            } else { html! {} } }
                                         </div>
                                     </div>
 
@@ -2464,11 +2481,7 @@ pub fn epsiode() -> Html {
                                     // ===== HERO =====
                                     <div class="ep-hero">
                                         <div class="ep-hero-cover" onclick={on_title_click.clone()} title={episode.podcastname.clone()}>
-                                            <FallbackImage
-                                                src={episode.episodeartwork.clone()}
-                                                alt={format!("{}{}", i18n_cover_alt_text, episode.episodeartwork.clone())}
-                                                class="ep-hero-cover-img"
-                                            />
+                                            { cover_html(&cover, cover_alt.clone(), "ep-hero-cover-img".to_string()) }
                                         </div>
                                         <div class="ep-hero-body">
                                             <div class="ep-hero-show" onclick={on_title_click.clone()}>
@@ -2480,6 +2493,14 @@ pub fn epsiode() -> Html {
                                                 <span><i class="ph ph-calendar-blank"></i>{ &format_release }</span>
                                                 <span class="ep-meta-dot">{"•"}</span>
                                                 <span><i class="ph ph-clock"></i>{ &format_duration }</span>
+                                                { if let Some(numbers_line) = numbers_line.clone() {
+                                                    html! {
+                                                        <>
+                                                        <span class="ep-meta-dot">{"•"}</span>
+                                                        <span class="p2-badge">{ numbers_line }</span>
+                                                        </>
+                                                    }
+                                                } else { html! {} } }
                                                 { if *completion_status {
                                                     html! {
                                                         <>
@@ -2696,6 +2717,16 @@ pub fn epsiode() -> Html {
                                                                                 html! { <img src={src} class="ep-chapter-thumb" alt="" /> }
                                                                             } else { html! {} } }
                                                                             <span class="ep-chapter-title">{ &chapter.title }</span>
+                                                                            { if let Some(href) = chapter.url.as_deref().and_then(crate::requests::podcasting2::http_link) {
+                                                                                let href = href.to_string();
+                                                                                html! {
+                                                                                    <a class="ep-chapter-link" href={href} target="_blank" rel="noopener noreferrer"
+                                                                                        title={i18n.t("podcasting2.chapter_link").to_string()}
+                                                                                        onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                                                                                        <i class="ph ph-arrow-square-out"></i>
+                                                                                    </a>
+                                                                                }
+                                                                            } else { html! {} } }
                                                                             <span class="ep-chapter-time">{ format_time(start) }</span>
                                                                         </li>
                                                                     }
@@ -2763,7 +2794,20 @@ pub fn epsiode() -> Html {
                                 </div>
                             }
                         };
-                        layout
+                        html! {
+                            <>
+                                { layout }
+                                <EpisodeTagsPanel
+                                    tags={episode_tags}
+                                    itunes_season={episode.itunes_season.map(|n| n as i64)}
+                                    itunes_episode={episode.itunes_episode.map(|n| n as i64)}
+                                    episode={episode.clone()}
+                                    api_key={api_key.clone().unwrap_or_default().unwrap_or_default()}
+                                    user_id={user_id.unwrap_or(0)}
+                                    server_name={server_name.clone().unwrap_or_default()}
+                                />
+                            </>
+                        }
                     }
                 }
             }

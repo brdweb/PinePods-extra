@@ -10,6 +10,7 @@ use crate::components::gen_funcs::{
 use crate::components::loading::Loading;
 use crate::components::episode_list_view::EpisodeListView;
 use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
+use crate::components::podcasting2::{cover_art, cover_html, ShowTagsPanel};
 use crate::requests::people_req::{CreditedPerson, PodcastCredits};
 use crate::pages::podcast_layout::ClickedFeedURL;
 use crate::requests::pod_req::{
@@ -666,6 +667,7 @@ pub fn episode_layout() -> Html {
             state.podcast_podroll = None;
             state.podcast_people = None;
             state.podcast_guests = None;
+            state.podcast_tags = None;
         });
         || ()
     });
@@ -1240,6 +1242,7 @@ pub fn episode_layout() -> Html {
                                                     state.podcast_podroll = Some(response.podroll);
                                                     state.podcast_people = Some(response.people);
                                                     state.podcast_guests = Some(response.guests);
+                                                    state.podcast_tags = Some(response.tags);
                                                 });
                                             }
                                             Err(e) => {
@@ -4487,17 +4490,17 @@ pub fn episode_layout() -> Html {
                                             .as_ref()
                                             .map(|r| r.episodes.iter().any(|e| e.is_video))
                                             .unwrap_or(false);
+                                        let show_tags = state.podcast_tags.clone().unwrap_or_default();
+                                        let cover = cover_art(&show_tags.image, show_tags.images.as_ref(), &podcast_info.artworkurl);
+                                        let cover_alt = format!("Cover for {}", &podcast_info.podcastname);
+                                        let show_panel = html! { <ShowTagsPanel tags={show_tags} /> };
                                         let layout = if state.is_mobile.unwrap_or(false) {
                                             html! {
                                                 <div class="mobile-layout ep-mobile-pod-header">
 
                                                     // ── Compact header: artwork + title + actions ──
                                                     <div class="ep-mobile-header">
-                                                        <FallbackImage
-                                                            src={podcast_info.artworkurl.clone()}
-                                                            alt={format!("Cover for {}", &podcast_info.podcastname)}
-                                                            class="ep-mobile-art rounded-corners"
-                                                        />
+                                                        { cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string()) }
                                                         <div class="ep-mobile-meta">
                                                             <div class="flex items-center gap-2">
                                                                 <h2 class="ep-mobile-title">{ &podcast_info.podcastname }</h2>
@@ -4619,6 +4622,7 @@ pub fn episode_layout() -> Html {
                                                             </>
                                                         }
                                                     } else { html! {} }}
+                                                    { show_panel.clone() }
 
                                                     // ── Categories ──
                                                     { {
@@ -4637,7 +4641,7 @@ pub fn episode_layout() -> Html {
                                         } else {
                                             let pod_link = podcast_info.feedurl.clone();
                                             let subscribed = podcast_state.podcast_added.unwrap_or(false);
-                                            let backdrop_style = format!("background-image: url('{}');", &podcast_info.artworkurl);
+                                            let backdrop_style = format!("background-image: url('{}');", &cover.src);
                                             let eyebrow_text = match visible_categories(podcast_info.categories.as_ref()).first() {
                                                 Some(cat) => format!("{} · {}", i18n.t("episodes_layout.podcast"), cat),
                                                 None => i18n.t("episodes_layout.podcast").to_string(),
@@ -4656,11 +4660,7 @@ pub fn episode_layout() -> Html {
                                                     <div class="pd-banner-scrim"></div>
                                                     <div class="pd-banner-inner">
                                                         <div class="pd-banner-top">
-                                                            <FallbackImage
-                                                                src={podcast_info.artworkurl.clone()}
-                                                                alt={format!("Cover for {}", &podcast_info.podcastname)}
-                                                                class={"pd-banner-cover"}
-                                                            />
+                                                            { cover_html(&cover, cover_alt.clone(), "pd-banner-cover".to_string()) }
                                                             <div class="pd-banner-head">
                                                                 <div class="pd-eyebrow">
                                                                     <i class="ph ph-microphone-stage"></i>
@@ -4775,6 +4775,7 @@ pub fn episode_layout() -> Html {
                                                                 </>
                                                             }
                                                         } else { html! {} } }
+                                                        { show_panel.clone() }
 
                                                         { {
                                                             let categories = visible_categories(podcast_info.categories.as_ref());

@@ -24,6 +24,11 @@ class PinepodsEpisode {
   /// (offline). Null for server/streamed episodes.
   final String? localImagePath;
 
+  /// iTunes season/episode when the list payload includes them. Podcasting 2.0
+  /// numbers on the episode page take precedence over these.
+  final int? itunesSeason;
+  final int? itunesEpisode;
+
   PinepodsEpisode({
     required this.podcastName,
     required this.episodeTitle,
@@ -43,6 +48,8 @@ class PinepodsEpisode {
     this.listenDate,
     this.saveDate,
     this.localImagePath,
+    this.itunesSeason,
+    this.itunesEpisode,
   });
 
   factory PinepodsEpisode.fromJson(Map<String, dynamic> json) {
@@ -64,6 +71,8 @@ class PinepodsEpisode {
       podcastId: json['Podcastid'] ?? json['podcastid'],
       listenDate: json['listendate'],
       saveDate: json['savedate'],
+      itunesSeason: _positiveInt(json['itunes_season'] ?? json['itunesSeason'] ?? json['season']),
+      itunesEpisode: _positiveInt(json['itunes_episode'] ?? json['itunesEpisode'] ?? json['episode']),
     );
   }
 
@@ -89,6 +98,8 @@ class PinepodsEpisode {
       listenDate: listenDate,
       saveDate: saveDate,
       localImagePath: localImagePath,
+      itunesSeason: itunesSeason,
+      itunesEpisode: itunesEpisode,
     );
   }
 
@@ -159,4 +170,17 @@ class PinepodsEpisode {
   /// Uses device-local calendar dates so "Today" snaps to local midnight (see
   /// [relativePubDateLabel] in core/date_utils.dart).
   String get formattedPubDate => relativePubDateLabel(episodePubDate);
+}
+
+int? _positiveInt(dynamic raw) {
+  if (raw is int) return raw > 0 ? raw : null;
+  if (raw is num) {
+    final value = raw.toInt();
+    return value > 0 ? value : null;
+  }
+  if (raw is String) {
+    final value = int.tryParse(raw.trim());
+    return value != null && value > 0 ? value : null;
+  }
+  return null;
 }
