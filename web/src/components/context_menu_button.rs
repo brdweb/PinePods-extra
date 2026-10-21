@@ -11,6 +11,7 @@ use crate::requests::episode::Episode;
 use crate::components::gen_funcs::format_error_message;
 use crate::components::remote_devices::device_label;
 use crate::requests::notify::toast_info;
+use crate::requests::music_assistant::{open_speaker_picker, MusicAssistantState};
 use crate::requests::now_playing::{play_on_device, NowPlayingState};
 use crate::requests::pod_req::{
     call_add_episode_to_collection, call_download_episode, call_get_collection_add_ui,
@@ -124,6 +125,8 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
     let i18n_add_to_collection = i18n.t("collections.add_to_collection").to_string();
     let i18n_play_on = i18n.t("remote_devices.play_on").to_string();
     let i18n_playing_on = i18n.t("remote_devices.playing_on").to_string();
+    let i18n_play_on_speaker = i18n.t("music_assistant.play_on_speaker").to_string();
+    let ma_enabled = use_selector(|s: &MusicAssistantState| s.enabled);
     // Other devices that can start an episode, as (id, label, type). Selecting just
     // these keeps the many context-menu instances on a page from re-rendering on
     // every position report.
@@ -1270,8 +1273,21 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
 
     // "Play on ▸ <device>": start this episode on another device (it resumes from
     // the server-stored position). Hidden when no other device is connected.
-    let play_on_section = if play_on_targets.is_empty() {
+    let play_on_speaker = if *ma_enabled {
+        let episode_id = props.episode.episodeid;
+        let is_youtube = props.episode.is_youtube;
+        html! {
+            <li class="dropdown-option" onclick={wrap_action(Callback::from(move |_: MouseEvent| {
+                open_speaker_picker(episode_id, is_youtube);
+            }))}>
+                { &i18n_play_on_speaker }
+            </li>
+        }
+    } else {
         html! {}
+    };
+    let play_on_section = if play_on_targets.is_empty() {
+        html! { <>{ play_on_speaker.clone() }</> }
     } else {
         let toggle = {
             let play_on_open = play_on_open.clone();
@@ -1282,6 +1298,7 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
         };
         html! {
             <>
+                { play_on_speaker }
                 <li class="dropdown-option" onclick={toggle}>
                     { &i18n_play_on }
                     <i class="ph ph-caret-right" style="float:right"></i>

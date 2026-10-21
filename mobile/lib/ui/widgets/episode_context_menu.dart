@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:pinepods_mobile/entities/pinepods_episode.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
 import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
+import 'package:pinepods_mobile/services/music_assistant/music_assistant_api.dart';
+import 'package:pinepods_mobile/ui/podcast/music_assistant_sheet.dart';
 import 'package:pinepods_mobile/ui/podcast/remote_devices_button.dart';
 
 class EpisodeContextMenu extends StatelessWidget {
@@ -143,6 +145,7 @@ class EpisodeContextMenu extends StatelessWidget {
                     ),
 
                     _buildPlayOnOption(context),
+                    _buildPlayOnSpeaker(context),
                   ],
                   ),
                   ),
@@ -152,6 +155,32 @@ class EpisodeContextMenu extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  /// Speaker picker. Hidden until Music Assistant is enabled for this account.
+  Widget _buildPlayOnSpeaker(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: MusicAssistantController.instance.enabled,
+      builder: (context, enabled, _) {
+        if (!enabled) return const SizedBox.shrink();
+        return _buildMenuOption(
+          context,
+          icon: Icons.speaker,
+          text: 'Play on speaker…',
+          onTap: () {
+            final rootContext = Navigator.of(context, rootNavigator: true).context;
+            onDismiss?.call();
+            showMusicAssistantSpeakers(
+              rootContext,
+              episode: MaEpisodeTarget(
+                episodeId: episode.episodeId,
+                isYoutube: episode.isYoutube,
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
