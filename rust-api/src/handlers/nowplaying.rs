@@ -48,11 +48,23 @@
 //!   — `ok:false` means the target is offline. Delivery is not execution.
 //!
 //! ## Actions (args)
-//! `play`, `pause`, `seek {position_sec}`, `skip_forward {seconds=30}`,
+//! `play`, `pause`, `stop`, `seek {position_sec}`, `skip_forward {seconds=30}`,
 //! `skip_back {seconds=15}`, `set_speed {speed}`,
 //! `play_episode {episode_id, is_youtube, position_sec?}` — start an episode on the
 //! target; with `position_sec` resume exactly there (handoff), otherwise from the
 //! server-stored listen position.
+//!
+//! Music Assistant virtual devices (`device_type` `music_assistant`, see
+//! `docs/music-assistant.md`) also apply `volume_set {volume_level}`,
+//! `volume_mute {muted}`, `group {target_player}`, `group_many {player_ids, target_player?}`,
+//! `ungroup`, `set_members {player_ids_to_add, player_ids_to_remove}`, and
+//! `group_volume {volume_level}`. Other clients ignore actions they don't list.
+//!
+//! ## Server-side virtual devices
+//! The connection registry is not only for browser sockets. A backend service can
+//! register a device id and receive the same relayed `command` frames. Music
+//! Assistant players are registered that way so existing remote-device UIs can
+//! target them without a new transport.
 
 use axum::{
     extract::{
@@ -178,6 +190,25 @@ impl NowPlayingManager {
             })));
         }
         conn_id
+    }
+
+    /// Register a server-side virtual device (no browser socket). Relayed commands
+    /// for `device_id` are delivered on `tx` as text frames of
+    /// `{"type":"command","from_device_id","action","args"}`. Returns the
+    /// connection id to pass to [`Self::unregister_virtual`].
+    pub async fn register_virtual(
+        &self,
+        user_id: i32,
+        device_id: String,
+        tx: mpsc::UnboundedSender<Message>,
+    ) -> u64 {
+        self.add(user_id, device_id, tx).await
+    }
+
+    /// Drop a virtual device registered under `conn_id`. A stale id (the device
+    /// was replaced) does not remove the newer registration.
+    pub async fn unregister_virtual(&self, user_id: i32, device_id: &str, conn_id: u64) -> bool {
+        self.remove(user_id, device_id, conn_id).await
     }
 
     /// Unregister a socket. Only removes the entry if it still belongs to
@@ -459,6 +490,10 @@ async fn handle_now_playing_socket(
                                 speed,
                                 updated_at: 0, // stamped by upsert
                                 capabilities: reader_caps.clone(),
+                                volume_level: None,
+                                volume_muted: None,
+                                ma_player_id: None,
+                                group_members: None,
                             };
                             let _ = reader_state
                                 .redis_client
@@ -597,6 +632,10 @@ fn idle_snapshot(
         speed: 1.0,
         updated_at: 0,
         capabilities: capabilities.to_vec(),
+        volume_level: None,
+        volume_muted: None,
+        ma_player_id: None,
+        group_members: None,
     }
 }
 
@@ -671,7 +710,7 @@ async fn publish_bridge(state: &AppState, msg: &NpBridgeMsg) -> i64 {
 
 /// Broadcast the fresh device list to this instance's other sockets AND fan the
 /// change out to the other replicas so their sockets update too.
-async fn notify_devices_changed(state: &AppState, user_id: i32, origin_device: &str) {
+pub(crate) async fn notify_devices_changed(state: &AppState, user_id: i32, origin_device: &str) {
     broadcast_devices(state, user_id, origin_device).await;
     let msg = NpBridgeMsg::DevicesChanged {
         user_id,

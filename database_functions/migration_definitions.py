@@ -5953,3 +5953,87 @@ def migration_062_people_refactor(conn, db_type: str) -> None:
         logger.info("Migration 062 completed")
     finally:
         cursor.close()
+
+
+@register_migration(
+    "063",
+    "podcasting2_full",
+    "Full Podcasting 2.0 namespace: item JSON and updateFrequency schedule",
+    requires=["062"],
+)
+def migration_063_podcasting2_full(conn, db_type: str) -> None:
+    """Store the rest of the Podcasting 2.0 namespace and the refresh schedule it implies.
+
+    Episodes.Podcasting2ItemJSON holds every item-level tag (and the same document for a
+    liveItem lives inside Podcasts.Podcasting2Data). Podcasts.P20RefreshIntervalMinutes and
+    P20NextRefreshAt come from podcast:updateFrequency so the scheduled refresh can wait.
+
+    Additive only. MySQL TEXT is 64KB, so the item document and the channel document use
+    MEDIUMTEXT there. Postgres TEXT is unbounded.
+    """
+    logger.info("Starting migration 063: full Podcasting 2.0 namespace")
+    cursor = conn.cursor()
+    pg = db_type == "postgresql"
+    try:
+        podcasts = '"Podcasts"' if pg else "Podcasts"
+        episodes = '"Episodes"' if pg else "Episodes"
+        item_json = "TEXT" if pg else "MEDIUMTEXT"
+        for table, quoted, column, definition in [
+            ("Episodes", episodes, "Podcasting2ItemJSON", item_json),
+            ("Podcasts", podcasts, "P20RefreshIntervalMinutes", "INT"),
+            ("Podcasts", podcasts, "P20NextRefreshAt", "DATETIME NULL DEFAULT NULL" if not pg else "TIMESTAMP"),
+        ]:
+            if not _column_exists(cursor, db_type, table, column):
+                cursor.execute(f"ALTER TABLE {quoted} ADD COLUMN {column} {definition}")
+        if not pg:
+            cursor.execute("ALTER TABLE Podcasts MODIFY COLUMN Podcasting2Data MEDIUMTEXT")
+        logger.info("Migration 063 completed")
+    finally:
+        cursor.close()
+
+
+@register_migration(
+    "064",
+    "music_assistant_settings",
+    "Per-user Music Assistant server URL, Fernet-encrypted token, and external PinePods base URL",
+    requires=["003"],
+)
+def migration_064_music_assistant(conn, db_type: str) -> None:
+    """Opt-in Music Assistant output. No row means the feature is off for that user.
+
+    The API encrypts the long-lived token with the same Fernet key as other secrets
+    before writing TokenEncrypted. 063 is reserved for the Podcasting 2.0 migration.
+    """
+    logger.info("Starting migration 064: Music Assistant settings")
+    cursor = conn.cursor()
+    try:
+        if db_type == "postgresql":
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "MusicAssistant" (
+                    userid INT PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    serverurl TEXT,
+                    tokenencrypted TEXT,
+                    externalbaseurl TEXT,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS MusicAssistant (
+                    UserID INT PRIMARY KEY,
+                    Enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    ServerUrl TEXT,
+                    TokenEncrypted TEXT,
+                    ExternalBaseUrl TEXT,
+                    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+                """
+            )
+        logger.info("Migration 064 completed")
+    finally:
+        cursor.close()

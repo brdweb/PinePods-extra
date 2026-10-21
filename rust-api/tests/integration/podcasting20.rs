@@ -104,6 +104,83 @@ async fn tags_are_found_in_minified_feeds_and_before_the_enclosure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn full_namespace_is_stored_and_served() {
+    let app = TestApp::new().await;
+    let chapters = app.fixtures().serve("chapters.json", Fixture::new("application/json", CHAPTERS_JSON));
+    let xml = include_str!("../fixtures/podcasting2-namespace.xml")
+        .replace("https://cdn.example.invalid/chapters.json", &chapters);
+    let user = app.user("namespace").await;
+    let url = app.fixtures().serve_feed("namespace.xml", xml);
+    let pod = app.subscribe(&user, &url, 2).await;
+
+    let tagged = app.episode_id(&user, pod, "Tagged Episode").await;
+    let data = p20(&app, &user, tagged).await;
+    assert_eq!(data["chapters"][0]["title"], "Intro", "{data:#}");
+    assert_eq!(data["transcripts"][0]["rel"], "captions");
+    let mut names: Vec<&str> = data["people"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["Ada & Host", "Gus Guest"], "{data:#}");
+    let tags = &data["tags"];
+    assert_eq!(tags["episode"]["number"], "12", "itunes:episode is not the Podcasting 2.0 episode: {tags:#}");
+    assert_eq!(tags["episode"]["display"], "Ch.3");
+    assert_eq!(tags["season"]["number"], "4");
+    assert_eq!(tags["season"]["name"], "The Pilot");
+    assert_eq!(tags["soundbites"][1]["title"], "Rock & Roll");
+    assert_eq!(tags["alternate_enclosures"][0]["sources"][1]["uri"], "ipfs://bafybeigdyr");
+    assert_eq!(tags["alternate_enclosures"][0]["integrity"]["type"], "sri");
+    assert_eq!(tags["value"][0]["time_splits"][0]["remote_start_time"], "10");
+    assert_eq!(tags["value"][0]["time_splits"][0]["recipients"][0]["name"], "Guest Split");
+    assert_eq!(tags["remote_items"][0]["feed_guid"], "b40ffcf7-2c48-5cfe-8daa-b65d766b2c25");
+    assert_eq!(tags["chat"]["protocol"], "matrix");
+    assert_eq!(tags["blocks"][0]["id"], "amazon");
+
+    let plain = app.episode_id(&user, pod, "Plain Episode").await;
+    let plain_data = p20(&app, &user, plain).await;
+    assert!(plain_data["tags"]["episode"].is_null(), "itunes:episode must not be stored: {plain_data:#}");
+    let plain_names: Vec<&str> = plain_data["people"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(plain_names, ["Ada & Host"]);
+
+    let show = app
+        .get("/api/data/fetch_podcasting_2_pod_data")
+        .key(&user)
+        .query("podcast_id", pod)
+        .query("user_id", user.id)
+        .send()
+        .await
+        .ok_json();
+    assert_eq!(show["guid"], "917393e3-1b1e-5cef-ace4-edaa54e1f810");
+    assert_eq!(show["podroll"][0]["feed_guid"], "29cdca4a-32d8-56ba-b48b-09a011c5daa9");
+    assert_eq!(show["value"][0]["recipients"][0]["custom_key"], "696969");
+    assert_eq!(show["tags"]["medium"], "music");
+    assert_eq!(show["tags"]["locked"]["value"], "yes");
+    assert_eq!(show["tags"]["update_frequency"]["rrule"], "FREQ=WEEKLY;INTERVAL=2");
+    assert_eq!(show["tags"]["podping"]["uses_podping"], true);
+    assert_eq!(show["tags"]["live_items"][0]["status"], "live");
+    assert_eq!(show["tags"]["live_items"][0]["tags"]["people"][0]["name"], "Live Host");
+    assert_eq!(show["tags"]["publisher"]["medium"], "publisher");
+
+    assert_eq!(refresh_interval(&app, pod).await, Some(14 * 24 * 60));
+}
+
+async fn refresh_interval(app: &TestApp, podcast_id: i32) -> Option<i32> {
+    use pinepods_api::database::DatabasePool;
+    match app.db() {
+        DatabasePool::Postgres(pool) => {
+            sqlx::query_scalar(r#"SELECT p20refreshintervalminutes FROM "Podcasts" WHERE podcastid = $1"#)
+                .bind(podcast_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
+        DatabasePool::MySQL(pool) => sqlx::query_scalar("SELECT P20RefreshIntervalMinutes FROM Podcasts WHERE PodcastID = ?")
+            .bind(podcast_id)
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn episodes_whose_audio_url_has_a_query_string_still_match() {
     let app = TestApp::new().await;
     let chapters = app.fixtures().serve("chapters.json", Fixture::new("application/json", CHAPTERS_JSON));

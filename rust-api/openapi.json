@@ -3275,7 +3275,7 @@
         "tags": [
           "podcasts"
         ],
-        "summary": "Fetch podcasting 2 data",
+        "summary": "Fetch Podcasting 2.0 data for an episode",
         "operationId": "fetch_podcasting_2_data",
         "parameters": [
           {
@@ -3299,10 +3299,12 @@
         ],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "Chapters, transcripts, people, and every item-level Podcasting 2.0 tag",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/EpisodeDocument"
+                }
               }
             }
           },
@@ -3322,7 +3324,7 @@
         "tags": [
           "podcasts"
         ],
-        "summary": "Fetch podcasting 2 pod data",
+        "summary": "Fetch Podcasting 2.0 data for a podcast",
         "operationId": "fetch_podcasting_2_pod_data",
         "parameters": [
           {
@@ -3346,10 +3348,12 @@
         ],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "People, podroll, funding, value, and every channel-level Podcasting 2.0 tag",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelDocument"
+                }
               }
             }
           },
@@ -5791,6 +5795,228 @@
           },
           "401": {
             "description": "Invalid or missing API key"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/music_assistant/command": {
+      "post": {
+        "tags": [
+          "music_assistant"
+        ],
+        "summary": "Control a Music Assistant player",
+        "operationId": "music_assistant_command",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaCommandBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Command accepted by Music Assistant. warnings lists follow-up steps (seek, speed) that did not apply.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaCommandResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action, missing args, or Music Assistant rejected the command"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          },
+          "503": {
+            "description": "Music Assistant is not connected"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/music_assistant/players": {
+      "get": {
+        "tags": [
+          "music_assistant"
+        ],
+        "summary": "List Music Assistant players and groups",
+        "operationId": "list_music_assistant_players",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Players from the live session. Empty when disabled or not yet connected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaPlayersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/music_assistant/settings": {
+      "get": {
+        "tags": [
+          "music_assistant"
+        ],
+        "summary": "Get Music Assistant settings",
+        "operationId": "get_music_assistant_settings",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-user Music Assistant configuration. The token is never returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaSettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "music_assistant"
+        ],
+        "summary": "Save Music Assistant settings",
+        "operationId": "update_music_assistant_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaSettingsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved configuration (token redacted)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaSettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid URL or missing fields required to enable"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/music_assistant/test": {
+      "post": {
+        "tags": [
+          "music_assistant"
+        ],
+        "summary": "Test a Music Assistant connection",
+        "operationId": "test_music_assistant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaTestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Probe result. ok is false when MA rejected the token or the version is too old; the HTTP call itself succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "URL is not a usable Music Assistant origin"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
           }
         },
         "security": [
@@ -11970,6 +12196,81 @@
           }
         }
       },
+      "AlternateEnclosure": {
+        "type": "object",
+        "required": [
+          "mime_type"
+        ],
+        "properties": {
+          "mime_type": {
+            "type": "string"
+          },
+          "length": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bitrate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "height": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lang": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codecs": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            }
+          },
+          "integrity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "AutoAdDetectRequest": {
         "type": "object",
         "required": [
@@ -12209,6 +12510,23 @@
           }
         }
       },
+      "Block": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
       "BulkAddCollectionRequest": {
         "type": "object",
         "required": [
@@ -12290,6 +12608,242 @@
               "null"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "ChannelDocument": {
+        "type": "object",
+        "description": "Podcast response for `/api/data/fetch_podcasting_2_pod_data`.",
+        "required": [
+          "people",
+          "guests",
+          "podroll",
+          "funding",
+          "value",
+          "tags"
+        ],
+        "properties": {
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditedPerson"
+            }
+          },
+          "guests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditedPerson"
+            }
+          },
+          "podroll": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteItem"
+            }
+          },
+          "funding": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Funding"
+            }
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueBlock"
+            }
+          },
+          "guid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "$ref": "#/components/schemas/ChannelExtras",
+            "description": "Full channel document. `podroll`, `funding` and `value` are the same objects as the\ntop-level keys."
+          }
+        }
+      },
+      "ChannelExtras": {
+        "type": "object",
+        "description": "Channel-level data stored as JSON on the podcast row (`Podcasts.Podcasting2Data`).\n\nNew fields deserialize as empty when missing, so JSON written before migration 063 still loads.",
+        "properties": {
+          "guid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "podroll": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteItem"
+            }
+          },
+          "funding": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Funding"
+            }
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueBlock"
+            }
+          },
+          "locked": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Locked"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Location"
+            }
+          },
+          "trailers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Trailer"
+            }
+          },
+          "license": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/License"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "medium": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PodcastImage"
+            }
+          },
+          "images": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageSet"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LiveItem"
+            }
+          },
+          "social_interacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SocialInteract"
+            }
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Block"
+            }
+          },
+          "txts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Txt"
+            }
+          },
+          "update_frequency": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UpdateFrequency"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "podping": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Podping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publisher": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RemoteItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "chat": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Chat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteItem"
+            },
+            "description": "`podcast:remoteItem` children of `<channel>` (list feeds), not podroll or publisher."
+          }
+        }
+      },
+      "Chat": {
+        "type": "object",
+        "required": [
+          "server",
+          "protocol"
+        ],
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -12571,6 +13125,20 @@
             "type": "string"
           },
           "people_url": {
+            "type": "string"
+          }
+        }
+      },
+      "ContentLink": {
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "text": {
             "type": "string"
           }
         }
@@ -13674,6 +14242,38 @@
           }
         }
       },
+      "EpisodeDocument": {
+        "type": "object",
+        "description": "Episode response for `/api/data/fetch_podcasting_2_data`.",
+        "required": [
+          "chapters",
+          "transcripts",
+          "people",
+          "tags"
+        ],
+        "properties": {
+          "chapters": {
+            "description": "Chapter objects fetched from `tags.chapters_url` (`chapters` array of the JSON file)."
+          },
+          "transcripts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transcript"
+            }
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditedPerson"
+            },
+            "description": "Resolved credits: the episode's people, plus the show's regulars when the episode\ndoesn't name its own hosts."
+          },
+          "tags": {
+            "$ref": "#/components/schemas/ItemTags",
+            "description": "Tags that were on this `<item>`. Channel-level people are not copied here."
+          }
+        }
+      },
       "EpisodeInDbResponse": {
         "type": "object",
         "required": [
@@ -13709,6 +14309,23 @@
           "is_youtube": {
             "type": [
               "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "EpisodeNumber": {
+        "type": "object",
+        "required": [
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "string"
+          },
+          "display": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -13877,6 +14494,41 @@
           }
         }
       },
+      "FeedPerson": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "img": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "href": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "FetchTranscriptRequest": {
         "type": "object",
         "required": [
@@ -13884,6 +14536,21 @@
         ],
         "properties": {
           "url": {
+            "type": "string"
+          }
+        }
+      },
+      "Funding": {
+        "type": "object",
+        "required": [
+          "url",
+          "description"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "description": {
             "type": "string"
           }
         }
@@ -14144,6 +14811,41 @@
           }
         }
       },
+      "ImageSet": {
+        "type": "object",
+        "description": "Deprecated `podcast:images` srcset. Prefer [`PodcastImage`].",
+        "required": [
+          "srcset"
+        ],
+        "properties": {
+          "srcset": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageSource"
+            }
+          }
+        }
+      },
+      "ImageSource": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "descriptor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "InAppNotification": {
         "type": "object",
         "description": "A durable, no-progress notification (\"message\"/\"alert\") shown in the Activity\ncenter's Messages / \"Needs attention\" sections. Distinct from a `TaskInfo`\n(which has progress and a lifecycle). Persisted per-user in Redis and streamed\nover the same task WebSocket. See the notification redesign plan.",
@@ -14248,6 +14950,178 @@
           }
         }
       },
+      "Integrity": {
+        "type": "object",
+        "required": [
+          "type",
+          "value"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
+      "ItemTags": {
+        "type": "object",
+        "properties": {
+          "guid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enclosure_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FeedPerson"
+            }
+          },
+          "chapters_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chapters_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transcripts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Transcript"
+            }
+          },
+          "soundbites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Soundbite"
+            }
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Location"
+            }
+          },
+          "season": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Season"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "episode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EpisodeNumber"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "license": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/License"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "alternate_enclosures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlternateEnclosure"
+            }
+          },
+          "image": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PodcastImage"
+            }
+          },
+          "images": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageSet"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentLink"
+            }
+          },
+          "social_interacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SocialInteract"
+            }
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Block"
+            }
+          },
+          "txts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Txt"
+            }
+          },
+          "funding": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Funding"
+            }
+          },
+          "chat": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Chat"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueBlock"
+            }
+          },
+          "remote_items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteItem"
+            }
+          }
+        }
+      },
       "LanguageUpdateRequest": {
         "type": "object",
         "required": [
@@ -14264,8 +15138,143 @@
           }
         }
       },
+      "License": {
+        "type": "object",
+        "required": [
+          "identifier"
+        ],
+        "properties": {
+          "identifier": {
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ListBackupFilesRequest": {
         "type": "object"
+      },
+      "LiveItem": {
+        "type": "object",
+        "required": [
+          "status",
+          "start"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          },
+          "end": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "link": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pub_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enclosure_length": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enclosure_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "$ref": "#/components/schemas/ItemTags"
+          }
+        }
+      },
+      "Location": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "geo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "osm": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Locked": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "LoginResponse": {
         "type": "object",
@@ -14296,6 +15305,302 @@
             "format": "int32"
           },
           "mfa_session_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MaCommandBody": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "player_id",
+          "action"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "player_id": {
+            "type": "string",
+            "description": "Music Assistant player id, or the relay device id `ma:{user_id}:{player_id}`."
+          },
+          "action": {
+            "type": "string",
+            "description": "`play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, `set_speed`,\n`play_episode`, `volume_set`, `volume_mute`, `group`, `group_many`,\n`ungroup`, `set_members`, `group_volume`."
+          },
+          "args": {}
+        }
+      },
+      "MaCommandResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "detail",
+          "warnings"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "MaPlayerResponse": {
+        "type": "object",
+        "required": [
+          "player_id",
+          "device_id",
+          "name",
+          "kind",
+          "available",
+          "state",
+          "volume_muted",
+          "group_members",
+          "can_group_with",
+          "queue_id"
+        ],
+        "properties": {
+          "player_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string",
+            "description": "Now-playing device id (`ma:{user_id}:{player_id}`) for the existing relay."
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`player` or `group`."
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          },
+          "volume_level": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "volume_muted": {
+            "type": "boolean"
+          },
+          "group_members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "synced_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_group_with": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "queue_id": {
+            "type": "string",
+            "description": "Queue id to target. Equals `player_id` unless the player is grouped."
+          }
+        }
+      },
+      "MaPlayersResponse": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "connected",
+          "players"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "players": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaPlayerResponse"
+            }
+          }
+        }
+      },
+      "MaSettingsBody": {
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Turn the bridge on. Requires a server URL, token, and external base URL\n(newly supplied or already stored)."
+          },
+          "server_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Origin Music Assistant uses to fetch PinePods (`http://lan-host:port`). Not localhost."
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Long-lived Music Assistant token. Omit or send an empty string to keep the stored token."
+          },
+          "clear_token": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MaSettingsResponse": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "has_token",
+          "connected"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "server_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_base_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_token": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "server_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MaTestBody": {
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "server_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Overrides the stored URL for this probe only."
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Overrides the stored token for this probe only. Never written."
+          }
+        }
+      },
+      "MaTestResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "detail",
+          "player_count"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "server_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "player_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "warning": {
             "type": [
               "string",
               "null"
@@ -14622,6 +15927,37 @@
               "type": "string"
             },
             "description": "Actions the device says it applies (from its `capabilities` connect\nparameter). Empty means it didn't say: assume the original action set."
+          },
+          "volume_level": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0–100 when the device reported a volume (Music Assistant players)."
+          },
+          "volume_muted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ma_player_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Music Assistant player id when `device_type` is `music_assistant`."
+          },
+          "group_members": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Other player ids grouped with this one, when the device is a Music Assistant group or sync leader."
           }
         }
       },
@@ -15272,6 +16608,53 @@
           }
         }
       },
+      "PodcastImage": {
+        "type": "object",
+        "required": [
+          "href"
+        ],
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "alt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "aspect_ratio": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "height": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PodcastListResponse": {
         "type": "object",
         "required": [
@@ -15458,6 +16841,18 @@
           "user_id": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "Podping": {
+        "type": "object",
+        "description": "Present when the feed includes `podcast:podping`. Listening for Podping notifications\nis not implemented; this only records the tag.",
+        "properties": {
+          "uses_podping": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },
@@ -15773,6 +17168,42 @@
           "podcast_id": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "RemoteItem": {
+        "type": "object",
+        "description": "A `podcast:remoteItem`. `feed_guid` is the spec's required `feedGuid`.",
+        "required": [
+          "feed_guid"
+        ],
+        "properties": {
+          "feed_guid": {
+            "type": "string"
+          },
+          "feed_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_guid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "medium": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -16196,6 +17627,23 @@
           "total": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "Season": {
+        "type": "object",
+        "required": [
+          "number"
+        ],
+        "properties": {
+          "number": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -16627,6 +18075,79 @@
           }
         }
       },
+      "SocialInteract": {
+        "type": "object",
+        "required": [
+          "protocol"
+        ],
+        "properties": {
+          "protocol": {
+            "type": "string"
+          },
+          "uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Soundbite": {
+        "type": "object",
+        "required": [
+          "start_time",
+          "duration"
+        ],
+        "properties": {
+          "start_time": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Source": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "StoreStateRequest": {
         "type": "object",
         "required": [
@@ -16853,6 +18374,43 @@
           }
         }
       },
+      "Trailer": {
+        "type": "object",
+        "required": [
+          "title",
+          "url",
+          "pubdate"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "pubdate": {
+            "type": "string"
+          },
+          "length": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "season": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "TranscribeEpisodeRequest": {
         "type": "object",
         "required": [
@@ -16870,6 +18428,52 @@
           },
           "force": {
             "type": "boolean"
+          }
+        }
+      },
+      "Transcript": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Txt": {
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "type": "string"
           }
         }
       },
@@ -17001,6 +18605,32 @@
           "feed_cutoff_days": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "UpdateFrequency": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "complete": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "dtstart": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrule": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -17372,6 +19002,124 @@
           }
         }
       },
+      "ValueBlock": {
+        "type": "object",
+        "required": [
+          "type",
+          "method",
+          "recipients"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "suggested": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueRecipient"
+            }
+          },
+          "time_splits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueTimeSplit"
+            }
+          }
+        }
+      },
+      "ValueRecipient": {
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "address",
+          "split"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "split": {
+            "type": "string"
+          },
+          "custom_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "custom_value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fee": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ValueTimeSplit": {
+        "type": "object",
+        "required": [
+          "start_time",
+          "duration"
+        ],
+        "properties": {
+          "start_time": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "string"
+          },
+          "remote_start_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote_percentage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recipients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueRecipient"
+            }
+          },
+          "remote_item": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RemoteItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "VerifyAndResetPasswordRequest": {
         "type": "object",
         "required": [
@@ -17553,6 +19301,10 @@
     {
       "name": "settings",
       "description": "User and server settings"
+    },
+    {
+      "name": "music_assistant",
+      "description": "Music Assistant players as PinePods audio outputs"
     },
     {
       "name": "sync",
