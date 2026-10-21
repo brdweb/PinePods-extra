@@ -1767,6 +1767,20 @@
     "chapter_link": "Open chapter link",
     "funding": "Support",
     "season_group": "Season {n}",
-    "other_episodes": "Other episodes"
+    "other_episodes": "Other episodes",
+    "podroll": "Podroll",
+    "podroll_hint": "Shows this podcast recommends",
+    "value_title": "Value for Value",
+    "value_supported": "This show supports Value4Value",
+    "recipients": "Recipients",
+    "suggested": "Suggested",
+    "open": "Open",
+    "subscribe": "Subscribe",
+    "subscribed": "Subscribed",
+    "subscribing": "Subscribing…",
+    "unresolved": "Couldn't look this show up",
+    "display_only": "Display only. PinePods does not send payments.",
+    "subscribe_ok": "Podcast subscribed",
+    "subscribe_failed": "Could not subscribe"
   }
 }

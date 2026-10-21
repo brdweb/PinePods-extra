@@ -127,6 +127,10 @@ pub struct Podcast {
     pub(crate) explicit: bool,
     #[allow(non_snake_case)]
     pub(crate) episodeCount: i32,
+    /// Podcast Index podcast GUID, when the search payload includes it.
+    #[serde(default)]
+    #[allow(non_snake_case)]
+    pub(crate) podcastGuid: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone, Serialize)]

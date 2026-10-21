@@ -218,5 +218,18 @@
   "p2_season_group": "Staffel {n}",
   "p2_other_episodes": "Weitere Folgen",
   "p2_sort_season": "Staffel",
-  "p2_chapters": "Kapitel"
+  "p2_chapters": "Kapitel",
+  "podroll_title": "Podroll",
+  "podroll_hint": "Sendungen, die dieser Podcast empfiehlt",
+  "podroll_open": "Öffnen",
+  "podroll_subscribe": "Abonnieren",
+  "podroll_subscribed": "Abonniert",
+  "podroll_subscribing": "Wird abonniert…",
+  "podroll_unresolved": "Sendung konnte nicht gefunden werden",
+  "value_for_value_title": "Value for Value",
+  "value_for_value_supported": "Diese Sendung unterstützt Value4Value",
+  "value_recipients": "Empfänger",
+  "value_suggested": "Vorschlag {amount}",
+  "value_display_only": "Nur zur Anzeige. PinePods sendet keine Zahlungen.",
+  "podroll_subscribe_failed": "Abonnieren fehlgeschlagen"
 }

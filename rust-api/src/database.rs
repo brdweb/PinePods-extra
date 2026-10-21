@@ -13453,6 +13453,45 @@ impl DatabasePool {
         Ok(rss_key)
     }
 
+    /// RSS key scoped to exactly one podcast, creating it if the user doesn't have one.
+    /// Used for Music Assistant stream URLs so a player cannot pull the rest of the library.
+    pub async fn get_or_create_podcast_scoped_rss_key(&self, user_id: i32, podcast_id: i32) -> AppResult<String> {
+        let existing = match self {
+            DatabasePool::Postgres(pool) => {
+                let row = sqlx::query(
+                    r#"SELECT k.rsskey AS rsskey FROM "RssKeys" k
+                       JOIN "RssKeyMap" m ON m.rsskeyid = k.rsskeyid
+                       WHERE k.userid = $1 AND m.podcastid = $2
+                         AND (SELECT COUNT(*) FROM "RssKeyMap" m2 WHERE m2.rsskeyid = k.rsskeyid) = 1
+                       ORDER BY k.rsskeyid LIMIT 1"#,
+                )
+                .bind(user_id)
+                .bind(podcast_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| r.try_get::<String, _>("rsskey")).transpose()?
+            }
+            DatabasePool::MySQL(pool) => {
+                let row = sqlx::query(
+                    "SELECT k.RssKey AS rsskey FROM RssKeys k
+                     JOIN RssKeyMap m ON m.RssKeyID = k.RssKeyID
+                     WHERE k.UserID = ? AND m.PodcastID = ?
+                       AND (SELECT COUNT(*) FROM RssKeyMap m2 WHERE m2.RssKeyID = k.RssKeyID) = 1
+                     ORDER BY k.RssKeyID LIMIT 1",
+                )
+                .bind(user_id)
+                .bind(podcast_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| r.try_get::<String, _>("rsskey")).transpose()?
+            }
+        };
+        if let Some(key) = existing.filter(|k| !k.is_empty()) {
+            return Ok(key);
+        }
+        self.create_rss_key(user_id, Some(vec![podcast_id])).await
+    }
+
     // Count user API keys excluding a specific one - safety check for final API key
     pub async fn count_user_api_keys_excluding(&self, user_id: i32, exclude_api_id: i32) -> AppResult<i32> {
         match self {

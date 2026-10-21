@@ -10,8 +10,10 @@ import 'package:pinepods_mobile/entities/pinepods_search.dart';
 import 'package:pinepods_mobile/entities/podcast.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/entities/people.dart';
-import 'package:pinepods_mobile/entities/podcasting2_tags.dart';
+import 'package:pinepods_mobile/entities/podcasting2.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart' hide ValueBlock, ValueRecipient;
 import 'package:pinepods_mobile/l10n/L.dart';
+import 'package:pinepods_mobile/l10n/app_localizations.dart';
 import 'package:pinepods_mobile/ui/widgets/podcasting2_panel.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
@@ -23,6 +25,8 @@ import 'package:pinepods_mobile/ui/widgets/episode_context_menu.dart';
 import 'package:pinepods_mobile/ui/pinepods/episode_details.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/add_people_sheet.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/people_widgets.dart';
+import 'package:pinepods_mobile/ui/pinepods/podcasting2_section.dart';
+import 'package:pinepods_mobile/services/podcast/podroll_lookup.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/bloc/podcast/audio_bloc.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
@@ -86,6 +90,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   PodcastCredits _credits = const PodcastCredits();
   int? _peoplePodcastId;
   ChannelTags? _showTags;
+  List<PodrollItem> _podroll = const [];
+  List<ValueBlock> _valueBlocks = const [];
 
   // Sort and filter state
   EpisodeSortDirection _sortDirection = EpisodeSortDirection.newestFirst;
@@ -709,6 +715,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
             // People load alongside the episodes rather than after them.
             unawaited(_loadPeople(podcastId));
             unawaited(_loadShowTags(podcastId));
+            unawaited(_loadPodcasting2Extras(podcastId));
             // Get episodes from server
             episodes = await _pinepodsService.getPodcastEpisodes(userId, podcastId);
             print('Loaded ${episodes.length} episodes from server for podcastId: $podcastId');
@@ -848,6 +855,59 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     await audioPlayerService.playEpisode(episode: episode, resume: false);
   }
 
+  Future<void> _loadPodcasting2Extras(int podcastId) async {
+    try {
+      final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+      if (userId == null) return;
+      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
+      if (!mounted || data == null) return;
+      final channel = Podcasting2Channel.fromJson(data);
+      setState(() {
+        _podroll = channel.podroll;
+        _valueBlocks = channel.value;
+      });
+    } catch (e) {
+      debugPrint('Error loading podcasting 2.0 extras: $e');
+    }
+  }
+
+  Future<bool> _subscribePodroll(ResolvedPodroll show) async {
+    final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    final userId = settings.pinepodsUserId;
+    if (userId == null || show.feedUrl.isEmpty) return false;
+    final podcast = UnifiedPinepodsPodcast(
+      id: 0,
+      indexId: show.indexId,
+      title: show.title,
+      url: show.feedUrl,
+      originalUrl: show.originalUrl.isEmpty ? show.feedUrl : show.originalUrl,
+      link: show.link,
+      description: show.description,
+      author: show.author,
+      ownerName: show.author,
+      image: show.artwork,
+      artwork: show.artwork,
+      lastUpdateTime: 0,
+      explicit: show.explicit,
+      episodeCount: show.episodeCount,
+      categories: show.categories,
+    );
+    try {
+      final ok = await _pinepodsService.addPodcast(podcast, userId);
+      if (mounted) {
+        final l10n = AppLocalizations.of(context);
+        _showSnackBar(
+          ok ? (l10n?.podroll_subscribed ?? 'Subscribed') : (l10n?.podroll_subscribe_failed ?? 'Could not subscribe'),
+          ok ? Colors.green : Colors.red,
+        );
+      }
+      return ok;
+    } catch (e) {
+      if (mounted) _showSnackBar(AppLocalizations.of(context)?.podroll_subscribe_failed ?? 'Could not subscribe', Colors.red);
+      return false;
+    }
+  }
+
   Future<void> _addPeople() async {
     final podcastId = _peoplePodcastId;
     if (podcastId == null) return;
@@ -925,6 +985,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
             _isFollowing = false;
             _credits = const PodcastCredits();
             _peoplePodcastId = null;
+            _podroll = const [];
+            _valueBlocks = const [];
           });
           widget.onFollowChanged?.call(false);
           _showSnackBar('Podcast removed', Colors.orange);
@@ -1611,6 +1673,33 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                   if (_credits.guests.isNotEmpty) ...[
                     const SizedBox(height: 16),
                     PeopleStrip(title: 'Guests', people: _credits.guests, showEpisodeCount: true),
+                  ],
+                  if (_podroll.isNotEmpty || _valueBlocks.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Podcasting2Section(
+                      podroll: _podroll,
+                      valueBlocks: _valueBlocks,
+                      lookup: (item) => resolvePodroll(
+                        item: item,
+                        search: (query) async {
+                          final result = await _pinepodsService.searchPodcasts(query, SearchProvider.podcastIndex);
+                          return result.toJson();
+                        },
+                      ),
+                      alreadySubscribed: (show) async {
+                        final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+                        if (userId == null || show.feedUrl.isEmpty) return false;
+                        return _pinepodsService.checkPodcastExists(show.title, show.feedUrl, userId);
+                      },
+                      onOpen: (show) => openFeed(
+                        context,
+                        title: show.title,
+                        feedUrl: show.feedUrl,
+                        artwork: show.artwork,
+                        indexId: show.indexId,
+                      ),
+                      onSubscribe: _subscribePodroll,
+                    ),
                   ],
 
                   ShowPodcasting2Panel(tags: _showTags, onPlayTrailer: _playTrailer),
