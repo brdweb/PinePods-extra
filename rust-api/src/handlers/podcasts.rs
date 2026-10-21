@@ -1695,11 +1695,11 @@ pub struct FetchPodcasting2DataQuery {
     get,
     path = "/fetch_podcasting_2_data",
     tag = "podcasts",
-    summary = "Fetch podcasting 2 data",
+    summary = "Fetch Podcasting 2.0 data for an episode",
     params(FetchPodcasting2DataQuery),
     security(("api_key" = [])),
     responses(
-        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 200, description = "Chapters, transcripts, people, and every item-level Podcasting 2.0 tag", body = crate::services::podcasting2::EpisodeDocument),
         (status = 401, description = "Invalid or missing API key"),
     ),
 )]
@@ -1707,7 +1707,7 @@ pub async fn fetch_podcasting_2_data(
     Query(query): Query<FetchPodcasting2DataQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<crate::services::podcasting2::EpisodeDocument>, AppError> {
     let api_key = extract_api_key(&headers)?;
     
     // Verify API key
@@ -2208,11 +2208,11 @@ pub struct FetchPodcasting2PodDataQuery {
     get,
     path = "/fetch_podcasting_2_pod_data",
     tag = "podcasts",
-    summary = "Fetch podcasting 2 pod data",
+    summary = "Fetch Podcasting 2.0 data for a podcast",
     params(FetchPodcasting2PodDataQuery),
     security(("api_key" = [])),
     responses(
-        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 200, description = "People, podroll, funding, value, and every channel-level Podcasting 2.0 tag", body = crate::services::podcasting2::ChannelDocument),
         (status = 401, description = "Invalid or missing API key"),
     ),
 )]
@@ -2220,7 +2220,7 @@ pub async fn fetch_podcasting_2_pod_data(
     Query(query): Query<FetchPodcasting2PodDataQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<crate::services::podcasting2::ChannelDocument>, AppError> {
     let api_key = extract_api_key(&headers)?;
     
     // Verify API key
