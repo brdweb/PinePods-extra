@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:pinepods_mobile/bloc/podcast/audio_bloc.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/entities/pinepods_episode.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart';
+import 'package:pinepods_mobile/l10n/L.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/ui/utils/live_progress.dart';
 import 'package:pinepods_mobile/ui/widgets/lazy_network_image.dart';
@@ -190,6 +192,17 @@ class _PinepodsEpisodeCardState extends State<PinepodsEpisodeCard> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (_numbersBadge(context) != null) ...[
+                      Text(
+                        _numbersBadge(context)!,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                    ],
                     Text(
                       widget.episode.episodeTitle,
                       style: TextStyle(
@@ -339,6 +352,18 @@ class _PinepodsEpisodeCardState extends State<PinepodsEpisodeCard> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  String? _numbersBadge(BuildContext context) {
+    final l10n = L.of(context);
+    return formatNumbersBadge(
+      l10n?.p2_season ?? 'Season',
+      l10n?.p2_episode ?? 'Episode',
+      resolveNumbers(
+        itunesSeason: widget.episode.itunesSeason,
+        itunesEpisode: widget.episode.itunesEpisode,
       ),
     );
   }

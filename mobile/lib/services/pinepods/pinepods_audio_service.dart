@@ -870,8 +870,13 @@ class PinepodsAudioService {
         }
       }
       
-      // Extract chapters URL if available
-      chaptersUrl = podcast2Data['chapters_url'];
+      // Extract chapters URL if available. Newer responses nest it under tags.
+      final topLevelChapters = podcast2Data['chapters_url'];
+      final nestedTags = podcast2Data['tags'];
+      final nestedChapters = nestedTags is Map ? nestedTags['chapters_url'] : null;
+      chaptersUrl = topLevelChapters is String && topLevelChapters.isNotEmpty
+          ? topLevelChapters
+          : (nestedChapters is String ? nestedChapters : null);
       
       // Extract persons data
       final personsData = podcast2Data['people'] as List<dynamic>?;

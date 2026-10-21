@@ -486,6 +486,15 @@ pub fn episode_list_item(props: &EpisodeListItemProps) -> Html {
                     <div class="ep-title cursor-pointer" onclick={on_shownotes_click.clone()}>
                         { props.episode.episodetitle.clone() }
                     </div>
+                    { if let Some(badge) = crate::components::podcasting2::episode_numbers_text(
+                        &i18n,
+                        None,
+                        None,
+                        props.episode.itunes_season.map(|n| n as i64),
+                        props.episode.itunes_episode.map(|n| n as i64),
+                    ) {
+                        html! { <div class="p2-badge">{ badge }</div> }
+                    } else { html! {} } }
                     <hr class="ep-divider" />
                     <div class="ep-desc cursor-pointer"
                         onclick={

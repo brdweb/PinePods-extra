@@ -70,6 +70,12 @@ pub struct Episode {
     pub downloadedlocation: Option<String>,
     pub listendate: Option<String>,
     pub savedate: Option<String>,
+    /// iTunes season, when a client already has it. Podcasting 2.0 season on `tags` wins.
+    #[serde(default)]
+    pub itunes_season: Option<i32>,
+    /// iTunes episode number, when a client already has it.
+    #[serde(default)]
+    pub itunes_episode: Option<i32>,
 }
 
 impl Episode {

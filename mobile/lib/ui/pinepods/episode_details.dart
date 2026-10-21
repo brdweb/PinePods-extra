@@ -11,6 +11,8 @@ import 'package:pinepods_mobile/entities/pinepods_episode.dart';
 import 'package:pinepods_mobile/entities/pending_action.dart';
 import 'package:pinepods_mobile/entities/pinepods_search.dart';
 import 'package:pinepods_mobile/entities/people.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart';
+import 'package:pinepods_mobile/ui/widgets/podcasting2_panel.dart';
 import 'package:pinepods_mobile/ui/widgets/podcast_html.dart';
 import 'package:pinepods_mobile/ui/widgets/episode_description.dart';
 import 'package:pinepods_mobile/ui/pinepods/podcast_details.dart';
@@ -45,6 +47,10 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
   bool _isLoading = true;
   String _errorMessage = '';
   List<CreditedPerson> _people = [];
+  ItemTags? _tags;
+  List<P2Chapter> _chapters = const [];
+  StreamSubscription<PositionState>? _clipStopSub;
+  double? _clipStopAt;
   // True once people loaded from a server that supports adding them.
   bool _canAddPeople = false;
   bool _isDownloadedLocally = false;
@@ -258,8 +264,9 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
       _userId = userId;
 
       // People load on their own: they're a quick database read, while the
-      // metadata can wait on the server.
+      // metadata can wait on the server. Podcasting 2.0 tags load the same way.
       unawaited(_loadPeople(userId));
+      unawaited(_loadPodcasting2(userId));
 
       final episodeDetails = await _pinepodsService.getEpisodeMetadata(
         _episode!.episodeId,
@@ -316,6 +323,72 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
     } catch (e) {
       debugPrint('Error loading episode people: $e');
     }
+  }
+
+  Future<void> _loadPodcasting2(int userId) async {
+    final episode = _episode;
+    if (episode == null || episode.episodeId <= 0 || episode.isYoutube) return;
+    try {
+      final data = await _pinepodsService.fetchPodcasting2Data(episode.episodeId, userId);
+      final tags = ItemTags.fromJson(data?['tags'] as Map<String, dynamic>?);
+      final chapters = chaptersFromPodcasting2(data);
+      if (mounted) {
+        setState(() {
+          _tags = tags;
+          _chapters = chapters;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading podcasting 2 data: $e');
+    }
+  }
+
+  String get _coverUrl {
+    final fallback = _episode?.episodeArtwork ?? '';
+    final tags = _tags;
+    if (tags == null) return fallback;
+    return artworkChoice(tags.image, tags.images, fallback).src;
+  }
+
+  Future<void> _playClip(ClipWindow window) async {
+    if (_audioService == null || _episode == null) return;
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final current = audioPlayerService.nowPlaying;
+    final isCurrent = current != null && current.guid == _episode!.episodeUrl;
+    if (!isCurrent) {
+      await playPinepodsEpisodeWithOptionalFullScreen(
+        context,
+        _audioService!,
+        _episode!,
+        resume: false,
+      );
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    if (!mounted) return;
+    await audioPlayerService.seek(position: window.start.floor());
+    await audioPlayerService.play();
+    _armClipStop(audioPlayerService, window.end);
+  }
+
+  void _armClipStop(AudioPlayerService audioPlayerService, double endSeconds) {
+    _clipStopSub?.cancel();
+    _clipStopAt = endSeconds;
+    final stream = audioPlayerService.playPosition;
+    if (stream == null) return;
+    _clipStopSub = stream.listen((state) async {
+      final stop = _clipStopAt;
+      if (stop == null) return;
+      if (state.position.inMilliseconds + 250 >= (stop * 1000)) {
+        _clipStopAt = null;
+        await audioPlayerService.pause();
+        await _clipStopSub?.cancel();
+        _clipStopSub = null;
+      }
+    });
+  }
+
+  Future<void> _openChapter(P2Chapter chapter) async {
+    await _handleTimestampTap(Duration(seconds: chapter.startTime.floor()));
   }
 
   Future<void> _addPeople() async {
@@ -692,6 +765,8 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
       downloaded: downloaded ?? episode.downloaded,
       isYoutube: episode.isYoutube,
       podcastId: episode.podcastId,
+      itunesSeason: episode.itunesSeason,
+      itunesEpisode: episode.itunesEpisode,
     );
   }
 
@@ -795,9 +870,9 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
                 // Episode artwork
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: _episode!.episodeArtwork.isNotEmpty
+                  child: _coverUrl.isNotEmpty
                       ? Image.network(
-                          _episode!.episodeArtwork,
+                          _coverUrl,
                           width: 120,
                           height: 120,
                           fit: BoxFit.cover,
@@ -1075,6 +1150,15 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
               ),
             ],
 
+            EpisodePodcasting2Panel(
+              tags: _tags,
+              itunesSeason: _episode!.itunesSeason,
+              itunesEpisode: _episode!.itunesEpisode,
+              chapters: _chapters,
+              onPlayClip: _playClip,
+              onOpenChapter: _openChapter,
+            ),
+
             const SizedBox(height: 32),
             
             // Episode description
@@ -1114,6 +1198,7 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
   void dispose() {
     _episodeSub?.cancel();
     _stateSub?.cancel();
+    _clipStopSub?.cancel();
     // Don't dispose global audio service - it should persist across pages
     super.dispose();
   }

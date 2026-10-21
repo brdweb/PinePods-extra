@@ -7,10 +7,12 @@ import 'dart:async';
 import 'package:pinepods_mobile/bloc/podcast/audio_bloc.dart';
 import 'package:pinepods_mobile/entities/chapter.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart';
 import 'package:pinepods_mobile/ui/widgets/platform_progress_indicator.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// A [Widget] for displaying a list of Podcast chapters for those
 /// podcasts that support that chapter tag.
@@ -109,12 +111,28 @@ class _ChapterSelectorState extends State<ChapterSelector> {
                           audioBloc.transitionPosition(chapter.startTime);
                         },
                         selected: chapterSelected,
-                        leading: Padding(
-                          padding: const EdgeInsets.all(4.0),
-                          child: Text(
-                            '${index + 1}.',
-                            style: textStyle,
-                          ),
+                        leading: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if ((chapter.imageUrl ?? '').isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Image.network(
+                                    chapter.imageUrl!,
+                                    width: 36,
+                                    height: 36,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => const SizedBox(width: 36, height: 36),
+                                  ),
+                                ),
+                              ),
+                            Text(
+                              '${index + 1}.',
+                              style: textStyle,
+                            ),
+                          ],
                         ),
                         title: Text(
                           widget.chapters[index].title.trim(),
@@ -123,9 +141,27 @@ class _ChapterSelectorState extends State<ChapterSelector> {
                           maxLines: 3,
                           style: textStyle,
                         ),
-                        trailing: Text(
-                          _formatStartTime(widget.chapters[index].startTime),
-                          style: textStyle,
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _formatStartTime(widget.chapters[index].startTime),
+                              style: textStyle,
+                            ),
+                            if (httpLink(chapter.url) != null)
+                              IconButton(
+                                tooltip: 'Open chapter link',
+                                icon: const Icon(Icons.open_in_new, size: 18),
+                                onPressed: () {
+                                  final href = httpLink(chapter.url);
+                                  if (href == null) return;
+                                  final uri = Uri.tryParse(href);
+                                  if (uri != null) {
+                                    launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  }
+                                },
+                              ),
+                          ],
                         ),
                       ),
                     );

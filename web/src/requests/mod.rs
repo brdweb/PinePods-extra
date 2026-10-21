@@ -8,6 +8,7 @@ pub(crate) mod music_assistant;
 pub(crate) mod now_playing;
 pub(crate) mod people_req;
 pub(crate) mod pod_req;
+pub(crate) mod podcasting2;
 pub(crate) mod search_pods;
 pub(crate) mod setting_reqs;
 pub(crate) mod stat_reqs;

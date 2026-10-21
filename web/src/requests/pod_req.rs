@@ -5,6 +5,7 @@ use crate::requests::cache;
 use crate::components::notification_center::TaskProgress;
 use crate::requests::episode::Episode;
 use crate::requests::people_req::CreditedPerson;
+use crate::requests::podcasting2::{ChannelTags, ItemTags};
 use futures::StreamExt;
 use gloo::net::websocket::WebSocketError;
 use gloo::net::websocket::{futures::WebSocket, Message};
@@ -1746,6 +1747,8 @@ pub struct Podcasting2Data {
     pub transcripts: Vec<Transcript>,
     #[serde(default)]
     pub people: Vec<CreditedPerson>,
+    #[serde(default)]
+    pub tags: ItemTags,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1849,6 +1852,8 @@ pub struct Podcasting2PodData {
     pub podroll: Vec<PodrollItem>,
     pub funding: Vec<Funding>,
     pub value: Vec<Value>,
+    #[serde(default)]
+    pub tags: ChannelTags,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
