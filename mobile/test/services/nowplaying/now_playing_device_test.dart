@@ -24,6 +24,24 @@ void main() {
     expect(d.supports('set_volume'), isFalse);
   });
 
+  test('music assistant volume and group fields parse', () {
+    final d = NowPlayingDevice.fromJson({
+      'device_id': 'ma:1:kitchen',
+      'device_type': 'music_assistant',
+      'volume_level': 20,
+      'volume_muted': false,
+      'ma_player_id': 'kitchen',
+      'group_members': ['living'],
+      'capabilities': ['play', 'pause', 'volume_set', 'group_volume'],
+    });
+    expect(d.volumeLevel, 20);
+    expect(d.volumeMuted, isFalse);
+    expect(d.maPlayerId, 'kitchen');
+    expect(d.groupMembers, ['living']);
+    expect(d.supports('volume_set'), isTrue);
+    expect(d.supports('seek'), isFalse);
+  });
+
   test('non-string entries are ignored', () {
     final d = NowPlayingDevice.fromJson({
       'device_id': 'a',

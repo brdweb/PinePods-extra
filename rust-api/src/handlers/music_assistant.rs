@@ -55,6 +55,11 @@ pub struct MaTestBody {
     pub server_url: Option<String>,
     /// Overrides the stored token for this probe only. Never written.
     pub token: Option<String>,
+    /// When set, validated the same way as a saved external base URL.
+    /// Loopback is rejected here so the settings form can surface it on Test
+    /// without writing a row. Omitted means the probe does not check it.
+    #[serde(default)]
+    pub external_base_url: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -223,7 +228,7 @@ pub async fn update_music_assistant_settings(
     security(("api_key" = [])),
     responses(
         (status = 200, description = "Probe result. ok is false when MA rejected the token or the version is too old; the HTTP call itself succeeded.", body = MaTestResponse),
-        (status = 400, description = "URL is not a usable Music Assistant origin"),
+        (status = 400, description = "Server URL or external base URL is not usable. Localhost external base URLs are rejected because Music Assistant cannot fetch them."),
         (status = 401, description = "Invalid or missing API key"),
         (status = 403, description = "Not authorized for this user"),
     ),
@@ -234,6 +239,15 @@ pub async fn test_music_assistant(
     Json(body): Json<MaTestBody>,
 ) -> Result<Json<MaTestResponse>, AppError> {
     authorize(&state, &headers, body.user_id).await?;
+    if let Some(raw) = body
+        .external_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // Same rules as save: localhost and link-local cannot be the stream origin.
+        music_assistant::normalize_external_base(raw).map_err(AppError::bad_request)?;
+    }
     let report = music_assistant::test_connection(
         &state,
         body.user_id,

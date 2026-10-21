@@ -8,7 +8,9 @@
 import 'package:flutter/material.dart';
 
 import 'package:pinepods_mobile/services/global_services.dart';
+import 'package:pinepods_mobile/services/music_assistant/music_assistant_api.dart';
 import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
+import 'package:pinepods_mobile/ui/podcast/music_assistant_sheet.dart';
 
 String _fmtTime(double secs) {
   if (secs.isNaN || secs.isInfinite || secs < 0) return '00:00';
@@ -32,6 +34,8 @@ IconData _deviceIcon(String deviceType) {
       return Icons.smartphone;
     case 'firewood':
       return Icons.terminal;
+    case 'music_assistant':
+      return Icons.speaker;
     default:
       return Icons.devices_other;
   }
@@ -165,6 +169,13 @@ class RemoteDevicesButton extends StatelessWidget {
   }
 
   void _showDevicePanel(BuildContext context, NowPlayingService service) {
+    final session = maSessionOf(context);
+    if (session != null) {
+      MusicAssistantController.instance.refresh(
+        MusicAssistantApi(server: session.server, apiKey: session.apiKey),
+        session.userId,
+      );
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -199,6 +210,22 @@ class _RemoteDevicesSheet extends StatelessWidget {
                   Text(
                     'Other devices',
                     style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const Spacer(),
+                  ValueListenableBuilder<bool>(
+                    valueListenable: MusicAssistantController.instance.enabled,
+                    builder: (context, enabled, _) {
+                      if (!enabled) return const SizedBox.shrink();
+                      return TextButton.icon(
+                        onPressed: () {
+                          final host = Navigator.of(context, rootNavigator: true).context;
+                          Navigator.of(context).pop();
+                          showMusicAssistantSpeakers(host);
+                        },
+                        icon: const Icon(Icons.speaker),
+                        label: const Text('Speakers'),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -361,8 +388,89 @@ class _DeviceRow extends StatelessWidget {
               ],
             ),
           ],
+          if (_isMusicAssistant(device)) _maExtras(context, service, device),
         ],
       ),
+    );
+  }
+
+  bool _isMusicAssistant(NowPlayingDevice device) =>
+      device.deviceType.toLowerCase() == 'music_assistant';
+
+  Widget _maExtras(BuildContext context, NowPlayingService service, NowPlayingDevice device) {
+    final grouped = device.groupMembers.isNotEmpty;
+    final speed = device.speed > 0 ? device.speed : 1.0;
+    const rates = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+    var nearest = rates.first;
+    for (final rate in rates) {
+      if ((rate - speed).abs() < (nearest - speed).abs()) nearest = rate;
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (device.supports('stop'))
+          IconButton(
+            tooltip: 'Stop',
+            icon: const Icon(Icons.stop),
+            onPressed: () => service.sendCommand(device.deviceId, 'stop'),
+          ),
+        if (device.durationSec > 0 && device.supports('seek'))
+          Slider(
+            value: device.positionSec.clamp(0, device.durationSec).toDouble(),
+            min: 0,
+            max: device.durationSec,
+            label: 'Seek',
+            onChanged: (_) {},
+            onChangeEnd: (value) => service.sendCommand(
+              device.deviceId,
+              'seek',
+              {'position_sec': value},
+            ),
+          ),
+        if (device.supports('set_speed'))
+          DropdownButton<double>(
+            value: nearest,
+            items: rates
+                .map((rate) => DropdownMenuItem(
+                      value: rate,
+                      child: Text('${rate.toStringAsFixed(2)}x'),
+                    ))
+                .toList(),
+            onChanged: (rate) {
+              if (rate == null) return;
+              service.sendCommand(device.deviceId, 'set_speed', {'speed': rate});
+            },
+          ),
+        if (device.volumeLevel != null &&
+            device.supports(grouped ? 'group_volume' : 'volume_set'))
+          Row(
+            children: [
+              Text(grouped ? 'Group volume' : 'Volume'),
+              Expanded(
+                child: Slider(
+                  value: device.volumeLevel!.clamp(0, 100).toDouble(),
+                  min: 0,
+                  max: 100,
+                  onChanged: (_) {},
+                  onChangeEnd: (value) => service.sendCommand(
+                    device.deviceId,
+                    grouped ? 'group_volume' : 'volume_set',
+                    {'volume_level': value},
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: (device.volumeMuted ?? false) ? 'Unmute' : 'Mute',
+                icon: Icon((device.volumeMuted ?? false) ? Icons.volume_off : Icons.volume_up),
+                onPressed: () => service.sendCommand(
+                  device.deviceId,
+                  'volume_mute',
+                  {'muted': !(device.volumeMuted ?? false)},
+                ),
+              ),
+            ],
+          ),
+      ],
     );
   }
 

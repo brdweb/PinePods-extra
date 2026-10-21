@@ -6010,7 +6010,7 @@
             }
           },
           "400": {
-            "description": "URL is not a usable Music Assistant origin"
+            "description": "Server URL or external base URL is not usable. Localhost external base URLs are rejected because Music Assistant cannot fetch them."
           },
           "401": {
             "description": "Invalid or missing API key"
@@ -15566,6 +15566,13 @@
               "null"
             ],
             "description": "Overrides the stored token for this probe only. Never written."
+          },
+          "external_base_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When set, validated the same way as a saved external base URL.\nLoopback is rejected here so the settings form can surface it on Test\nwithout writing a row. Omitted means the probe does not check it."
           }
         }
       },

@@ -57,7 +57,7 @@ An unset user returns `enabled: false` with null URLs. `connected` is true only 
 
 ### `POST /api/data/music_assistant/test`
 
-Probes a server without saving. `server_url` and `token` override the stored values for this call only. A missing URL or token returns HTTP 200 with `ok: false` (the user is not configured yet). An illegal URL is 400.
+Probes a server without saving. `server_url` and `token` override the stored values for this call only. Optional `external_base_url` is validated with the same rules as a saved external base URL and is not stored. A missing URL or token returns HTTP 200 with `ok: false` (the user is not configured yet). An illegal server URL or external base URL is 400 (including localhost, loopback, and link-local external base URLs). The probe does not open the stream from the Music Assistant host; clients should still tell the user that playback fails immediately when that host cannot fetch `external_base_url`.
 
 ```json
 {
@@ -228,14 +228,13 @@ curl -sS -X PUT "$PINEPODS/api/data/music_assistant/settings" \
 ```
 
 5. Probe first if you want, with `POST /api/data/music_assistant/test` and the same URL and token. Then `GET /api/data/music_assistant/players?user_id=1` until `connected` is true.
-6. Play with `POST /api/data/music_assistant/command` (`action: "play_episode"`) or from an existing remote-device UI once `device_type` `music_assistant` appears. Volume and grouping use the actions above; current remote UIs do not send them yet.
+6. In the web or mobile app, open Settings and turn on Music Assistant, or save with the curl above. After `connected` is true, the speaker picker lists players and groups. Play, volume, mute, and grouping are on that picker and on the now-playing bar while an MA device has an episode. The same actions work over `POST /api/data/music_assistant/command` and over the now-playing relay.
 
 MA must be able to open the stream URL. If playback starts and immediately stops, check that `external_base_url` is reachable from the MA host and that the episode's podcast is the one the scoped RSS key allows.
 
 ## Deferred
 
-- No web or mobile settings, volume, or grouping UI. Existing remote UIs can play, pause, seek, skip, change speed, and `play_episode` once the device is listed.
-- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket.
+- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
 - No `player_queues/get` poll. Progress comes from queue events plus the 20 second player refresh.
 - No power, source select, or MA library sync.
 - `set_playback_speed` on servers older than 2.10 is best-effort.
