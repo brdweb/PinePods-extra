@@ -402,9 +402,11 @@ async fn refresh_all_podcasts_background(state: &AppState) -> AppResult<()> {
         }
     };
     
-    // Collect podcast rows into owned structs, skipping feeds that are in failure backoff. The
-    // backoff window grows with the consecutive-failure count (linear, capped at 24h) and is
-    // computed in SQL so we don't have to read/normalize timestamps across Postgres/MySQL.
+    // Collect podcast rows into owned structs, skipping feeds that are in failure backoff and
+    // feeds whose podcast:updateFrequency says they are not due yet. The backoff window grows
+    // with the consecutive-failure count (linear, capped at 24h) and is computed in SQL so we
+    // don't have to read/normalize timestamps across Postgres/MySQL. Manual refresh does not
+    // use this query, so a person can still refresh a feed before it is due.
     let mut refresh_items: Vec<PodcastRefreshItem> = Vec::with_capacity(total_podcasts);
 
     match &state.db_pool {
@@ -414,6 +416,7 @@ async fn refresh_all_podcasts_background(state: &AppState) -> AppResult<()> {
                           isyoutubechannel, userid, feedcutoffdays, feedetag, feedlastmodified
                    FROM "Podcasts"
                    WHERE COALESCE(refreshpodcast, TRUE) = TRUE
+                     AND (p20nextrefreshat IS NULL OR p20nextrefreshat <= NOW())
                      AND (COALESCE(consecutivefailures, 0) = 0
                           OR lastrefreshattempt IS NULL
                           OR lastrefreshattempt < NOW() - (INTERVAL '1 minute' * (30 * LEAST(COALESCE(consecutivefailures, 0), 48))))"#
@@ -445,6 +448,7 @@ async fn refresh_all_podcasts_background(state: &AppState) -> AppResult<()> {
                         IsYouTubeChannel, UserID, FeedCutoffDays, FeedETag, FeedLastModified
                  FROM Podcasts
                  WHERE COALESCE(RefreshPodcast, 1) = 1
+                   AND (P20NextRefreshAt IS NULL OR P20NextRefreshAt <= NOW())
                    AND (COALESCE(ConsecutiveFailures, 0) = 0
                         OR LastRefreshAttempt IS NULL
                         OR LastRefreshAttempt < NOW() - INTERVAL (30 * LEAST(COALESCE(ConsecutiveFailures, 0), 48)) MINUTE)"

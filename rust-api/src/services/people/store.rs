@@ -13,7 +13,7 @@ use crate::services::podcasting2::{normalize_name, normalize_role, FeedPerson, F
 
 /// Bump to make every podcast re-apply its stored tags on the next refresh (when the way tags
 /// are written changes).
-const TAGS_VERSION: &str = "1";
+const TAGS_VERSION: &str = "2";
 const CHUNK: usize = 400;
 
 /// Serializes person creation and credit replacement, so two refreshes never create the same
@@ -229,8 +229,8 @@ pub(crate) async fn insert_credits(db: &DatabasePool, table: &str, owner: &str, 
 pub(crate) struct EpisodeKeys {
     pub by_guid: HashMap<String, i32>,
     pub by_url: HashMap<String, i32>,
-    /// episode id -> (chapters url, transcripts json) as stored.
-    pub stored: HashMap<i32, (Option<String>, Option<String>)>,
+    /// episode id -> (chapters url, transcripts json, item tag json) as stored.
+    pub stored: HashMap<i32, (Option<String>, Option<String>, Option<String>)>,
 }
 
 impl EpisodeKeys {
@@ -243,26 +243,34 @@ impl EpisodeKeys {
 pub(crate) async fn episode_keys(db: &DatabasePool, podcast_id: i32) -> AppResult<EpisodeKeys> {
     let rows = fetch_all!(
         db,
-        r#"SELECT episodeid AS episodeid, episodeguid AS guid, episodeurl AS url, chaptersurl AS chapters, transcriptsjson AS transcripts
+        r#"SELECT episodeid AS episodeid, episodeguid AS guid, episodeurl AS url, chaptersurl AS chapters,
+                  transcriptsjson AS transcripts, podcasting2itemjson AS itemjson
            FROM "Episodes" WHERE podcastid = $1"#,
         [podcast_id],
-        |r| (r.int("episodeid")? as i32, r.opt_str("guid")?, r.opt_str("url")?, r.opt_str("chapters")?, r.opt_str("transcripts")?)
+        |r| (
+            r.int("episodeid")? as i32,
+            r.opt_str("guid")?,
+            r.opt_str("url")?,
+            r.opt_str("chapters")?,
+            r.opt_str("transcripts")?,
+            r.opt_str("itemjson")?,
+        )
     );
     let mut keys = EpisodeKeys { by_guid: HashMap::new(), by_url: HashMap::new(), stored: HashMap::new() };
-    for (id, guid, url, chapters, transcripts) in rows {
+    for (id, guid, url, chapters, transcripts, item_json) in rows {
         if let Some(g) = guid.filter(|g| !g.is_empty()) {
             keys.by_guid.entry(g).or_insert(id);
         }
         if let Some(u) = url.filter(|u| !u.is_empty()) {
             keys.by_url.entry(url_base(&u).to_string()).or_insert(id);
         }
-        keys.stored.insert(id, (chapters, transcripts));
+        keys.stored.insert(id, (chapters, transcripts, item_json));
     }
     Ok(keys)
 }
 
 /// Store a feed's Podcasting 2.0 tags for one podcast: people credited on the show and its
-/// episodes, episode chapters/transcript links, and channel extras (podroll, funding, value).
+/// episodes, the full item document, channel extras, and the `updateFrequency` refresh schedule.
 /// Run after the feed's episodes are applied, so new episodes get their credits. A feed whose
 /// tags haven't changed since the last call costs one read. Returns true when anything was written.
 pub async fn apply_feed_tags(db: &DatabasePool, podcast_id: i32, tags: &FeedTags) -> AppResult<bool> {
@@ -300,7 +308,7 @@ pub async fn apply_feed_tags(db: &DatabasePool, podcast_id: i32, tags: &FeedTags
 
     let keys = episode_keys(db, podcast_id).await?;
     let mut episode_rows: Vec<CreditRow> = Vec::new();
-    let mut wanted: HashMap<i32, (Option<String>, Option<String>)> = HashMap::new();
+    let mut wanted: HashMap<i32, (Option<String>, Option<String>, Option<String>)> = HashMap::new();
     for item in &tags.items {
         let Some(episode_id) = keys.find(item.guid.as_deref(), item.enclosure_url.as_deref()) else { continue };
         for p in &item.people {
@@ -309,7 +317,8 @@ pub async fn apply_feed_tags(db: &DatabasePool, podcast_id: i32, tags: &FeedTags
             }
         }
         let transcripts = (!item.transcripts.is_empty()).then(|| serde_json::to_string(&item.transcripts).unwrap_or_default());
-        wanted.entry(episode_id).or_insert((item.chapters_url.clone(), transcripts));
+        let item_json = serde_json::to_string(item).ok();
+        wanted.entry(episode_id).or_insert((item.chapters_url.clone(), transcripts, item_json));
     }
     execute!(
         db,
@@ -319,22 +328,25 @@ pub async fn apply_feed_tags(db: &DatabasePool, podcast_id: i32, tags: &FeedTags
     insert_credits(db, "EpisodePeople", "episodeid", SOURCE_FEED, &episode_rows).await?;
 
     for (episode_id, stored) in &keys.stored {
-        let want = wanted.remove(episode_id).unwrap_or((None, None));
+        let want = wanted.remove(episode_id).unwrap_or((None, None, None));
         if &want != stored {
             execute!(
                 db,
-                r#"UPDATE "Episodes" SET chaptersurl = $1, transcriptsjson = $2 WHERE episodeid = $3"#,
-                [want.0, want.1, *episode_id]
+                r#"UPDATE "Episodes" SET chaptersurl = $1, transcriptsjson = $2, podcasting2itemjson = $3 WHERE episodeid = $4"#,
+                [want.0, want.1, want.2, *episode_id]
             );
         }
     }
 
     let extras = serde_json::to_string(&tags.extras).unwrap_or_else(|_| "{}".into());
     let guid = tags.podcast_guid.as_deref().map(|g| cut(g, 255));
+    let plan = crate::services::podcasting2::refresh_plan(&tags.extras.update_frequency, chrono::Utc::now());
+    let next_at = plan.next_at.map(|t| t.naive_utc());
     execute!(
         db,
-        r#"UPDATE "Podcasts" SET podcasting2data = $1, podcasting2hash = $2, podcastguid = $3 WHERE podcastid = $4"#,
-        [extras, fingerprint, guid, podcast_id]
+        r#"UPDATE "Podcasts" SET podcasting2data = $1, podcasting2hash = $2, podcastguid = $3,
+           p20refreshintervalminutes = $4, p20nextrefreshat = $5 WHERE podcastid = $6"#,
+        [extras, fingerprint, guid, plan.interval_minutes, next_at, podcast_id]
     );
     tracing::debug!(
         "Stored Podcasting 2.0 tags for podcast {}: {} show credits, {} episode credits",
@@ -840,42 +852,60 @@ pub async fn followed(db: &DatabasePool, user_id: i32) -> AppResult<Vec<Person>>
     ))
 }
 
-/// Stored channel extras (podroll, funding, value) for the user's podcast.
+/// Stored channel document. `podcastguid` fills `guid` when older JSON omitted it.
 pub async fn channel_extras(db: &DatabasePool, podcast_id: i32) -> AppResult<crate::services::podcasting2::ChannelExtras> {
-    let raw = fetch_optional!(
-        db,
-        r#"SELECT podcasting2data AS data FROM "Podcasts" WHERE podcastid = $1"#,
-        [podcast_id],
-        |r| r.opt_str("data")?
-    )
-    .flatten();
-    Ok(raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default())
-}
-
-/// Stored chapters URL and transcripts for an episode.
-pub async fn episode_extras(
-    db: &DatabasePool,
-    episode_id: i32,
-) -> AppResult<(Option<String>, Vec<crate::services::podcasting2::Transcript>)> {
     let row = fetch_optional!(
         db,
-        r#"SELECT chaptersurl AS chapters, transcriptsjson AS transcripts FROM "Episodes" WHERE episodeid = $1"#,
-        [episode_id],
-        |r| (r.opt_str("chapters")?, r.opt_str("transcripts")?)
+        r#"SELECT podcasting2data AS data, podcastguid AS guid FROM "Podcasts" WHERE podcastid = $1"#,
+        [podcast_id],
+        |r| (r.opt_str("data")?, r.opt_str("guid")?)
     );
-    let (chapters, transcripts) = row.unwrap_or((None, None));
-    Ok((chapters, transcripts.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()))
+    let (raw, guid) = row.unwrap_or((None, None));
+    let mut extras = raw
+        .and_then(|s| serde_json::from_str::<crate::services::podcasting2::ChannelExtras>(&s).ok())
+        .unwrap_or_default();
+    if extras.guid.is_none() {
+        extras.guid = guid.filter(|g| !g.is_empty());
+    }
+    Ok(extras)
 }
 
-/// Podcasts whose feed tags have never been stored (added before this version, or never
-/// refreshed since), for the one-time startup backfill.
+/// Stored item document. Chapters and transcripts written before migration 063 are copied in
+/// when the item JSON doesn't already have them.
+pub async fn episode_extras(db: &DatabasePool, episode_id: i32) -> AppResult<crate::services::podcasting2::ItemTags> {
+    let row = fetch_optional!(
+        db,
+        r#"SELECT chaptersurl AS chapters, transcriptsjson AS transcripts, podcasting2itemjson AS itemjson
+           FROM "Episodes" WHERE episodeid = $1"#,
+        [episode_id],
+        |r| (r.opt_str("chapters")?, r.opt_str("transcripts")?, r.opt_str("itemjson")?)
+    );
+    let (chapters, transcripts, item_json) = row.unwrap_or((None, None, None));
+    let mut tags = item_json
+        .and_then(|s| serde_json::from_str::<crate::services::podcasting2::ItemTags>(&s).ok())
+        .unwrap_or_default();
+    if tags.chapters_url.is_none() {
+        tags.chapters_url = chapters.filter(|c| !c.is_empty());
+    }
+    if tags.transcripts.is_empty() {
+        if let Some(raw) = transcripts {
+            tags.transcripts = serde_json::from_str(&raw).unwrap_or_default();
+        }
+    }
+    Ok(tags)
+}
+
+/// Podcasts whose stored tags are missing or from an older writer. The regular refresh skips
+/// unchanged feeds (304), so startup refetches these once. `podcasting2hash` is `{version}:{fp}`.
 pub async fn podcasts_missing_tags(db: &DatabasePool) -> AppResult<Vec<(i32, String, Option<String>, Option<String>)>> {
+    let prefix = format!("{TAGS_VERSION}:%");
     Ok(fetch_all!(
         db,
         r#"SELECT podcastid AS podcastid, feedurl AS feedurl, username AS username, password AS password
            FROM "Podcasts"
-           WHERE podcasting2hash IS NULL AND COALESCE(isyoutubechannel, FALSE) = FALSE AND feedurl LIKE 'http%'"#,
-        [],
+           WHERE (podcasting2hash IS NULL OR podcasting2hash NOT LIKE $1)
+             AND COALESCE(isyoutubechannel, FALSE) = FALSE AND feedurl LIKE 'http%'"#,
+        [prefix],
         |r| (r.int("podcastid")? as i32, r.str("feedurl")?, r.opt_str("username")?, r.opt_str("password")?)
     ))
 }

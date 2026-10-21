@@ -7821,7 +7821,12 @@ impl DatabasePool {
                 sqlx::query(
                     r#"UPDATE "Podcasts"
                        SET lastrefreshattempt = NOW(), lastrefreshsuccess = NOW(),
-                           consecutivefailures = 0, lasterrormessage = NULL
+                           consecutivefailures = 0, lasterrormessage = NULL,
+                           p20nextrefreshat = CASE
+                               WHEN p20nextrefreshat > NOW() THEN p20nextrefreshat
+                               WHEN p20refreshintervalminutes IS NULL THEN NULL
+                               ELSE NOW() + (p20refreshintervalminutes * INTERVAL '1 minute')
+                           END
                        WHERE podcastid = ANY($1)"#,
                 )
                 .bind(podcast_ids)
@@ -7832,7 +7837,13 @@ impl DatabasePool {
                 let placeholders = podcast_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
                 let sql = format!(
                     "UPDATE Podcasts SET LastRefreshAttempt = NOW(), LastRefreshSuccess = NOW(), \
-                     ConsecutiveFailures = 0, LastErrorMessage = NULL WHERE PodcastID IN ({})",
+                     ConsecutiveFailures = 0, LastErrorMessage = NULL, \
+                     P20NextRefreshAt = CASE \
+                         WHEN P20NextRefreshAt > NOW() THEN P20NextRefreshAt \
+                         WHEN P20RefreshIntervalMinutes IS NULL THEN NULL \
+                         ELSE DATE_ADD(NOW(), INTERVAL P20RefreshIntervalMinutes MINUTE) \
+                     END \
+                     WHERE PodcastID IN ({})",
                     placeholders
                 );
                 let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
@@ -10276,15 +10287,20 @@ impl DatabasePool {
 
     // Fetch podcasting 2.0 data for episode
     /// Podcasting 2.0 data for an episode, all stored at refresh time: people (the episode's own
-    /// credits plus the show's regulars), transcripts, and chapters (fetched from the stored
-    /// chapters URL, the one thing not kept in the database).
-    pub async fn fetch_podcasting_2_data(&self, episode_id: i32, user_id: i32) -> AppResult<serde_json::Value> {
+    /// credits plus the show's regulars), transcripts, chapters (fetched from the stored
+    /// chapters URL, the one thing not kept in the database), and `tags` (every item-level tag).
+    pub async fn fetch_podcasting_2_data(
+        &self,
+        episode_id: i32,
+        user_id: i32,
+    ) -> AppResult<crate::services::podcasting2::EpisodeDocument> {
         use crate::services::people::store;
+        use crate::services::podcasting2::EpisodeDocument;
         let people = store::episode_credits(self, episode_id, user_id).await?;
-        let (chapters_url, transcripts) = store::episode_extras(self, episode_id).await?;
+        let tags = store::episode_extras(self, episode_id).await?;
 
         let mut chapters = serde_json::Value::Array(vec![]);
-        if let Some(url) = chapters_url {
+        if let Some(url) = tags.chapters_url.clone() {
             let (feed_url, username, password) = self.episode_feed_credentials(episode_id).await?;
             match self.fetch_chapters_data(&url, &feed_url, username.as_deref(), password.as_deref()).await {
                 Ok(c) => chapters = c,
@@ -10292,11 +10308,7 @@ impl DatabasePool {
             }
         }
 
-        Ok(serde_json::json!({
-            "chapters": chapters,
-            "transcripts": transcripts,
-            "people": people,
-        }))
+        Ok(EpisodeDocument { chapters, transcripts: tags.transcripts.clone(), people, tags })
     }
 
     /// Feed URL and credentials of an episode's podcast (chapters on the feed's host get the
@@ -10389,18 +10401,26 @@ impl DatabasePool {
 
 
     /// Podcasting 2.0 data for a podcast, stored at refresh time: its people (regulars in
-    /// `people`, episode-only credits in `guests`), podroll, funding and value.
-    pub async fn fetch_podcasting_2_pod_data(&self, podcast_id: i32, user_id: i32) -> AppResult<serde_json::Value> {
+    /// `people`, episode-only credits in `guests`), podroll, funding, value, and `tags` (every
+    /// channel-level tag, including the same podroll, funding and value objects).
+    pub async fn fetch_podcasting_2_pod_data(
+        &self,
+        podcast_id: i32,
+        user_id: i32,
+    ) -> AppResult<crate::services::podcasting2::ChannelDocument> {
         use crate::services::people::store;
+        use crate::services::podcasting2::ChannelDocument;
         let credits = store::podcast_credits(self, podcast_id, user_id).await?;
         let extras = store::channel_extras(self, podcast_id).await?;
-        Ok(serde_json::json!({
-            "people": credits.people,
-            "guests": credits.guests,
-            "podroll": extras.podroll,
-            "funding": extras.funding,
-            "value": extras.value,
-        }))
+        Ok(ChannelDocument {
+            people: credits.people,
+            guests: credits.guests,
+            podroll: extras.podroll.clone(),
+            funding: extras.funding.clone(),
+            value: extras.value.clone(),
+            guid: extras.guid.clone(),
+            tags: extras,
+        })
     }
 
     // Get podcast index ID - matches Python get_podcast_index_id function
