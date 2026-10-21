@@ -145,15 +145,22 @@ class MediaChoiceSession {
 const _prefPrefix = 'pinepods.mediaOption.';
 
 Future<String?> preferredMediaOption(int episodeId) async {
-  final prefs = await SharedPreferences.getInstance();
-  final value = prefs.getString('$_prefPrefix$episodeId');
-  if (value == null || value.trim().isEmpty) return null;
-  return value;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getString('$_prefPrefix$episodeId');
+    if (value == null || value.trim().isEmpty) return null;
+    return value;
+  } catch (_) {
+    // Tests and a first launch before the plugin is ready still play the auto-selected file.
+    return null;
+  }
 }
 
 Future<void> storePreferredMediaOption(int episodeId, String optionId) async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.setString('$_prefPrefix$episodeId', optionId);
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('$_prefPrefix$episodeId', optionId);
+  } catch (_) {}
 }
 
 MediaPlan planFromTags({
@@ -230,8 +237,15 @@ String mediaOptionLabel(
   }
   if (option.codecs != null && option.codecs!.isNotEmpty) parts.add(option.codecs!);
   if (option.lang != null && option.lang!.isNotEmpty) parts.add(option.lang!);
-  if (!option.playable) {
-    final reason = option.sources.map((s) => s.unsupportedReason).whereType<String>().cast<String?>().firstWhere((r) => r != null, orElse: () => null);
+  String? reason;
+  for (final source in option.sources) {
+    final unsupported = source.unsupportedReason;
+    if (unsupported == 'ipfs' || unsupported == 'torrent') {
+      reason = unsupported;
+      break;
+    }
+  }
+  if (!option.playable || reason != null) {
     parts.add(switch (reason) {
       'ipfs' => ipfs,
       'torrent' => torrent,
