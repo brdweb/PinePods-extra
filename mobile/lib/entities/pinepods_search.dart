@@ -71,6 +71,7 @@ class PinepodsPodcast {
   final Map<String, String>? categories;
   final bool explicit;
   final int episodeCount;
+  final String? podcastGuid;
 
   PinepodsPodcast({
     required this.id,
@@ -87,6 +88,7 @@ class PinepodsPodcast {
     this.categories,
     required this.explicit,
     required this.episodeCount,
+    this.podcastGuid,
   });
 
   factory PinepodsPodcast.fromJson(Map<String, dynamic> json) {
@@ -107,6 +109,7 @@ class PinepodsPodcast {
           : null,
       explicit: json['explicit'] as bool? ?? false,
       episodeCount: json['episodeCount'] as int? ?? 0,
+      podcastGuid: json['podcastGuid'] as String? ?? json['podcast_guid'] as String?,
     );
   }
 
@@ -126,6 +129,7 @@ class PinepodsPodcast {
       'categories': categories,
       'explicit': explicit,
       'episodeCount': episodeCount,
+      if (podcastGuid != null) 'podcastGuid': podcastGuid,
     };
   }
 }

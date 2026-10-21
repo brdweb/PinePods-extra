@@ -1796,7 +1796,22 @@ pub async fn call_fetch_podcasting_2_data(
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct PodrollItem {
+    #[serde(default, alias = "feedGuid")]
     pub feed_guid: String,
+    /// Present when the server stored `podcast:remoteItem`'s feedUrl. Older payloads only have the guid.
+    #[serde(default, alias = "feedUrl")]
+    pub feed_url: Option<String>,
+    /// Optional metadata if a later server build enriches the podroll. The UI looks the rest up.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(
+        default,
+        alias = "artwork",
+        alias = "image",
+        alias = "artworkUrl",
+        alias = "imageUrl"
+    )]
+    pub artwork_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

@@ -1716,5 +1716,21 @@
     "save_error": "Could not save yt-dlp settings",
     "update_started": "Updating yt-dlp — this takes a few seconds.",
     "update_error": "Could not update yt-dlp"
+  },
+  "podcasting2": {
+    "podroll": "Podroll",
+    "podroll_hint": "Shows this podcast recommends",
+    "value_title": "Value for Value",
+    "value_supported": "This show supports Value4Value",
+    "recipients": "Recipients",
+    "suggested": "Suggested",
+    "open": "Open",
+    "subscribe": "Subscribe",
+    "subscribed": "Subscribed",
+    "subscribing": "Subscribing…",
+    "unresolved": "Couldn't look this show up",
+    "display_only": "Display only. PinePods does not send payments.",
+    "subscribe_ok": "Podcast subscribed",
+    "subscribe_failed": "Could not subscribe"
   }
 }
