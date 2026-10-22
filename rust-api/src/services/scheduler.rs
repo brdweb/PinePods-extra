@@ -107,6 +107,9 @@ impl BackgroundScheduler {
         self.scheduler.start().await?;
         info!("✅ Background task scheduler started successfully");
 
+        // Podping is off unless PINEPODS_PODPING is set. The task polls Hive on its own.
+        crate::services::podping::spawn(app_state);
+
         Ok(())
     }
 

@@ -5,7 +5,7 @@ use axum::{
 use axum::extract::ws::{WebSocket, Message};
 use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use sqlx::Row;
@@ -342,6 +342,138 @@ async fn refresh_feed_group(state: &AppState, group: &[PodcastRefreshItem]) -> u
     }
 
     total_new
+}
+
+/// Refresh subscribed RSS feeds named by a Podping batch. A URL is fetched only
+/// when it matches a stored feed that still has refresh turned on. The returned
+/// keys are the feeds that were refreshed, so the listener can wait before
+/// fetching the same one again. YouTube and local feeds are ignored.
+pub async fn refresh_podping_urls(state: &AppState, urls: &[String]) -> AppResult<Vec<String>> {
+    let wanted: HashSet<String> = urls
+        .iter()
+        .filter_map(|url| crate::services::podping::feed_key(url))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut items: Vec<PodcastRefreshItem> = Vec::new();
+    match &state.db_pool {
+        crate::database::DatabasePool::Postgres(pool) => {
+            let rows = sqlx::query(
+                r#"SELECT podcastid, feedurl, artworkurl, autodownload, autoqueue, username, password,
+                          isyoutubechannel, userid, feedcutoffdays, feedetag, feedlastmodified
+                   FROM "Podcasts"
+                   WHERE COALESCE(refreshpodcast, TRUE) = TRUE
+                     AND COALESCE(isyoutubechannel, FALSE) = FALSE
+                     AND (feedurl LIKE 'http://%' OR feedurl LIKE 'https://%')"#,
+            )
+            .fetch_all(pool)
+            .await?;
+            for result in rows {
+                items.push(refresh_item_from_row(
+                    result.try_get("podcastid")?,
+                    result.try_get("feedurl")?,
+                    result.try_get("artworkurl").ok(),
+                    result.try_get("autodownload")?,
+                    result.try_get("autoqueue").unwrap_or(false),
+                    result.try_get("username").ok(),
+                    result.try_get("password").ok(),
+                    result.try_get("userid")?,
+                    result.try_get("feedcutoffdays").ok(),
+                    result.try_get::<Option<String>, _>("feedetag").ok().flatten(),
+                    result
+                        .try_get::<Option<String>, _>("feedlastmodified")
+                        .ok()
+                        .flatten(),
+                ));
+            }
+        }
+        crate::database::DatabasePool::MySQL(pool) => {
+            let rows = sqlx::query(
+                "SELECT PodcastID, FeedURL, ArtworkURL, AutoDownload, AutoQueue, Username, Password,
+                        IsYouTubeChannel, UserID, FeedCutoffDays, FeedETag, FeedLastModified
+                 FROM Podcasts
+                 WHERE COALESCE(RefreshPodcast, 1) = 1
+                   AND COALESCE(IsYouTubeChannel, 0) = 0
+                   AND (FeedURL LIKE 'http://%' OR FeedURL LIKE 'https://%')",
+            )
+            .fetch_all(pool)
+            .await?;
+            for result in rows {
+                items.push(refresh_item_from_row(
+                    result.try_get("PodcastID")?,
+                    result.try_get("FeedURL")?,
+                    result.try_get("ArtworkURL").ok(),
+                    result.try_get("AutoDownload")?,
+                    result.try_get("AutoQueue").unwrap_or(false),
+                    result.try_get("Username").ok(),
+                    result.try_get("Password").ok(),
+                    result.try_get("UserID")?,
+                    result.try_get("FeedCutoffDays").ok(),
+                    result.try_get::<Option<String>, _>("FeedETag").ok().flatten(),
+                    result
+                        .try_get::<Option<String>, _>("FeedLastModified")
+                        .ok()
+                        .flatten(),
+                ));
+            }
+        }
+    }
+
+    let mut groups: HashMap<(String, Option<String>, Option<String>), Vec<PodcastRefreshItem>> =
+        HashMap::new();
+    for item in items {
+        let Some(key) = crate::services::podping::feed_key(&item.feed_url) else {
+            continue;
+        };
+        if !wanted.contains(&key) {
+            continue;
+        }
+        let group_key = (item.feed_url.clone(), item.username.clone(), item.password.clone());
+        groups.entry(group_key).or_default().push(item);
+    }
+
+    let mut refreshed = Vec::new();
+    for group in groups.into_values() {
+        if let Some(key) = group
+            .first()
+            .and_then(|item| crate::services::podping::feed_key(&item.feed_url))
+        {
+            refreshed.push(key);
+        }
+        refresh_feed_group(state, &group).await;
+    }
+    Ok(refreshed)
+}
+
+fn refresh_item_from_row(
+    podcast_id: i32,
+    feed_url: String,
+    artwork_url: Option<String>,
+    auto_download: bool,
+    auto_queue: bool,
+    username: Option<String>,
+    password: Option<String>,
+    user_id: i32,
+    feed_cutoff: Option<i32>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+) -> PodcastRefreshItem {
+    PodcastRefreshItem {
+        podcast_id,
+        feed_url,
+        artwork_url,
+        auto_download,
+        auto_queue,
+        username,
+        password,
+        is_youtube: false,
+        user_id,
+        feed_cutoff,
+        etag,
+        last_modified,
+    }
 }
 
 /// Refresh a single YouTube channel podcast.

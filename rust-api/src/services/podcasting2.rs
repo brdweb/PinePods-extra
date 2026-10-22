@@ -7,8 +7,8 @@
 //! The two namespace URIs in the spec (`https://podcastindex.org/namespace/1.0` and the canonical
 //! `docs/1.0.md` URL) are treated as the same namespace.
 //!
-//! Podping is stored (`podcast:podping`). Subscribing to the Podping network and refreshing on
-//! those notifications is a follow-up; see `docs/podcasting2-api.md`.
+//! `podcast:podping` is stored on the show. The optional Hive listener that refreshes a
+//! subscribed feed when Podping names it lives in `podping` and is off unless configured.
 
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use quick_xml::events::{BytesStart, Event};
@@ -345,8 +345,8 @@ pub struct UpdateFrequency {
     pub rrule: Option<String>,
 }
 
-/// Present when the feed includes `podcast:podping`. Listening for Podping notifications
-/// is not implemented; this only records the tag.
+/// Present when the feed includes `podcast:podping`. This records the tag. The optional
+/// Hive listener is separate and matches the stored feed URL.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Podping {
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -171,7 +171,7 @@ Channel `podcast:person` tags are not inside `tags`. They are the resolved `peop
 
 ## Podping
 
-`podcast:podping` is parsed and returned on `tags.podping`. PinePods does not subscribe to the Podping network. Refresh-on-notification is a follow-up; until then a feed is still refreshed on the schedule above.
+`podcast:podping` is parsed and returned on `tags.podping`. A Hive listener can refresh a subscribed feed when Podping names its URL. It is off unless `PINEPODS_PODPING=1`. See `docs/podping.md`. The scheduled refresh above still runs either way.
 
 ## What is not in this API
 
