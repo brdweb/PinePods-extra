@@ -2024,8 +2024,8 @@ mod tests {
 
         let live = &x.live_items[0];
         assert_eq!(live.status, "live");
-        assert_eq!(live.start, "2026-10-21T18:00:00.000Z");
-        assert_eq!(live.end.as_deref(), Some("2026-10-21T19:00:00.000Z"));
+        assert_eq!(live.start, "2099-01-01T18:00:00.000Z");
+        assert_eq!(live.end.as_deref(), Some("2099-01-01T19:00:00.000Z"));
         assert_eq!(live.title.as_deref(), Some("Live Now"));
         assert_eq!(live.link.as_deref(), Some("https://example.invalid/live"));
         assert_eq!(live.tags.guid.as_deref(), Some("live-1"));
