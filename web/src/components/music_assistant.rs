@@ -15,11 +15,14 @@ use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    transport_is_recent, transport_shown, unix_now, GroupPlanError, MaPlayer, MusicAssistantState,
-    PlaybackCandidate,
+    speaker_start, transport_is_recent, transport_shown, unix_now, GroupPlanError, MaPlayer,
+    MusicAssistantState, PlaybackCandidate,
 };
 use crate::requests::notify::{toast_error, toast_info};
 use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
+use crate::requests::pod_req::{
+    call_get_episode_metadata, call_get_play_episode_details, EpisodeRequest,
+};
 use i18nrs::yew::use_translation;
 
 fn session() -> Option<(String, String, i32)> {
@@ -76,7 +79,7 @@ fn run_http(
     });
 }
 
-fn now_unix() -> i64 {
+pub(crate) fn now_unix() -> i64 {
     (js_sys::Date::now() / 1000.0) as i64
 }
 
@@ -151,6 +154,79 @@ pub(crate) fn volume_control(props: &VolumeProps) -> Html {
                 <i class={ if props.muted { "ph ph-speaker-slash" } else { "ph ph-speaker-high" } }></i>
             </button>
         </div>
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub(crate) struct SeekSliderProps {
+    pub(crate) device_id: String,
+    pub(crate) shown: f64,
+    pub(crate) duration: f64,
+    pub(crate) label: String,
+}
+
+/// Range that keeps the thumb where the drag left it, then seeks on release.
+/// The parent keeps passing the interpolated position, which the thumb follows
+/// only while it is not being dragged.
+#[function_component(SeekSlider)]
+pub(crate) fn seek_slider(props: &SeekSliderProps) -> Html {
+    let held = use_state(|| None::<f64>);
+    let oninput = {
+        let held = held.clone();
+        Callback::from(move |e: InputEvent| {
+            let Some(input) = e.target_dyn_into::<HtmlInputElement>() else {
+                return;
+            };
+            if let Ok(pos) = input.value().parse::<f64>() {
+                held.set(Some(pos.max(0.0)));
+            }
+        })
+    };
+    let onchange = {
+        let held = held.clone();
+        let id = props.device_id.clone();
+        Callback::from(move |e: Event| {
+            if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
+                if let Ok(pos) = input.value().parse::<f64>() {
+                    send_command(
+                        &id,
+                        "seek",
+                        json!({ "position_sec": integer_position(pos) }),
+                    );
+                }
+            }
+            held.set(None);
+        })
+    };
+    let shown = if props.shown.is_finite() {
+        props.shown.clamp(0.0, props.duration.max(0.0))
+    } else {
+        0.0
+    };
+    let value = match *held {
+        Some(pos) => pos.clamp(0.0, props.duration.max(0.0)),
+        None => shown,
+    };
+    html! {
+        <input
+            class="ma-seek"
+            type="range"
+            min="0"
+            max={props.duration.to_string()}
+            step="1"
+            value={value.to_string()}
+            oninput={oninput}
+            onchange={onchange}
+            aria-label={props.label.clone()}
+        />
+    }
+}
+
+fn integer_position(pos: f64) -> i64 {
+    if !pos.is_finite() || pos <= 0.0 {
+        0
+    } else {
+        pos.trunc() as i64
     }
 }
 
@@ -305,17 +381,7 @@ pub fn ma_now_playing_bar() -> Html {
     let on_fwd = {
         let id = id.clone();
         Callback::from(move |_: MouseEvent| {
-            send_command(&id, "skip_forward", json!({ "seconds": 30 }));
-        })
-    };
-    let on_seek = {
-        let id = id.clone();
-        Callback::from(move |e: Event| {
-            if let Some(input) = e.target_dyn_into::<HtmlInputElement>() {
-                if let Ok(pos) = input.value().parse::<f64>() {
-                    send_command(&id, "seek", json!({ "position_sec": pos }));
-                }
-            }
+            send_command(&id, "skip_forward", json!({ "seconds": 15 }));
         })
     };
     let on_speed = {
@@ -399,15 +465,11 @@ pub fn ma_now_playing_bar() -> Html {
                 </div>
             </div>
             if duration > 0.0 && device.supports("seek") {
-                <input
-                    class="ma-seek"
-                    type="range"
-                    min="0"
-                    max={duration.to_string()}
-                    step="1"
-                    value={shown.min(duration).to_string()}
-                    onchange={on_seek}
-                    aria-label={i18n.t("music_assistant.seek").to_string()}
+                <SeekSlider
+                    device_id={id.clone()}
+                    shown={shown}
+                    duration={duration}
+                    label={i18n.t("music_assistant.seek").to_string()}
                 />
             }
             if device.supports(if members.is_empty() { "volume_set" } else { "group_volume" }) {
@@ -487,17 +549,102 @@ pub fn music_assistant_host() -> Html {
     }
 }
 
+#[derive(Clone, PartialEq)]
+struct ResumePrompt {
+    player_id: String,
+    device_id: String,
+    episode_id: i32,
+    is_youtube: bool,
+    resume_sec: f64,
+    start_over_sec: f64,
+}
+
+enum SpeakerResolve {
+    Offer(f64, f64),
+    Send(f64),
+    Failed(anyhow::Error),
+}
+
+fn send_episode(
+    player_id: String,
+    device_id: String,
+    episode_id: i32,
+    is_youtube: bool,
+    position_sec: f64,
+    failure: String,
+) {
+    let mut args = json!({
+        "episode_id": episode_id,
+        "is_youtube": is_youtube,
+        "position_sec": position_sec,
+    });
+    if !is_youtube {
+        if let Some(option_id) = preferred_media_option(episode_id) {
+            args["media_option_id"] = json!(option_id);
+        }
+    }
+    Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
+        s.focus_device_id = Some(device_id);
+        s.picker_open = false;
+        s.pending_episode = None;
+    });
+    run_http(player_id, "play_episode", args, failure, true);
+}
+
+async fn resolve_speaker_start(episode_id: i32, is_youtube: bool) -> SpeakerResolve {
+    let Some((server, api_key, user_id)) = session() else {
+        return SpeakerResolve::Failed(anyhow::Error::msg("not signed in"));
+    };
+    let req = EpisodeRequest {
+        episode_id,
+        user_id,
+        person_episode: false,
+        is_youtube,
+    };
+    let episode = match call_get_episode_metadata(&server, Some(api_key.clone()), &req).await {
+        Ok(episode) => episode,
+        Err(err) => return SpeakerResolve::Failed(err),
+    };
+    let start_skip = if episode.podcastid > 0 {
+        call_get_play_episode_details(
+            &server,
+            &Some(api_key),
+            user_id,
+            episode.podcastid,
+            is_youtube,
+        )
+        .await
+        .map(|(_, start, _, _)| start)
+        .unwrap_or(0)
+    } else {
+        0
+    };
+    let start = speaker_start(
+        episode.listenduration as f64,
+        episode.completed,
+        start_skip as i64,
+    );
+    match start.offer {
+        Some(offer) => SpeakerResolve::Offer(offer.resume_sec, offer.start_over_sec),
+        None => SpeakerResolve::Send(start.position_sec),
+    }
+}
+
 #[function_component(SpeakerPicker)]
 fn speaker_picker() -> Html {
     let (i18n, _) = use_translation();
     let (ma, ma_dispatch) = use_store::<MusicAssistantState>();
     let (ui, _) = use_store::<UIState>();
     let selected = use_state(HashSet::<String>::new);
+    let prompt = use_state(|| None::<ResumePrompt>);
+    let fetching = use_state(|| false);
     let open = ma.picker_open;
 
     let close = {
         let ma_dispatch = ma_dispatch.clone();
+        let prompt = prompt.clone();
         Callback::from(move |_: MouseEvent| {
+            prompt.set(None);
             ma_dispatch.reduce_mut(|s| {
                 s.picker_open = false;
                 s.pending_episode = None;
@@ -533,38 +680,66 @@ fn speaker_picker() -> Html {
         let nothing = nothing.clone();
         let pending = ma.pending_episode.clone();
         let ui = ui.clone();
-        let ma_dispatch = ma_dispatch.clone();
+        let prompt = prompt.clone();
+        let fetching = fetching.clone();
         Callback::from(move |player: MaPlayer| {
             let Some((episode_id, is_youtube, position)) = play_target(&pending, &ui) else {
                 toast_info(&Dispatch::<NotificationState>::global(), nothing.clone());
                 return;
             };
-            let mut args = json!({
-                "episode_id": episode_id,
-                "is_youtube": is_youtube,
-            });
             if let Some(position) = position {
-                args["position_sec"] = json!(position);
+                prompt.set(None);
+                send_episode(
+                    player.player_id,
+                    player.device_id,
+                    episode_id,
+                    is_youtube,
+                    position.max(0.0),
+                    failure.clone(),
+                );
+                return;
             }
-            if !is_youtube {
-                if let Some(option_id) = preferred_media_option(episode_id) {
-                    args["media_option_id"] = json!(option_id);
+            if *fetching {
+                return;
+            }
+            fetching.set(true);
+            let failure = failure.clone();
+            let prompt = prompt.clone();
+            let fetching = fetching.clone();
+            let player_id = player.player_id;
+            let device_id = player.device_id;
+            spawn_local(async move {
+                let resolved = resolve_speaker_start(episode_id, is_youtube).await;
+                fetching.set(false);
+                match resolved {
+                    SpeakerResolve::Offer(resume_sec, start_over_sec) => {
+                        prompt.set(Some(ResumePrompt {
+                            player_id,
+                            device_id,
+                            episode_id,
+                            is_youtube,
+                            resume_sec,
+                            start_over_sec,
+                        }));
+                    }
+                    SpeakerResolve::Send(position_sec) => {
+                        prompt.set(None);
+                        send_episode(
+                            player_id,
+                            device_id,
+                            episode_id,
+                            is_youtube,
+                            position_sec,
+                            failure,
+                        );
+                    }
+                    SpeakerResolve::Failed(err) => {
+                        toast_failure(&failure, &err);
+                        prompt.set(None);
+                        send_episode(player_id, device_id, episode_id, is_youtube, 0.0, failure);
+                    }
                 }
-            }
-            let device_id = player.device_id.clone();
-            ma_dispatch.reduce_mut(|s| {
-                // The now-playing bar follows this player once the episode is on it.
-                s.focus_device_id = Some(device_id);
-                s.picker_open = false;
-                s.pending_episode = None;
             });
-            run_http(
-                player.player_id,
-                "play_episode",
-                args,
-                failure.clone(),
-                true,
-            );
         })
     };
 
@@ -620,6 +795,51 @@ fn speaker_picker() -> Html {
         i18n.t("music_assistant.play_current").to_string()
     };
 
+    let resume_prompt = (*prompt).clone().map(|choice| {
+        let resume_label = i18n
+            .t("music_assistant.resume_at")
+            .to_string()
+            .replace("{time}", &format_clock(choice.resume_sec));
+        let start_label = i18n.t("music_assistant.start_over").to_string();
+        let on_resume = {
+            let failure = failure.clone();
+            let prompt = prompt.clone();
+            let choice = choice.clone();
+            Callback::from(move |_: MouseEvent| {
+                prompt.set(None);
+                send_episode(
+                    choice.player_id.clone(),
+                    choice.device_id.clone(),
+                    choice.episode_id,
+                    choice.is_youtube,
+                    choice.resume_sec,
+                    failure.clone(),
+                );
+            })
+        };
+        let on_start = {
+            let failure = failure.clone();
+            let prompt = prompt.clone();
+            Callback::from(move |_: MouseEvent| {
+                prompt.set(None);
+                send_episode(
+                    choice.player_id.clone(),
+                    choice.device_id.clone(),
+                    choice.episode_id,
+                    choice.is_youtube,
+                    choice.start_over_sec,
+                    failure.clone(),
+                );
+            })
+        };
+        html! {
+            <div class="ma-note">
+                <button type="button" class="btn btn-primary" onclick={on_resume}>{ resume_label }</button>
+                <button type="button" class="btn" onclick={on_start}>{ start_label }</button>
+            </div>
+        }
+    });
+
     html! {
         <>
             <div class={classes!("nc-scrim", open.then_some("is-open"))} onclick={close.clone()}></div>
@@ -633,6 +853,7 @@ fn speaker_picker() -> Html {
                     </button>
                 </div>
                 <div class="nc-body">
+                    { resume_prompt }
                     if !ma.connected {
                         <div class="ma-note">{ i18n.t("music_assistant.not_connected") }</div>
                     }

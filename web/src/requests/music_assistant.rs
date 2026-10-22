@@ -646,6 +646,50 @@ pub fn displayed_position(
     base + elapsed * rate
 }
 
+/// Saved position has to be more than a few seconds in, and the episode must
+/// still be unfinished, before the speaker picker asks resume or start over.
+pub const RESUME_MIN_SEC: f64 = 5.0;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResumeOffer {
+    pub resume_sec: f64,
+    pub start_over_sec: f64,
+}
+
+/// Where a picked episode should start on a speaker.
+///
+/// `offer` is set only when the saved position is real and the episode is not
+/// complete. Resume is `max(saved, start_skip)`. Start over is `start_skip`.
+/// Otherwise `position_sec` is `start_skip` (or 0) and nothing is asked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeakerStart {
+    pub offer: Option<ResumeOffer>,
+    pub position_sec: f64,
+}
+
+pub fn speaker_start(saved_sec: f64, completed: bool, start_skip: i64) -> SpeakerStart {
+    let start = start_skip.max(0) as f64;
+    let saved = if saved_sec.is_finite() {
+        saved_sec.max(0.0)
+    } else {
+        0.0
+    };
+    if completed || saved < RESUME_MIN_SEC {
+        return SpeakerStart {
+            offer: None,
+            position_sec: start,
+        };
+    }
+    let resume = saved.max(start);
+    SpeakerStart {
+        offer: Some(ResumeOffer {
+            resume_sec: resume,
+            start_over_sec: start,
+        }),
+        position_sec: resume,
+    }
+}
+
 pub fn format_clock(secs: f64) -> String {
     if !secs.is_finite() || secs < 0.0 {
         return "00:00".to_string();
@@ -1087,6 +1131,30 @@ mod tests {
         assert_eq!(displayed_position(10.0, false, 2.0, 100, 105), 10.0);
         assert_eq!(displayed_position(10.0, true, 1.0, 100, 140), 10.0);
         assert_eq!(displayed_position(10.0, true, 1.0, 0, 140), 10.0);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn speaker_start_asks_only_for_a_real_unfinished_position() {
+        let fresh = speaker_start(0.0, false, 15);
+        assert!(fresh.offer.is_none());
+        assert_eq!(fresh.position_sec, 15.0);
+
+        let finished = speaker_start(3400.0, true, 15);
+        assert!(finished.offer.is_none());
+        assert_eq!(finished.position_sec, 15.0);
+
+        let early = speaker_start(4.0, false, 0);
+        assert!(early.offer.is_none());
+        assert_eq!(early.position_sec, 0.0);
+
+        let resume = speaker_start(90.0, false, 30).offer.unwrap();
+        assert_eq!(resume.resume_sec, 90.0);
+        assert_eq!(resume.start_over_sec, 30.0);
+
+        let intro = speaker_start(10.0, false, 45).offer.unwrap();
+        assert_eq!(intro.resume_sec, 45.0);
+        assert_eq!(intro.start_over_sec, 45.0);
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
