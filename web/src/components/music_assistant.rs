@@ -13,7 +13,7 @@ use yewdux::prelude::*;
 use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
-    choose_playback, explain_test, focus_player, format_clock, is_music_assistant, plan_group,
+    choose_playback, explain_test, format_clock, is_music_assistant, plan_group,
     player_name, refresh_music_assistant, send_player_command, GroupPlanError,
     MaPlayer, MusicAssistantState, PlaybackCandidate,
 };
@@ -151,6 +151,30 @@ pub(crate) fn volume_control(props: &VolumeProps) -> Html {
             </button>
         </div>
     }
+}
+
+/// `Some(true)` while playing (show pause), `Some(false)` while paused (show play).
+/// Idle, off, and standby hide the transport buttons.
+fn transport_active(state: &str) -> Option<bool> {
+    if state.eq_ignore_ascii_case("playing") || state.eq_ignore_ascii_case("buffering") {
+        Some(true)
+    } else if state.eq_ignore_ascii_case("paused") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Playback follows the sync parent. A group row is its own leader, which is
+/// the same player the group volume control targets.
+fn transport_player_id(player: &MaPlayer) -> String {
+    player
+        .synced_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(player.player_id.as_str())
+        .to_string()
 }
 
 fn state_i18n_key(state: &str) -> Option<&'static str> {
@@ -506,8 +530,10 @@ fn speaker_picker() -> Html {
                     args["media_option_id"] = json!(option_id);
                 }
             }
-            focus_player(&player.device_id);
+            let device_id = player.device_id.clone();
             ma_dispatch.reduce_mut(|s| {
+                // The now-playing bar follows this player once the episode is on it.
+                s.focus_device_id = Some(device_id);
                 s.picker_open = false;
                 s.pending_episode = None;
             });
@@ -660,6 +686,29 @@ fn speaker_picker() -> Html {
                             })
                         };
                         let show_group_tools = player.is_group();
+                        let playing_now = transport_active(&player.state);
+                        let transport_id = transport_player_id(player);
+                        let on_toggle = {
+                            let failure = failure.clone();
+                            let transport_id = transport_id.clone();
+                            let playing_now = playing_now.unwrap_or(false);
+                            Callback::from(move |_: MouseEvent| {
+                                run_http(
+                                    transport_id.clone(),
+                                    if playing_now { "pause" } else { "play" },
+                                    json!({}),
+                                    failure.clone(),
+                                    false,
+                                );
+                            })
+                        };
+                        let on_stop = {
+                            let failure = failure.clone();
+                            let transport_id = transport_id.clone();
+                            Callback::from(move |_: MouseEvent| {
+                                run_http(transport_id.clone(), "stop", json!({}), failure.clone(), false);
+                            })
+                        };
                         html! {
                             <div class="rd-row" key={player.player_id.clone()}>
                                 <div class="rd-row-top">
@@ -731,6 +780,16 @@ fn speaker_picker() -> Html {
                                     }
                                 }
                                 <div class="rd-controls">
+                                    if player.available {
+                                        if let Some(is_playing) = playing_now {
+                                            <button type="button" class="iconbtn" title={ if is_playing { i18n.t("music_assistant.pause").to_string() } else { i18n.t("music_assistant.play").to_string() } } onclick={on_toggle}>
+                                                <i class={ if is_playing { "ph ph-pause" } else { "ph ph-play" } }></i>
+                                            </button>
+                                            <button type="button" class="iconbtn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
+                                                <i class="ph ph-stop"></i>
+                                            </button>
+                                        }
+                                    }
                                     <button type="button" class="rd-play-here" disabled={!player.available} onclick={play}>
                                         <i class="ph ph-play mr-1"></i>{ play_label.clone() }
                                     </button>

@@ -6487,7 +6487,7 @@ input:checked + .notification-toggle-slider:before {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .rd-progress { font-family: var(--font-mono, monospace); font-size: 11px; color: var(--text-secondary-color); }
-.rd-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.rd-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .rd-controls .iconbtn { width: 34px; height: 34px; }
 .rd-controls .iconbtn i { font-size: 18px; }
 .rd-play-here {

@@ -307,6 +307,20 @@ fn is_http_url(uri: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+/// RFC 3986 scheme at the start of `raw` (`alpha *(alpha / digit / "+" / "-" / ".") ":"`).
+fn has_uri_scheme(raw: &str) -> bool {
+    let mut chars = raw.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let Some(colon) = raw.find(':') else {
+        return false;
+    };
+    raw[..colon]
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+}
+
 /// `served_by_pinepods` is a file the stream endpoint can actually return.
 /// Anything else must be a playable http(s) enclosure. The stream URL is not a
 /// fallback: it 404s when the episode was never saved.
@@ -811,18 +825,146 @@ pub fn translate_action(
     Ok(vec![one])
 }
 
+/// Title, podcast, length, and artwork for a `play_media` Track.
+///
+/// Music Assistant 2.10.4 (`music-assistant-models` 1.1.205) parses a dict with
+/// `media_from_dict`. A dict that includes `provider_mappings` and
+/// `media_type: "track"` becomes a Track; without `provider_mappings` it becomes
+/// an ItemMapping and the image is dropped. A bare URL is resolved as a builtin
+/// Track with no image, so that form is only used when there is no artwork.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaTrackDisplay {
+    pub title: String,
+    pub podcast_name: String,
+    pub duration_sec: i64,
+    pub artwork_url: Option<String>,
+}
+
+/// Absolute http(s) artwork Music Assistant can fetch.
+///
+/// A relative path or a PinePods proxy path (`/api/proxy/image?...`) is joined
+/// onto `external_base`. Anything that is not http(s) and cannot be joined is
+/// dropped.
+pub fn artwork_url_for_ma(raw: &str, external_base: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if is_http_url(raw) {
+        return Some(raw.to_string());
+    }
+    // `javascript:` and `data:` are schemes without `://`. A proxy path may
+    // still carry `https://` inside its query and is joined below.
+    if has_uri_scheme(raw) {
+        return None;
+    }
+    let base = external_base.trim().trim_end_matches('/');
+    if !is_http_url(base) {
+        return None;
+    }
+    let path = raw.trim_start_matches('/');
+    if path.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/{path}"))
+}
+
+fn display_from_meta(meta: &Value, external_base: &str) -> MaTrackDisplay {
+    let title = meta
+        .get("episodetitle")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let podcast_name = meta
+        .get("podcastname")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let duration_sec = meta
+        .get("episodeduration")
+        .and_then(json_i64)
+        .unwrap_or(0)
+        .max(0);
+    let episode_art = meta
+        .get("episodeartwork")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let podcast_art = meta
+        .get("artworkurl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let artwork_url = artwork_url_for_ma(episode_art, external_base)
+        .or_else(|| artwork_url_for_ma(podcast_art, external_base));
+    MaTrackDisplay {
+        title,
+        podcast_name,
+        duration_sec,
+        artwork_url,
+    }
+}
+
+/// Track dict accepted by `Track.from_dict` on models 1.1.205. `None` when there
+/// is no fetchable artwork: the caller then sends the URL string.
+fn track_media(media_url: &str, display: &MaTrackDisplay) -> Option<Value> {
+    let artwork = display
+        .artwork_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| is_http_url(url))?;
+    let title = display.title.trim();
+    let name = if title.is_empty() { "Episode" } else { title };
+    let mut item = json!({
+        "media_type": "track",
+        "item_id": media_url,
+        "provider": "builtin",
+        "name": name,
+        "duration": display.duration_sec.max(0),
+        "provider_mappings": [{
+            "item_id": media_url,
+            "provider_domain": "builtin",
+            "provider_instance": "builtin",
+            "available": true,
+        }],
+        "metadata": {
+            "images": [{
+                "type": "thumb",
+                "path": artwork,
+                "provider": "builtin",
+                "remotely_accessible": true,
+            }]
+        }
+    });
+    let podcast = display.podcast_name.trim();
+    if !podcast.is_empty() {
+        item["artists"] = json!([{
+            "media_type": "artist",
+            "item_id": podcast,
+            "provider": "builtin",
+            "name": podcast,
+            "available": true,
+        }]);
+    }
+    Some(item)
+}
+
 /// `play_media`, then an optional seek and speed change. Seek/speed failures are warnings.
 pub fn play_media_commands(
     queue_id: &str,
     media_url: &str,
     position_sec: f64,
     speed: f64,
+    display: Option<&MaTrackDisplay>,
 ) -> Vec<MaCommand> {
+    let media = display
+        .and_then(|display| track_media(media_url, display))
+        .unwrap_or_else(|| json!(media_url));
     let mut cmds = vec![MaCommand {
         command: "player_queues/play_media".into(),
         args: json!({
             "queue_id": queue_id,
-            "media": media_url,
+            "media": media,
             "option": "replace",
         }),
     }];
@@ -2048,7 +2190,14 @@ async fn prepare_play_episode(
         .await
         .unwrap_or(1.0);
     let speed = if speed > 0.0 { speed } else { 1.0 };
-    Ok(play_media_commands(queue_id, &media, position, speed))
+    let display = display_from_meta(&meta, base);
+    Ok(play_media_commands(
+        queue_id,
+        &media,
+        position,
+        speed,
+        Some(&display),
+    ))
 }
 
 pub fn spawn_supervisor(state: AppState) {
@@ -2833,23 +2982,105 @@ mod tests {
 
     #[test]
     fn play_media_seeks_and_sets_speed_when_needed() {
-        let cmds = play_media_commands(
-            "q",
-            "http://h/api/data/stream/1?api_key=k&user_id=2",
-            30.0,
-            1.25,
-        );
+        let url = "http://h/api/data/stream/1?api_key=k&user_id=2";
+        let cmds = play_media_commands("q", url, 30.0, 1.25, None);
         assert_eq!(cmds.len(), 3);
         assert_eq!(cmds[0].command, "player_queues/play_media");
-        assert_eq!(
-            cmds[0].args["media"],
-            "http://h/api/data/stream/1?api_key=k&user_id=2"
-        );
+        assert_eq!(cmds[0].args["media"], url);
         assert_eq!(cmds[0].args["option"], "replace");
         assert_eq!(cmds[1].command, "player_queues/seek");
         assert_eq!(cmds[2].args["speed"], 1.25);
-        let plain = play_media_commands("q", "http://h/a", 0.0, 1.0);
+        let plain = play_media_commands("q", "http://h/a", 0.0, 1.0, None);
         assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].args["media"], "http://h/a");
+    }
+
+    #[test]
+    fn play_media_sends_a_track_dict_when_artwork_is_fetchable() {
+        let url = "https://pods.example/api/data/stream/9?api_key=k&user_id=2";
+        let with_art = MaTrackDisplay {
+            title: "Episode 12".into(),
+            podcast_name: "No Agenda".into(),
+            duration_sec: 3600,
+            artwork_url: Some("https://cdn.example/ep.jpg".into()),
+        };
+        let cmds = play_media_commands("kitchen", url, 0.0, 1.0, Some(&with_art));
+        assert_eq!(cmds.len(), 1);
+        let media = &cmds[0].args["media"];
+        assert_eq!(media["media_type"], "track");
+        assert_eq!(media["item_id"], url);
+        assert_eq!(media["provider"], "builtin");
+        assert_eq!(media["name"], "Episode 12");
+        assert_eq!(media["duration"], 3600);
+        assert_eq!(media["artists"][0]["media_type"], "artist");
+        assert_eq!(media["artists"][0]["name"], "No Agenda");
+        assert_eq!(media["artists"][0]["item_id"], "No Agenda");
+        assert_eq!(media["artists"][0]["provider"], "builtin");
+        assert_eq!(media["artists"][0]["available"], true);
+        assert_eq!(media["provider_mappings"][0]["item_id"], url);
+        assert_eq!(media["provider_mappings"][0]["provider_domain"], "builtin");
+        assert_eq!(media["provider_mappings"][0]["provider_instance"], "builtin");
+        assert_eq!(media["provider_mappings"][0]["available"], true);
+        assert_eq!(media["metadata"]["images"][0]["type"], "thumb");
+        assert_eq!(media["metadata"]["images"][0]["path"], "https://cdn.example/ep.jpg");
+        assert_eq!(media["metadata"]["images"][0]["provider"], "builtin");
+        assert_eq!(media["metadata"]["images"][0]["remotely_accessible"], true);
+
+        let no_art = MaTrackDisplay {
+            title: "Episode 12".into(),
+            podcast_name: "No Agenda".into(),
+            duration_sec: 3600,
+            artwork_url: None,
+        };
+        let plain = play_media_commands("kitchen", url, 12.0, 1.0, Some(&no_art));
+        assert_eq!(plain[0].args["media"], url);
+        assert_eq!(plain[1].command, "player_queues/seek");
+    }
+
+    #[test]
+    fn artwork_uses_the_episode_image_or_the_podcast_image_on_the_external_base() {
+        let meta = json!({
+            "episodetitle": "Live",
+            "podcastname": "Show",
+            "episodeduration": 90,
+            "episodeartwork": "/api/proxy/image?url=https%3A%2F%2Fcdn.example%2Fep.jpg",
+            "artworkurl": "https://cdn.example/show.jpg",
+        });
+        let display = display_from_meta(&meta, "https://pods.example/");
+        assert_eq!(display.title, "Live");
+        assert_eq!(display.podcast_name, "Show");
+        assert_eq!(display.duration_sec, 90);
+        assert_eq!(
+            display.artwork_url.as_deref(),
+            Some("https://pods.example/api/proxy/image?url=https%3A%2F%2Fcdn.example%2Fep.jpg")
+        );
+
+        let fallback = json!({
+            "episodetitle": "Live",
+            "podcastname": "Show",
+            "episodeartwork": "",
+            "artworkurl": "https://cdn.example/show.jpg",
+        });
+        assert_eq!(
+            display_from_meta(&fallback, "https://pods.example").artwork_url.as_deref(),
+            Some("https://cdn.example/show.jpg")
+        );
+
+        let none = json!({
+            "episodetitle": "Live",
+            "episodeartwork": "javascript:alert(1)",
+            "artworkurl": "",
+        });
+        assert!(display_from_meta(&none, "https://pods.example").artwork_url.is_none());
+        assert!(artwork_url_for_ma("https://cdn.example/a.jpg", "https://pods.example").is_some());
+        assert_eq!(
+            artwork_url_for_ma(
+                "/api/proxy/image?url=https://cdn.example/ep.jpg",
+                "https://pods.example"
+            )
+            .as_deref(),
+            Some("https://pods.example/api/proxy/image?url=https://cdn.example/ep.jpg")
+        );
     }
 
     #[test]
