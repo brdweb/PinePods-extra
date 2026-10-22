@@ -127,6 +127,10 @@ A `podcast:remoteItem` without `feedGuid` is ignored. One tag of a kind that the
 
 `live_items[]`: `status`, `start`, `end`, and the RSS children captured inside the live item (`title`, `description`, `link`, `author`, `pub_date`, `enclosure_length`, `enclosure_type`). Nested Podcasting 2.0 tags and the enclosure URL are on `tags`, which has the same shape as an episode's `tags`. A live item is not an episode row.
 
+The show endpoint returns live items in this order: `live`, then `pending` (and any other status) by `start`, then `ended`. An `ended` item is omitted when an episode on that show has the same guid (comparison ignores case and surrounding space). `pending` and `live` items stay even when a guid matches, so a show that is still on the air is not hidden by an older episode. An ended item with no guid stays, and its enclosure can be played until the next refresh replaces the live item with a regular episode. The stored channel JSON is unchanged; only this response is filtered.
+
+Clients play `tags.enclosure_url` when it is `http` or `https`. `application/vnd.apple.mpegurl`, `application/x-mpegURL`, and a URL path ending in `.m3u8` or `.m3u` play as HLS. `video/*` and DASH use a video element; other HLS streams use an audio element. DASH is played by the browser's native player. Upcoming items are listed on the show page. The mobile app has no notification plugin, so it lists those events instead of scheduling a local notification.
+
 Channel `podcast:person` tags are not inside `tags`. They are the resolved `people` array. Raw person fields, when they do appear (item `tags.people`, live item `tags.people`), are `name`, `role`, `group`, `img`, `href`.
 
 ## Item tags

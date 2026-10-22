@@ -855,6 +855,24 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     await audioPlayerService.playEpisode(episode: episode, resume: false);
   }
 
+  Future<void> _playLive(LiveItem item) async {
+    final url = item.playableUrl;
+    if (url == null) return;
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final title = (item.title ?? '').trim();
+    final fallback = AppLocalizations.of(context)?.p2_live_now ?? 'Live';
+    final episode = Episode(
+      guid: (item.guid ?? '').trim().isEmpty ? 'p2-live-${url.hashCode}' : item.guid!.trim(),
+      podcast: widget.podcast.title,
+      title: title.isEmpty ? fallback : title,
+      description: item.description ?? '',
+      contentUrl: url,
+      imageUrl: widget.podcast.artwork,
+    );
+    episode.streaming = true;
+    await audioPlayerService.playEpisode(episode: episode, resume: false);
+  }
+
   Future<void> _loadPodcasting2Extras(int podcastId) async {
     try {
       final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
@@ -1702,7 +1720,12 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                     ),
                   ],
 
-                  ShowPodcasting2Panel(tags: _showTags, onPlayTrailer: _playTrailer),
+                  ShowPodcasting2Panel(
+                    tags: _showTags,
+                    episodeGuids: _episodes.map((episode) => episode.guid),
+                    onPlayTrailer: _playTrailer,
+                    onPlayLive: _playLive,
+                  ),
 
                   const SizedBox(height: 24),
                   

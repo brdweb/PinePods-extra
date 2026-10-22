@@ -4495,7 +4495,25 @@ pub fn episode_layout() -> Html {
                                         let show_tags = state.podcast_tags.clone().unwrap_or_default();
                                         let cover = cover_art(&show_tags.image, show_tags.images.as_ref(), &podcast_info.artworkurl);
                                         let cover_alt = format!("Cover for {}", &podcast_info.podcastname);
-                                        let show_panel = html! { <ShowTagsPanel tags={show_tags} /> };
+                                        let episode_guids = search_data
+                                            .podcast_feed_results
+                                            .as_ref()
+                                            .map(|results| {
+                                                results
+                                                    .episodes
+                                                    .iter()
+                                                    .filter_map(|episode| {
+                                                        let guid = episode.guid.trim();
+                                                        if guid.is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(guid.to_string())
+                                                        }
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            })
+                                            .unwrap_or_default();
+                                        let show_panel = html! { <ShowTagsPanel tags={show_tags} episode_guids={episode_guids} /> };
                                         let layout = if state.is_mobile.unwrap_or(false) {
                                             html! {
                                                 <div class="mobile-layout ep-mobile-pod-header">

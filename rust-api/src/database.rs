@@ -10400,9 +10400,52 @@ impl DatabasePool {
     }
 
 
+    /// RSS guids of episodes already stored for this show. Used to hide an ended live item
+    /// once the recording has become a regular episode.
+    pub async fn podcast_episode_guids(&self, podcast_id: i32) -> AppResult<Vec<String>> {
+        fn push_guid(out: &mut Vec<String>, guid: Result<Option<String>, sqlx::Error>) {
+            if let Ok(Some(guid)) = guid {
+                if !guid.trim().is_empty() {
+                    out.push(guid);
+                }
+            }
+        }
+        match self {
+            DatabasePool::Postgres(pool) => {
+                let rows = sqlx::query(
+                    r#"SELECT episodeguid FROM "Episodes" WHERE podcastid = $1 AND episodeguid IS NOT NULL"#,
+                )
+                .bind(podcast_id)
+                .fetch_all(pool)
+                .await?;
+                let mut guids = Vec::new();
+                for row in rows {
+                    push_guid(&mut guids, row.try_get::<Option<String>, _>("episodeguid"));
+                }
+                Ok(guids)
+            }
+            DatabasePool::MySQL(pool) => {
+                let rows = sqlx::query(
+                    "SELECT EpisodeGUID FROM Episodes WHERE PodcastID = ? AND EpisodeGUID IS NOT NULL",
+                )
+                .bind(podcast_id)
+                .fetch_all(pool)
+                .await?;
+                let mut guids = Vec::new();
+                for row in rows {
+                    push_guid(&mut guids, row.try_get::<Option<String>, _>("EpisodeGUID"));
+                }
+                Ok(guids)
+            }
+        }
+    }
+
     /// Podcasting 2.0 data for a podcast, stored at refresh time: its people (regulars in
     /// `people`, episode-only credits in `guests`), podroll, funding, value, and `tags` (every
     /// channel-level tag, including the same podroll, funding and value objects).
+    ///
+    /// Ended live items whose guid matches a stored episode are removed from this response.
+    /// The JSON stored on the podcast row is left as the feed wrote it.
     pub async fn fetch_podcasting_2_pod_data(
         &self,
         podcast_id: i32,
@@ -10411,7 +10454,12 @@ impl DatabasePool {
         use crate::services::people::store;
         use crate::services::podcasting2::ChannelDocument;
         let credits = store::podcast_credits(self, podcast_id, user_id).await?;
-        let extras = store::channel_extras(self, podcast_id).await?;
+        let mut extras = store::channel_extras(self, podcast_id).await?;
+        if !extras.live_items.is_empty() {
+            let guids = self.podcast_episode_guids(podcast_id).await?;
+            extras.live_items =
+                crate::services::podcasting2::visible_live_items(&extras.live_items, &guids);
+        }
         Ok(ChannelDocument {
             people: credits.people,
             guests: credits.guests,

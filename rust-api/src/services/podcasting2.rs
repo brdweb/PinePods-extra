@@ -1626,6 +1626,77 @@ pub fn normalize_role(role: Option<&str>) -> String {
     }
 }
 
+/// `pending`, `live`, or `ended`. Any other status is treated as upcoming.
+pub fn normalize_live_status(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "live" => "live",
+        "ended" => "ended",
+        _ => "pending",
+    }
+}
+
+/// HLS when the enclosure type says MPEG-URL, or the URL path ends in `.m3u8` / `.m3u`.
+pub fn live_stream_is_hls(mime: Option<&str>, url: &str) -> bool {
+    let mime = mime.unwrap_or("").trim().to_ascii_lowercase();
+    if mime.contains("mpegurl") || mime.contains("m3u8") {
+        return true;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    path.ends_with(".m3u8") || path.ends_with(".m3u")
+}
+
+/// Video element when the enclosure type is `video/*` or DASH. HLS stays audio unless the type says video.
+pub fn live_stream_is_video(mime: Option<&str>) -> bool {
+    let mime = mime.unwrap_or("").trim().to_ascii_lowercase();
+    mime.starts_with("video/") || mime.contains("dash")
+}
+
+/// Drop an ended live item once a regular episode with the same guid is stored.
+///
+/// Pending and live items stay, including when a guid matches, so a show that is still
+/// on the air is not hidden by an older episode. An ended item with no guid stays so
+/// its recording can be played until the feed replaces it. Order is live, then upcoming
+/// by start time, then ended.
+pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<LiveItem> {
+    let guids: std::collections::HashSet<String> = episode_guids
+        .iter()
+        .map(|guid| guid.trim().to_ascii_lowercase())
+        .filter(|guid| !guid.is_empty())
+        .collect();
+    let mut out: Vec<LiveItem> = items
+        .iter()
+        .filter(|item| {
+            if normalize_live_status(&item.status) != "ended" {
+                return true;
+            }
+            match item
+                .tags
+                .guid
+                .as_deref()
+                .map(str::trim)
+                .filter(|guid| !guid.is_empty())
+            {
+                Some(guid) => !guids.contains(&guid.to_ascii_lowercase()),
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| {
+        fn rank(status: &str) -> u8 {
+            match normalize_live_status(status) {
+                "live" => 0,
+                "pending" => 1,
+                _ => 2,
+            }
+        }
+        rank(&a.status)
+            .cmp(&rank(&b.status))
+            .then_with(|| a.start.cmp(&b.start))
+    });
+    out
+}
+
 /// Episode response for `/api/data/fetch_podcasting_2_data`.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EpisodeDocument {
@@ -2082,5 +2153,68 @@ mod tests {
             rrule: None,
         };
         assert!(refresh_plan(&Some(prose), now).next_at.is_none());
+    }
+
+    fn sample_live(status: &str, guid: Option<&str>, start: &str) -> LiveItem {
+        LiveItem {
+            status: status.into(),
+            start: start.into(),
+            tags: ItemTags {
+                guid: guid.map(str::to_string),
+                ..ItemTags::default()
+            },
+            ..LiveItem::default()
+        }
+    }
+
+    #[test]
+    fn ended_live_item_hides_when_the_episode_exists() {
+        let items = vec![
+            sample_live("ended", Some("Live-1"), "2026-01-03T00:00:00Z"),
+            sample_live("pending", Some("soon"), "2026-02-02T00:00:00Z"),
+            sample_live("LIVE", Some("Live-1"), "2026-02-01T00:00:00Z"),
+            sample_live("ended", None, "2026-01-01T00:00:00Z"),
+            sample_live("ended", Some("kept"), "2026-01-02T00:00:00Z"),
+            sample_live("soon", Some("later"), "2026-03-01T00:00:00Z"),
+        ];
+        let visible = visible_live_items(&items, &[" live-1 ".into()]);
+        let labels: Vec<_> = visible
+            .iter()
+            .map(|item| {
+                (
+                    normalize_live_status(&item.status),
+                    item.tags.guid.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("live", Some("Live-1".into())),
+                ("pending", Some("soon".into())),
+                ("pending", Some("later".into())),
+                ("ended", None),
+                ("ended", Some("kept".into())),
+            ]
+        );
+        assert!(live_stream_is_hls(
+            Some("application/x-mpegURL"),
+            "https://cdn.example/live"
+        ));
+        assert!(live_stream_is_hls(
+            Some("application/vnd.apple.mpegurl"),
+            "https://cdn.example/live"
+        ));
+        assert!(live_stream_is_hls(
+            Some("audio/mpeg"),
+            "https://cdn.example/live.m3u8?token=1"
+        ));
+        assert!(!live_stream_is_hls(
+            Some("audio/mpeg"),
+            "https://cdn.example/live.mp3"
+        ));
+        assert!(live_stream_is_video(Some("video/mp4")));
+        assert!(live_stream_is_video(Some("application/dash+xml")));
+        assert!(!live_stream_is_video(Some("application/x-mpegURL")));
     }
 }

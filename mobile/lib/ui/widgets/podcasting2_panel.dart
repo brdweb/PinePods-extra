@@ -189,12 +189,16 @@ class EpisodePodcasting2Panel extends StatelessWidget {
 /// Show-level Podcasting 2.0 details: schedule, trailers, publisher, location, chat.
 class ShowPodcasting2Panel extends StatelessWidget {
   final ChannelTags? tags;
+  final Iterable<String> episodeGuids;
   final void Function(Trailer trailer)? onPlayTrailer;
+  final void Function(LiveItem item)? onPlayLive;
 
   const ShowPodcasting2Panel({
     super.key,
     required this.tags,
+    this.episodeGuids = const [],
     this.onPlayTrailer,
+    this.onPlayLive,
   });
 
   @override
@@ -207,9 +211,32 @@ class ShowPodcasting2Panel extends StatelessWidget {
         .toList();
     final groups = _trailerGroups(show.trailers);
     final showHeaders = groups.any((group) => group.$1 != null);
+    final liveItems = visibleLiveItems(show.liveItems, episodeGuids);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (liveItems.isNotEmpty)
+          _section(
+            context,
+            l10n.p2_live_items,
+            Column(
+              children: [
+                for (final item in liveItems)
+                  _ClipRow(
+                    title: (item.title ?? '').trim().isEmpty
+                        ? _liveStatusLabel(l10n, item.status)
+                        : item.title!.trim(),
+                    meta: _liveMeta(l10n, item),
+                    tooltip: normalizeLiveStatus(item.status) == 'ended'
+                        ? l10n.p2_play_recording
+                        : l10n.p2_play_live,
+                    onPlay: item.playableUrl == null || onPlayLive == null
+                        ? null
+                        : () => onPlayLive!(item),
+                  ),
+              ],
+            ),
+          ),
         if ((show.medium ?? '').trim().isNotEmpty)
           _section(
             context,
@@ -329,6 +356,24 @@ List<(String?, List<Trailer>)> _trailerGroups(List<Trailer> trailers) {
     }
   }
   return groups;
+}
+
+String _liveStatusLabel(AppLocalizations l10n, String status) {
+  switch (normalizeLiveStatus(status)) {
+    case 'live':
+      return l10n.p2_live_now;
+    case 'ended':
+      return l10n.p2_ended;
+    default:
+      return l10n.p2_upcoming;
+  }
+}
+
+String _liveMeta(AppLocalizations l10n, LiveItem item) {
+  final when = item.start.trim();
+  final status = _liveStatusLabel(l10n, item.status);
+  if (when.isEmpty) return status;
+  return '$status · ${l10n.p2_starts(when)}';
 }
 
 String _mediumLabel(AppLocalizations l10n, String medium) {

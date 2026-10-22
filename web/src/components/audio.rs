@@ -21,7 +21,8 @@ use crate::requests::pod_req::{
     call_increment_listen_time, call_increment_played, call_mark_episode_completed,
     call_move_queue_episode_to_top, call_record_listen_duration,
     call_update_episode_duration, EpisodeRequest, HistoryAddRequest, MarkEpisodeCompletedRequest,
-    QueuePodcastRequest, RecordListenDurationRequest, UpdateEpisodeDurationRequest,
+    MediaPlan, PlaybackStep, QueuePodcastRequest, RecordListenDurationRequest,
+    UpdateEpisodeDurationRequest,
 };
 use gloo_timers::callback::Interval;
 use i18nrs::yew::use_translation;
@@ -2142,6 +2143,91 @@ pub fn on_play_pause(
             .emit(e);
         }
     })
+}
+
+/// Play a live stream or an ended recording that is not an episode row yet.
+///
+/// Skips duration probing: a live HLS stream often has no finite length, and waiting on
+/// metadata would leave the player idle. A one-step plan with kind `hls` attaches hls.js
+/// when the enclosure type says MPEG-URL even if the URL does not end in `.m3u8`.
+pub fn play_live_stream(
+    title: String,
+    description: String,
+    url: String,
+    artwork: String,
+    hls: bool,
+    is_video: bool,
+    start: String,
+    audio_dispatch: Dispatch<UIState>,
+) {
+    let episode = Episode {
+        episodetitle: title.clone(),
+        episodedescription: description.clone(),
+        episodeurl: url.clone(),
+        episodeartwork: artwork.clone(),
+        artworkurl: artwork.clone(),
+        episodepubdate: start.clone(),
+        is_video,
+        guid: format!("live:{url}"),
+        ..Episode::default()
+    };
+    let kind = if hls {
+        "hls"
+    } else if is_video {
+        "video"
+    } else {
+        "audio"
+    };
+    let plan = MediaPlan {
+        options: Vec::new(),
+        selected_id: "live".to_string(),
+        playback: vec![PlaybackStep {
+            option_id: "live".to_string(),
+            source_index: 0,
+            uri: url.clone(),
+            mime_type: String::new(),
+            kind: kind.to_string(),
+            is_video,
+        }],
+        download: Vec::new(),
+    };
+    let dispatch_for_media = audio_dispatch.clone();
+    let src = url;
+    audio_dispatch.reduce_mut(move |state| {
+        state.episode_in_db = Some(false);
+        state.audio_playing = Some(true);
+        state.playback_speed = 1.0;
+        state.offline = Some(false);
+        state.skip_segments = None;
+        state.episode_chapters = None;
+        state.current_chapter_index = None;
+        state.soundbite_stop_at = None;
+        state.episode_transcript = None;
+        state.currently_playing = Some(AudioPlayerProps {
+            episode: episode.clone(),
+            src: src.clone(),
+            title,
+            description,
+            release_date: start,
+            artwork_url: artwork,
+            duration: "0".to_string(),
+            episode_id: 0,
+            duration_sec: 0.0,
+            start_pos_sec: 0.0,
+            end_pos_sec: 0.0,
+            offline: false,
+            is_youtube: false,
+            is_video,
+        });
+        state.install_playback_plan(Some(plan));
+        state.set_media_source(src, is_video, dispatch_for_media);
+        let session_vol = state.effective_volume();
+        if let Some(media) = &state.media_element {
+            media.set_volume(session_vol / 100.0);
+            let _ = media.play();
+        }
+        state.audio_playing = Some(true);
+    });
 }
 
 pub fn on_play_click(
