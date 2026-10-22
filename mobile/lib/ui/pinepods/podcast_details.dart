@@ -1722,7 +1722,6 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
 
                   ShowPodcasting2Panel(
                     tags: _showTags,
-                    episodeGuids: _episodes.map((episode) => episode.guid),
                     onPlayTrailer: _playTrailer,
                     onPlayLive: _playLive,
                   ),
