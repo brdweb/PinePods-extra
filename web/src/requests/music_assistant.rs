@@ -453,6 +453,51 @@ pub fn is_music_assistant(device_type: &str) -> bool {
     device_type.eq_ignore_ascii_case("music_assistant")
 }
 
+/// Music Assistant players belong on the speaker panel, not in the generic
+/// "other devices" list. Every other now-playing device stays there.
+pub fn include_in_other_devices(device_type: &str) -> bool {
+    !is_music_assistant(device_type)
+}
+
+/// `Some(true)` shows pause, `Some(false)` shows play. `None` hides transport.
+///
+/// Playing and buffering show pause. Paused shows play. Idle, unknown, off,
+/// and a missing state still show play while an episode is loaded or the relay
+/// says the speaker is playing. Sonos reports idle for a Music Assistant pause
+/// and for a sync member whose coordinator is playing; hiding the buttons there
+/// leaves nothing to press.
+pub fn transport_shown(player_state: &str, episode_loaded: bool, relay_playing: bool) -> Option<bool> {
+    let state = player_state.trim();
+    let playing = relay_playing
+        || state.eq_ignore_ascii_case("playing")
+        || state.eq_ignore_ascii_case("buffering");
+    if playing {
+        return Some(true);
+    }
+    if state.eq_ignore_ascii_case("paused") || episode_loaded {
+        return Some(false);
+    }
+    None
+}
+
+/// Playback state the transport buttons should follow. A synced speaker's own
+/// state is often idle while the leader is playing.
+pub fn playback_state_for<'a>(player: &'a MaPlayer, players: &'a [MaPlayer]) -> &'a str {
+    if let Some(id) = player
+        .synced_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(leader) = players.iter().find(|p| p.player_id == id) {
+            if !leader.state.trim().is_empty() {
+                return leader.state.as_str();
+            }
+        }
+    }
+    player.state.as_str()
+}
+
 /// Which MA device the now-playing bar should show.
 /// Prefers the speaker the user last targeted, then one that is playing,
 /// then the freshest snapshot that has an episode loaded.
@@ -910,6 +955,42 @@ mod tests {
         assert!(show_ma_now_playing(true, false, &devices, None));
         assert!(!show_ma_now_playing(true, true, &devices, None));
         assert!(!show_ma_now_playing(false, false, &devices, None));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn transport_stays_when_sonos_reports_idle() {
+        assert_eq!(transport_shown("playing", true, false), Some(true));
+        assert_eq!(transport_shown("paused", true, false), Some(false));
+        assert_eq!(transport_shown("idle", true, false), Some(false));
+        assert_eq!(transport_shown("idle", true, true), Some(true));
+        assert_eq!(transport_shown("", true, false), Some(false));
+        assert_eq!(transport_shown("idle", false, false), None);
+        assert_eq!(transport_shown("unknown", false, true), Some(true));
+        assert!(!include_in_other_devices("music_assistant"));
+        assert!(!include_in_other_devices("Music_Assistant"));
+        assert!(include_in_other_devices("Web"));
+        assert!(include_in_other_devices("iOS"));
+        assert!(include_in_other_devices("Android"));
+        assert!(include_in_other_devices("Firewood"));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn synced_speaker_follows_the_leader_state() {
+        let mut member = player("bed", "player", &[]);
+        member.state = "idle".into();
+        member.synced_to = Some("living".into());
+        let mut leader = player("living", "player", &["bed"]);
+        leader.state = "playing".into();
+        assert_eq!(
+            playback_state_for(&member, &[member.clone(), leader.clone()]),
+            "playing"
+        );
+        assert_eq!(
+            playback_state_for(&leader, &[member, leader.clone()]),
+            "playing"
+        );
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

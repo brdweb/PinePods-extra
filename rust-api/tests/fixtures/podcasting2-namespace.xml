@@ -46,7 +46,7 @@
       </podcast:valueTimeSplit>
     </podcast:value>
 
-    <podcast:liveItem status="live" start="2026-10-21T18:00:00.000Z" end="2026-10-21T19:00:00.000Z">
+    <podcast:liveItem status="live" start="2099-01-01T18:00:00.000Z" end="2099-01-01T19:00:00.000Z">
       <title>Live Now</title>
       <description>A live episode</description>
       <link>https://example.invalid/live</link>

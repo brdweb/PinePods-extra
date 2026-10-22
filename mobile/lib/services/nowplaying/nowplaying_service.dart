@@ -327,7 +327,10 @@ class NowPlayingService {
 
   void _onDisconnected({int? closeCode}) {
     connected.value = false;
-    devices.value = const [];
+    // Keep the last device list across a reconnect. Clearing it hides the
+    // Music Assistant now-playing bar until the next snapshot, even though the
+    // speakers have not gone away. Logout and session switch still clear in
+    // [_teardown]. The next devices frame replaces this list.
     _channelSub?.cancel();
     _channelSub = null;
     _channel = null;

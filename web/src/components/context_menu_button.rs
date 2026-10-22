@@ -12,7 +12,9 @@ use crate::components::gen_funcs::format_error_message;
 use crate::components::media_options::preferred_media_option;
 use crate::components::remote_devices::device_label;
 use crate::requests::notify::toast_info;
-use crate::requests::music_assistant::{open_speaker_picker, MusicAssistantState};
+use crate::requests::music_assistant::{
+    include_in_other_devices, open_speaker_picker, MusicAssistantState,
+};
 use crate::requests::now_playing::{play_on_device, NowPlayingState};
 use crate::requests::pod_req::{
     call_add_episode_to_collection, call_download_episode, call_get_collection_add_ui,
@@ -134,7 +136,7 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
     let play_on_targets = use_selector(|s: &NowPlayingState| {
         s.devices
             .iter()
-            .filter(|d| d.supports("play_episode"))
+            .filter(|d| d.supports("play_episode") && include_in_other_devices(&d.device_type))
             .map(|d| (d.device_id.clone(), device_label(d), d.device_type.clone()))
             .collect::<Vec<_>>()
     });

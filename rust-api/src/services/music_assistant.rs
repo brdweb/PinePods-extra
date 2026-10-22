@@ -432,18 +432,14 @@ pub fn player_from_value(v: &Value) -> Option<MaPlayer> {
         .filter(|s| !s.is_empty())
         .unwrap_or(&player_id)
         .to_string();
-    let group_members = id_list(v.get("group_childs").unwrap_or(&Value::Null));
+    let group_members = group_member_ids(v);
     let type_name = v.get("type").and_then(|s| s.as_str()).unwrap_or("");
     let kind = if type_name.to_ascii_lowercase().contains("group") {
         MaPlayerKind::Group
     } else {
         MaPlayerKind::Player
     };
-    let state = v
-        .get("state")
-        .and_then(|s| s.as_str())
-        .unwrap_or("idle")
-        .to_string();
+    let state = playback_state_str(v).unwrap_or_else(|| "idle".to_string());
     let synced_to = v
         .get("synced_to")
         .and_then(|s| s.as_str())
@@ -473,6 +469,85 @@ pub fn player_from_value(v: &Value) -> Option<MaPlayer> {
         current_uri: first_uri(v),
         current_title: first_title(v),
     })
+}
+
+/// `playback_state` is the 2.10 field. `state` is the alias older payloads and
+/// the queue events still use. Empty and JSON null count as missing.
+pub fn playback_state_str(v: &Value) -> Option<String> {
+    for key in ["playback_state", "state"] {
+        if let Some(raw) = v.get(key).and_then(|s| s.as_str()) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `group_childs` is the pre-2.6 name. 2.10 sends `group_members` and, when the
+/// serializer adds the alias, both. Prefer whichever list is non-empty.
+pub fn group_member_ids(v: &Value) -> Vec<String> {
+    let childs = id_list(v.get("group_childs").unwrap_or(&Value::Null));
+    if !childs.is_empty() {
+        return childs;
+    }
+    id_list(v.get("group_members").unwrap_or(&Value::Null))
+}
+
+/// Fold one player event onto the player we already stored.
+///
+/// A `player_updated` frame that omits playback state, availability, or the
+/// active queue must not replace a playing Sonos speaker with a default idle
+/// player. Music Assistant sends `null` for `state` while a sync member's
+/// playback lives on the coordinator; that is not "nothing is loaded".
+pub fn merge_player_update(previous: Option<&MaPlayer>, raw: &Value) -> Option<MaPlayer> {
+    let mut player = player_from_value(raw)?;
+    let Some(prev) = previous else {
+        return Some(player);
+    };
+    let state_field = raw.get("playback_state").or_else(|| raw.get("state"));
+    let keep_state = match state_field {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) if s.trim().is_empty() => true,
+        _ => false,
+    };
+    if keep_state {
+        player.state = prev.state.clone();
+    }
+    if raw.get("available").is_none() {
+        player.available = prev.available;
+    }
+    if raw.get("active_source").is_none() {
+        player.active_source = prev.active_source.clone();
+    }
+    if raw.get("synced_to").is_none() {
+        player.synced_to = prev.synced_to.clone();
+    }
+    if raw.get("group_childs").is_none() && raw.get("group_members").is_none() {
+        player.group_members = prev.group_members.clone();
+        player.kind = prev.kind;
+    }
+    if raw.get("volume_level").is_none() {
+        player.volume_level = prev.volume_level;
+    }
+    if raw.get("volume_muted").is_none() {
+        player.volume_muted = prev.volume_muted;
+    }
+    if raw.get("name").is_none() && raw.get("display_name").is_none() {
+        player.name = prev.name.clone();
+    }
+    if raw.get("current_media").is_none() && raw.get("current_item").is_none() {
+        player.current_uri = prev.current_uri.clone();
+        player.current_title = prev.current_title.clone();
+        if player.elapsed_time.is_none() {
+            player.elapsed_time = prev.elapsed_time;
+        }
+    }
+    if raw.get("type").is_none() {
+        player.kind = prev.kind;
+    }
+    Some(player)
 }
 
 fn id_list(v: &Value) -> Vec<String> {
@@ -582,6 +657,14 @@ pub struct ProgressUpdate {
     pub playing: Option<bool>,
     pub title: Option<String>,
     pub speed: Option<f64>,
+    /// True when the payload names `current_item` or `current_media` and sets it
+    /// to null. An omitted item is not a clear: queue time ticks only carry
+    /// `elapsed_time`.
+    pub media_cleared: bool,
+    /// True when the payload's playback state is present and is neither playing,
+    /// buffering, nor paused. Sonos reports that for a Music Assistant pause and
+    /// for a sync group whose leader is still playing.
+    pub reported_idle: bool,
 }
 
 /// Read whatever a queue or player event tells us about PinePods playback.
@@ -595,8 +678,17 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
         .get("elapsed_time")
         .and_then(json_f64)
         .or_else(|| data.get("elapsed_time").and_then(json_f64));
-    let state = data.get("state").and_then(|s| s.as_str());
-    let playing = state.map(|s| s == "playing" || s == "buffering");
+    let state = playback_state_str(data);
+    let reported_idle = state.as_deref().is_some_and(|s| {
+        let lower = s.to_ascii_lowercase();
+        lower != "playing" && lower != "buffering" && lower != "paused"
+    });
+    let playing = state.as_deref().map(|s| {
+        let lower = s.to_ascii_lowercase();
+        lower == "playing" || lower == "buffering"
+    });
+    let media_cleared = matches!(data.get("current_item"), Some(Value::Null))
+        || matches!(data.get("current_media"), Some(Value::Null));
     let item = data
         .get("current_item")
         .or_else(|| data.get("current_media"));
@@ -628,7 +720,107 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
         playing,
         title,
         speed,
+        media_cleared,
+        reported_idle,
     }
+}
+
+/// Next playing flag and whether the loaded episode should be dropped.
+///
+/// Idle while a PinePods stream is still loaded does not clear it and does not
+/// force `playing` off. That is the Sonos case: Music Assistant rewrites a
+/// pause as idle, and a sync group can sit in idle while the coordinator is
+/// playing. An explicit null `current_item` / `current_media` is a real stop.
+pub fn next_playback(
+    currently_playing: bool,
+    has_stream: bool,
+    update_playing: Option<bool>,
+    reported_idle: bool,
+    media_cleared: bool,
+) -> (bool, bool) {
+    if media_cleared {
+        return (false, true);
+    }
+    let playing = match update_playing {
+        Some(true) => true,
+        Some(false) if !reported_idle => false,
+        Some(false) if !has_stream => false,
+        _ => currently_playing,
+    };
+    (playing, false)
+}
+
+/// Queue id whose snapshot should stand for `player`.
+///
+/// A queue that still has a PinePods stream beats an empty one. Sonos
+/// coordinator changes and Music Assistant clearing `active_source` (it does
+/// that on purpose while its own queue is the source) otherwise publish
+/// `episode_id: 0` and the clients hide the controls. `retained` is the last
+/// queue id that had a stream for this player.
+pub fn snapshot_queue_id(
+    player: &MaPlayer,
+    players: &[MaPlayer],
+    loaded_queues: &HashSet<String>,
+    retained: Option<&str>,
+) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+    let mut push = |id: &str| {
+        let id = id.trim();
+        if id.is_empty() || candidates.iter().any(|existing| existing == id) {
+            return;
+        }
+        candidates.push(id.to_string());
+    };
+    if let Some(src) = player.active_source.as_deref() {
+        push(src);
+    }
+    push(&player.player_id);
+    if let Some(leader) = player.synced_to.as_deref() {
+        push(leader);
+        if let Some(leader_player) = players.iter().find(|p| p.player_id == leader) {
+            if let Some(src) = leader_player.active_source.as_deref() {
+                push(src);
+            }
+        }
+    }
+    for member in &player.group_members {
+        push(member);
+        if let Some(member_player) = players.iter().find(|p| p.player_id == member.as_str()) {
+            if let Some(src) = member_player.active_source.as_deref() {
+                push(src);
+            }
+        }
+    }
+    for other in players {
+        if other.player_id == player.player_id {
+            continue;
+        }
+        let points_here = other.synced_to.as_deref() == Some(player.player_id.as_str())
+            || other.group_members.iter().any(|m| m == &player.player_id);
+        if points_here {
+            push(&other.player_id);
+            if let Some(src) = other.active_source.as_deref() {
+                push(src);
+            }
+        }
+    }
+    if let Some(retained) = retained {
+        push(retained);
+    }
+    if let Some(loaded) = candidates.iter().find(|id| loaded_queues.contains(*id)) {
+        return loaded.clone();
+    }
+    candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| player.player_id.clone())
+}
+
+/// Unavailable players stay registered while they still have a loaded episode,
+/// so a Sonos availability blip does not delete the now-playing row. A player
+/// that is gone (`player_removed`) is not in the list and is dropped.
+pub fn keep_virtual_device(available: bool, has_loaded_episode: bool) -> bool {
+    available || has_loaded_episode
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2336,6 +2528,9 @@ async fn maintain(
 ) {
     let mut virtuals: HashMap<String, u64> = HashMap::new();
     let mut tracks: HashMap<String, QueueTrack> = HashMap::new();
+    // player_id → queue id that last had a PinePods stream. Survives a socket
+    // reconnect so the next players/all refresh can put the episode back.
+    let mut retained: HashMap<String, String> = HashMap::new();
     let mut backoff = 2u64;
     loop {
         if *cancel.borrow() {
@@ -2352,6 +2547,7 @@ async fn maintain(
             &mut cancel,
             &mut virtuals,
             &mut tracks,
+            &mut retained,
         )
         .await
         {
@@ -2390,6 +2586,7 @@ async fn run_once(
     cancel: &mut watch::Receiver<bool>,
     virtuals: &mut HashMap<String, u64>,
     tracks: &mut HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
 ) -> Result<(), String> {
     let socket = tokio::time::timeout(
         Duration::from_secs(10),
@@ -2421,7 +2618,9 @@ async fn run_once(
             }
             note = note_rx.recv() => {
                 match note {
-                    Some(note) => apply_note(state, user_id, live, virtuals, tracks, note).await,
+                    Some(note) => {
+                        apply_note(state, user_id, live, virtuals, tracks, retained, note).await
+                    }
                     None => break Err("Music Assistant connection ended".into()),
                 }
             }
@@ -2448,6 +2647,7 @@ async fn apply_note(
     live: &Arc<SessionLive>,
     virtuals: &mut HashMap<String, u64>,
     tracks: &mut HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
     note: SessionNote,
 ) {
     match note {
@@ -2459,7 +2659,8 @@ async fn apply_note(
         }
         SessionNote::Players(players) => {
             *live.players.write().await = players.clone();
-            if let Err(e) = sync_virtuals(state, user_id, &players, virtuals, tracks).await {
+            if let Err(e) = sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await
+            {
                 tracing::debug!("music assistant device sync: {e}");
             }
         }
@@ -2469,8 +2670,15 @@ async fn apply_note(
             data,
         } => {
             if event == "player_updated" || event == "player_added" {
-                if let Some(player) = player_from_value(&data) {
-                    let mut players = live.players.write().await;
+                let player_id = data
+                    .get("player_id")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string());
+                let mut players = live.players.write().await;
+                let previous = player_id.as_deref().and_then(|id| {
+                    players.iter().find(|p| p.player_id == id).cloned()
+                });
+                if let Some(player) = merge_player_update(previous.as_ref(), &data) {
                     if let Some(slot) = players.iter_mut().find(|p| p.player_id == player.player_id)
                     {
                         *slot = player;
@@ -2479,8 +2687,15 @@ async fn apply_note(
                     }
                     let snapshot_players = players.clone();
                     drop(players);
-                    let _ =
-                        sync_virtuals(state, user_id, &snapshot_players, virtuals, tracks).await;
+                    let _ = sync_virtuals(
+                        state,
+                        user_id,
+                        &snapshot_players,
+                        virtuals,
+                        tracks,
+                        retained,
+                    )
+                    .await;
                 }
             } else if event == "player_removed" {
                 if let Some(id) = object_id.or_else(|| {
@@ -2489,15 +2704,16 @@ async fn apply_note(
                         .map(|s| s.to_string())
                 }) {
                     live.players.write().await.retain(|p| p.player_id != id);
+                    retained.remove(&id);
                     let players = live.players.read().await.clone();
-                    let _ = sync_virtuals(state, user_id, &players, virtuals, tracks).await;
+                    let _ = sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await;
                 }
             } else if event.starts_with("queue_") {
                 let mut update = progress_from_payload(&data);
                 if update.queue_id.is_none() {
                     update.queue_id = object_id;
                 }
-                apply_progress(state, user_id, live, tracks, update).await;
+                apply_progress(state, user_id, live, tracks, retained, update).await;
             }
         }
     }
@@ -2508,10 +2724,17 @@ async fn apply_progress(
     user_id: i32,
     live: &Arc<SessionLive>,
     tracks: &mut HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
     update: ProgressUpdate,
 ) {
     let Some(queue_id) = update.queue_id.clone() else {
         return;
+    };
+    let players = live.players.read().await.clone();
+    let donor = if update.stream.is_none() && !update.media_cleared {
+        donor_track(tracks, &players, &queue_id, retained)
+    } else {
+        None
     };
     let track = tracks
         .entry(queue_id.clone())
@@ -2527,11 +2750,46 @@ async fn apply_progress(
             last_write: None,
             loaded_episode: None,
         });
+    let (playing, clear_stream) = next_playback(
+        track.playing,
+        track.stream.is_some() || donor.is_some() || update.stream.is_some(),
+        update.playing,
+        update.reported_idle,
+        update.media_cleared,
+    );
+    if clear_stream {
+        track.stream = None;
+        track.title.clear();
+        track.artwork.clear();
+        track.duration = 0.0;
+        track.playing = false;
+        track.loaded_episode = None;
+        retained.retain(|_, queue| queue != &queue_id);
+    }
     let episode_changed = update.stream.as_ref().map(|s| s.episode_id)
         != track.stream.as_ref().map(|s| s.episode_id)
         && update.stream.is_some();
-    if let Some(stream) = update.stream.clone() {
-        track.stream = Some(stream);
+    if !clear_stream {
+        if let Some(stream) = update.stream.clone() {
+            track.stream = Some(stream);
+        } else if track.stream.is_none() {
+            if let Some(donor) = donor {
+                track.stream = Some(donor.stream);
+                if track.title.is_empty() {
+                    track.title = donor.title;
+                }
+                if track.artwork.is_empty() {
+                    track.artwork = donor.artwork;
+                }
+                if track.duration <= 0.0 {
+                    track.duration = donor.duration;
+                }
+                if donor.speed > 0.0 {
+                    track.speed = donor.speed;
+                }
+            }
+        }
+        track.playing = playing;
     }
     if let Some(p) = update.position_sec {
         track.position = p.max(0.0);
@@ -2540,9 +2798,6 @@ async fn apply_progress(
         if d > 0.0 {
             track.duration = d;
         }
-    }
-    if let Some(playing) = update.playing {
-        track.playing = playing;
     }
     if let Some(title) = update.title.clone() {
         if !title.is_empty() && track.title.is_empty() {
@@ -2555,7 +2810,16 @@ async fn apply_progress(
         }
     }
     let Some(stream) = track.stream.clone() else {
-        publish_track_snapshot(state, user_id, live, &queue_id, track).await;
+        publish_track_snapshot(
+            state,
+            user_id,
+            live,
+            tracks,
+            retained,
+            &queue_id,
+            clear_stream,
+        )
+        .await;
         return;
     };
     if stream.user_id.is_some_and(|id| id != user_id) {
@@ -2603,7 +2867,16 @@ async fn apply_progress(
         track.last_write = Some(Instant::now());
         track.sample = Some(sample);
     }
-    publish_track_snapshot(state, user_id, live, &queue_id, track).await;
+    publish_track_snapshot(
+        state,
+        user_id,
+        live,
+        tracks,
+        retained,
+        &queue_id,
+        false,
+    )
+    .await;
 }
 
 async fn write_listen_progress(
@@ -2660,26 +2933,105 @@ async fn publish_track_snapshot(
     state: &AppState,
     user_id: i32,
     live: &Arc<SessionLive>,
+    tracks: &HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
     queue_id: &str,
-    track: &QueueTrack,
+    cleared: bool,
 ) {
-    let players = live.players.read().await;
-    let Some(player) = players
-        .iter()
-        .find(|p| p.player_id == queue_id || p.active_source.as_deref() == Some(queue_id))
-    else {
-        return;
-    };
-    let snap = snapshot_for(user_id, player, Some(track));
-    drop(players);
-    if state
-        .redis_client
-        .upsert_now_playing(user_id, snap)
-        .await
-        .is_ok()
-    {
+    let players = live.players.read().await.clone();
+    let loaded = loaded_queue_ids(tracks);
+    let mut wrote = false;
+    for player in players.iter().filter(|p| player_related(p, queue_id)) {
+        let key = snapshot_queue_id(
+            player,
+            &players,
+            &loaded,
+            retained.get(&player.player_id).map(String::as_str),
+        );
+        let chosen = tracks.get(&key);
+        let episode = chosen
+            .and_then(|t| t.stream.as_ref())
+            .map(|s| s.episode_id)
+            .unwrap_or(0);
+        // An empty tick for a new coordinator queue must not replace the
+        // episode the clients are showing. A real stop (`cleared`) does.
+        if episode == 0 && !cleared && retained.contains_key(&player.player_id) {
+            continue;
+        }
+        let snap = snapshot_for(user_id, player, chosen);
+        if state
+            .redis_client
+            .upsert_now_playing(user_id, snap)
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        wrote = true;
+        if episode != 0 {
+            retained.insert(player.player_id.clone(), key);
+        } else if cleared {
+            retained.remove(&player.player_id);
+        }
+    }
+    if wrote {
         notify_devices_changed(state, user_id, "").await;
     }
+}
+
+fn loaded_queue_ids(tracks: &HashMap<String, QueueTrack>) -> HashSet<String> {
+    tracks
+        .iter()
+        .filter(|(_, track)| track.stream.is_some())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+fn player_related(player: &MaPlayer, queue_id: &str) -> bool {
+    player.player_id == queue_id
+        || player.active_source.as_deref() == Some(queue_id)
+        || player.synced_to.as_deref() == Some(queue_id)
+        || player.group_members.iter().any(|member| member == queue_id)
+}
+
+struct DonorTrack {
+    stream: StreamRef,
+    title: String,
+    artwork: String,
+    duration: f64,
+    speed: f64,
+}
+
+/// Stream already loaded on a player this queue belongs to. Used when a Sonos
+/// coordinator change opens a new queue id that has elapsed time but no URL.
+fn donor_track(
+    tracks: &HashMap<String, QueueTrack>,
+    players: &[MaPlayer],
+    queue_id: &str,
+    retained: &HashMap<String, String>,
+) -> Option<DonorTrack> {
+    let loaded = loaded_queue_ids(tracks);
+    for player in players.iter().filter(|p| player_related(p, queue_id)) {
+        let key = snapshot_queue_id(
+            player,
+            players,
+            &loaded,
+            retained.get(&player.player_id).map(String::as_str),
+        );
+        if key == queue_id {
+            continue;
+        }
+        if let Some(track) = tracks.get(&key).filter(|t| t.stream.is_some()) {
+            return Some(DonorTrack {
+                stream: track.stream.clone().unwrap(),
+                title: track.title.clone(),
+                artwork: track.artwork.clone(),
+                duration: track.duration,
+                speed: track.speed,
+            });
+        }
+    }
+    None
 }
 
 async fn sync_virtuals(
@@ -2688,9 +3040,26 @@ async fn sync_virtuals(
     players: &[MaPlayer],
     virtuals: &mut HashMap<String, u64>,
     tracks: &HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
 ) -> AppResult<()> {
+    let loaded = loaded_queue_ids(tracks);
     let mut keep = HashSet::new();
-    for player in players.iter().filter(|p| p.available) {
+    for player in players {
+        let queue_key = snapshot_queue_id(
+            player,
+            players,
+            &loaded,
+            retained.get(&player.player_id).map(String::as_str),
+        );
+        let track = tracks.get(&queue_key);
+        let has_episode = track.and_then(|t| t.stream.as_ref()).is_some();
+        // `retained` means this player already published an episode. An
+        // availability blip or a coordinator queue that does not yet hold the
+        // stream must not unregister it.
+        let remembered = retained.contains_key(&player.player_id);
+        if !keep_virtual_device(player.available, has_episode || remembered) {
+            continue;
+        }
         let device_id = device_id_for(user_id, &player.player_id);
         keep.insert(device_id.clone());
         if !virtuals.contains_key(&device_id) {
@@ -2718,12 +3087,16 @@ async fn sync_virtuals(
                 }
             });
         }
-        let queue_key = player.active_source.as_deref().unwrap_or(&player.player_id);
-        let track = tracks
-            .get(queue_key)
-            .or_else(|| tracks.get(&player.player_id));
+        // Don't replace a loaded episode with an empty snapshot. The retained
+        // queue is still the one the speaker is playing.
+        if !has_episode && retained.contains_key(&player.player_id) {
+            continue;
+        }
         let snap = snapshot_for(user_id, player, track);
         state.redis_client.upsert_now_playing(user_id, snap).await?;
+        if has_episode {
+            retained.insert(player.player_id.clone(), queue_key);
+        }
     }
     let stale: Vec<String> = virtuals
         .keys()
@@ -2833,6 +3206,7 @@ fn json_i64(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use futures::{SinkExt, StreamExt};
     use tokio::io::DuplexStream;
     use tokio_tungstenite::tungstenite::protocol::Role;
@@ -3174,6 +3548,131 @@ mod tests {
         let tick = progress_from_payload(&json!({"queue_id": "kitchen", "elapsed_time": 43.0}));
         assert!(tick.stream.is_none());
         assert_eq!(tick.position_sec, Some(43.0));
+        assert!(!tick.media_cleared);
+        assert!(!tick.reported_idle);
+
+        let idle = progress_from_payload(&json!({
+            "queue_id": "kitchen",
+            "playback_state": "idle"
+        }));
+        assert_eq!(idle.playing, Some(false));
+        assert!(idle.reported_idle);
+        assert!(!idle.media_cleared);
+
+        let stopped = progress_from_payload(&json!({
+            "queue_id": "kitchen",
+            "state": "idle",
+            "current_item": null
+        }));
+        assert!(stopped.media_cleared);
+    }
+
+    fn sample_player(id: &str, state: &str) -> MaPlayer {
+        MaPlayer {
+            player_id: id.into(),
+            name: id.into(),
+            available: true,
+            state: state.into(),
+            volume_level: Some(20.0),
+            volume_muted: false,
+            kind: MaPlayerKind::Player,
+            group_members: Vec::new(),
+            synced_to: None,
+            can_group_with: Vec::new(),
+            active_source: None,
+            elapsed_time: None,
+            current_uri: None,
+            current_title: None,
+        }
+    }
+
+    #[test]
+    fn playback_state_and_group_members_follow_the_2_10_names() {
+        let player = player_from_value(&json!({
+            "player_id": "RINCON_1",
+            "name": "Living Room",
+            "playback_state": "playing",
+            "group_members": ["RINCON_1", "RINCON_2"],
+            "type": "player"
+        }))
+        .unwrap();
+        assert_eq!(player.state, "playing");
+        assert_eq!(
+            player.group_members,
+            vec!["RINCON_1".to_string(), "RINCON_2".to_string()]
+        );
+        assert_eq!(player.kind, MaPlayerKind::Player);
+    }
+
+    #[test]
+    fn partial_update_and_null_state_keep_a_playing_speaker() {
+        let previous = player_from_value(&json!({
+            "player_id": "RINCON_1",
+            "name": "Living Room",
+            "state": "playing",
+            "available": true,
+            "active_source": "RINCON_1",
+            "volume_level": 20,
+            "current_media": {"uri": "http://h/api/data/stream/4?user_id=1", "name": "Ep"}
+        }))
+        .unwrap();
+        let volume = merge_player_update(
+            Some(&previous),
+            &json!({"player_id": "RINCON_1", "volume_level": 22}),
+        )
+        .unwrap();
+        assert_eq!(volume.state, "playing");
+        assert_eq!(volume.active_source.as_deref(), Some("RINCON_1"));
+        assert!(volume.available);
+        assert_eq!(volume.volume_level, Some(22.0));
+        assert_eq!(volume.name, "Living Room");
+        assert!(volume.current_uri.unwrap().contains("/stream/4"));
+
+        let nulled = merge_player_update(
+            Some(&previous),
+            &json!({"player_id": "RINCON_1", "state": null, "playback_state": null}),
+        )
+        .unwrap();
+        assert_eq!(nulled.state, "playing");
+    }
+
+    #[test]
+    fn idle_with_a_loaded_episode_does_not_clear_it() {
+        let (playing, clear) = next_playback(true, true, Some(false), true, false);
+        assert!(playing);
+        assert!(!clear);
+        let (playing, clear) = next_playback(true, true, Some(false), false, false);
+        assert!(!playing);
+        assert!(!clear);
+        let (playing, clear) = next_playback(true, true, Some(false), true, true);
+        assert!(!playing);
+        assert!(clear);
+    }
+
+    #[test]
+    fn coordinator_change_keeps_the_queue_that_has_the_episode() {
+        let mut sonos = sample_player("RINCON_1", "idle");
+        sonos.active_source = Some("group-2".into());
+        let loaded = HashSet::from(["RINCON_1".to_string()]);
+        let key = snapshot_queue_id(&sonos, &[sonos.clone()], &loaded, Some("RINCON_1"));
+        assert_eq!(key, "RINCON_1");
+
+        let mut member = sample_player("bed", "idle");
+        member.synced_to = Some("living".into());
+        let mut leader = sample_player("living", "playing");
+        leader.active_source = Some("living".into());
+        let loaded = HashSet::from(["living".to_string()]);
+        assert_eq!(
+            snapshot_queue_id(&member, &[member.clone(), leader], &loaded, None),
+            "living"
+        );
+    }
+
+    #[test]
+    fn unavailable_player_with_an_episode_stays_registered() {
+        assert!(keep_virtual_device(false, true));
+        assert!(!keep_virtual_device(false, false));
+        assert!(keep_virtual_device(true, false));
     }
 
     #[test]

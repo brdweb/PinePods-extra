@@ -317,7 +317,7 @@ class _MaTransportSheet extends StatelessWidget {
                         showMusicAssistantSpeakers(host);
                       },
                       icon: const Icon(Icons.speaker_group),
-                      label: const Text('Speakers'),
+                      label: const Text('MA Speakers'),
                     ),
                   ),
                 ],

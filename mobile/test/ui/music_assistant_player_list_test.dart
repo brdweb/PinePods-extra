@@ -3,14 +3,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/ui/podcast/music_assistant_sheet.dart';
 
-MaPlayer speaker(String id, String name, {bool available = true, List<String> members = const []}) {
+MaPlayer speaker(
+  String id,
+  String name, {
+  bool available = true,
+  List<String> members = const [],
+  String state = 'idle',
+}) {
   return MaPlayer(
     playerId: id,
     deviceId: 'ma:1:$id',
     name: name,
     kind: members.isEmpty ? 'player' : 'group',
     available: available,
-    state: 'idle',
+    state: state,
     volumeLevel: 30,
     groupMembers: members,
     canGroupWith: const ['den'],
@@ -123,5 +129,54 @@ void main() {
     await tester.tap(find.text('Ungroup').first);
     await tester.pump();
     expect(commands, contains('kitchen:ungroup'));
+  });
+
+  testWidgets('keeps play and pause when sonos reports idle with an episode', (tester) async {
+    final commands = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MusicAssistantPlayerList(
+            players: [
+              speaker('living', 'Living Room', state: 'playing'),
+              speaker('bed', 'Bed', state: 'idle'),
+            ],
+            connected: true,
+            playLabel: 'Play this episode',
+            loadedPlayerIds: const {'bed'},
+            playingPlayerIds: const {'living'},
+            onPlay: (_) async {},
+            onCommand: (playerId, action, _) async {
+              commands.add('$playerId:$action');
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('Pause'), findsOneWidget);
+    expect(find.byTooltip('Play'), findsOneWidget);
+    expect(find.byTooltip('Stop'), findsNWidgets(2));
+
+    await tester.tap(find.byTooltip('Play'));
+    await tester.pump();
+    expect(commands, contains('bed:play'));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MusicAssistantPlayerList(
+            players: [speaker('den', 'Den', state: 'idle')],
+            connected: true,
+            playLabel: 'Play this episode',
+            onPlay: (_) async {},
+            onCommand: (_, _, _) async {},
+          ),
+        ),
+      ),
+    );
+    expect(find.byTooltip('Pause'), findsNothing);
+    expect(find.byTooltip('Play'), findsNothing);
+    expect(find.byTooltip('Stop'), findsNothing);
   });
 }

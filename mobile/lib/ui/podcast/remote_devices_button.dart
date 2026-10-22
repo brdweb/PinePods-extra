@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
 import 'package:pinepods_mobile/services/music_assistant/music_assistant_api.dart';
 import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
@@ -76,8 +77,13 @@ Future<void> showPlayOnDevicePicker(
 }
 
 /// The picker's rows: only devices that can start an episode.
+List<NowPlayingDevice> _otherDevices(List<NowPlayingDevice> deviceList) =>
+    deviceList.where((d) => includeInOtherDevices(d.deviceType)).toList();
+
 Widget _playOnList(BuildContext context, List<NowPlayingDevice> deviceList) {
-  final targets = deviceList.where((d) => d.supports('play_episode')).toList();
+  final targets = _otherDevices(deviceList)
+      .where((d) => d.supports('play_episode'))
+      .toList();
   return Column(
     mainAxisSize: MainAxisSize.min,
     children: [
@@ -127,7 +133,8 @@ class RemoteDevicesButton extends StatelessWidget {
     return ValueListenableBuilder<List<NowPlayingDevice>>(
       valueListenable: service.devices,
       builder: (context, deviceList, _) {
-        if (hideWhenEmpty && deviceList.isEmpty) return const SizedBox.shrink();
+        final others = _otherDevices(deviceList);
+        if (hideWhenEmpty && others.isEmpty) return const SizedBox.shrink();
         final iconColor = color ?? Theme.of(context).primaryIconTheme.color;
         return Stack(
           alignment: Alignment.center,
@@ -137,7 +144,7 @@ class RemoteDevicesButton extends StatelessWidget {
               icon: Icon(Icons.devices_outlined, color: iconColor),
               onPressed: () => _showDevicePanel(context, service),
             ),
-            if (deviceList.isNotEmpty)
+            if (others.isNotEmpty)
               Positioned(
                 top: 8,
                 right: 8,
@@ -152,7 +159,7 @@ class RemoteDevicesButton extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '${deviceList.length}',
+                    '${others.length}',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 10,
@@ -223,7 +230,7 @@ class _RemoteDevicesSheet extends StatelessWidget {
                           showMusicAssistantSpeakers(host);
                         },
                         icon: const Icon(Icons.speaker),
-                        label: const Text('Speakers'),
+                        label: const Text('MA Speakers'),
                       );
                     },
                   ),
@@ -249,7 +256,8 @@ class _RemoteDevicesSheet extends StatelessWidget {
               child: ValueListenableBuilder<List<NowPlayingDevice>>(
                 valueListenable: service.devices,
                 builder: (context, deviceList, _) {
-                  if (deviceList.isEmpty) {
+                  final others = _otherDevices(deviceList);
+                  if (others.isEmpty) {
                     return const Padding(
                       padding: EdgeInsets.all(24),
                       child: Text(
@@ -261,10 +269,10 @@ class _RemoteDevicesSheet extends StatelessWidget {
                   return ListView.separated(
                     shrinkWrap: true,
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    itemCount: deviceList.length,
+                    itemCount: others.length,
                     separatorBuilder: (_, _) => const Divider(height: 1),
                     itemBuilder: (context, index) =>
-                        _DeviceRow(service: service, device: deviceList[index]),
+                        _DeviceRow(service: service, device: others[index]),
                   );
                 },
               ),

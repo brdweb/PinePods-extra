@@ -66,8 +66,9 @@
 //! ## Server-side virtual devices
 //! The connection registry is not only for browser sockets. A backend service can
 //! register a device id and receive the same relayed `command` frames. Music
-//! Assistant players are registered that way so existing remote-device UIs can
-//! target them without a new transport.
+//! Assistant players are registered that way (`device_type` `music_assistant`).
+//! The MA Speakers panel and the now-playing bar target them. The generic
+//! other-devices list filters that type out.
 
 use axum::{
     extract::{
