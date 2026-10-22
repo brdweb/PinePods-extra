@@ -832,4 +832,74 @@ class AppLocalizationsIt extends AppLocalizations {
   @override
   String get media_fell_back =>
       'Quella sorgente non ha funzionato. Riproduzione di un\'altra versione.';
+
+  @override
+  String get v4v_title => 'Value for Value';
+
+  @override
+  String get v4v_banner =>
+      'I pagamenti sono reali. Non viene inviato nulla finché questa opzione è spenta o il limite giornaliero è 0.';
+
+  @override
+  String get v4v_enabled => 'Invia sats';
+
+  @override
+  String get v4v_secret => 'Stringa di connessione del wallet';
+
+  @override
+  String get v4v_secret_stored => 'Una stringa del wallet è salvata';
+
+  @override
+  String get v4v_clear_secret => 'Rimuovi la stringa del wallet';
+
+  @override
+  String get v4v_max_boost => 'Boost massimo (sats)';
+
+  @override
+  String get v4v_stream => 'Sats al minuto durante l\'ascolto';
+
+  @override
+  String get v4v_daily => 'Limite giornaliero (sats)';
+
+  @override
+  String v4v_spent(String sats) => 'Spesi oggi: $sats sats';
+
+  @override
+  String get v4v_save => 'Salva';
+
+  @override
+  String get v4v_saved => 'Salvato';
+
+  @override
+  String get v4v_test => 'Prova il wallet';
+
+  @override
+  String v4v_balance(String sats) => 'Saldo del wallet: $sats sats';
+
+  @override
+  String get v4v_boost => 'Boost';
+
+  @override
+  String get v4v_real => 'Questo invia sats reali dal tuo wallet.';
+
+  @override
+  String get v4v_message => 'Messaggio (facoltativo)';
+
+  @override
+  String get v4v_amount => 'Sats';
+
+  @override
+  String get v4v_confirm => 'Capisco che questo invia sats reali';
+
+  @override
+  String get v4v_send => 'Invia sats reali';
+
+  @override
+  String v4v_suggested(String sats) => 'Suggeriti: $sats sats';
+
+  @override
+  String v4v_sent(String sats) => 'Inviati $sats sats';
+
+  @override
+  String get v4v_failed => 'Il wallet non ha inviato i sats';
 }

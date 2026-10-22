@@ -17,6 +17,7 @@ pub mod feed;
 pub mod local_podcast;
 pub mod nowplaying;
 pub mod music_assistant;
+pub mod value4value;
 pub mod people;
 
 // Common handler utilities

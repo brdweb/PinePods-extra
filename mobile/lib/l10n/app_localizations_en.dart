@@ -815,4 +815,74 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get media_fell_back => 'That source failed. Playing another.';
+
+  @override
+  String get v4v_title => 'Value for Value';
+
+  @override
+  String get v4v_banner =>
+      'Payments are real. Nothing is sent until this is on and a daily limit is set.';
+
+  @override
+  String get v4v_enabled => 'Send sats';
+
+  @override
+  String get v4v_secret => 'Wallet connection string';
+
+  @override
+  String get v4v_secret_stored => 'A wallet string is saved';
+
+  @override
+  String get v4v_clear_secret => 'Remove wallet string';
+
+  @override
+  String get v4v_max_boost => 'Max boost (sats)';
+
+  @override
+  String get v4v_stream => 'Sats per minute while listening';
+
+  @override
+  String get v4v_daily => 'Daily limit (sats)';
+
+  @override
+  String v4v_spent(String sats) => 'Spent today: $sats sats';
+
+  @override
+  String get v4v_save => 'Save';
+
+  @override
+  String get v4v_saved => 'Saved';
+
+  @override
+  String get v4v_test => 'Test wallet';
+
+  @override
+  String v4v_balance(String sats) => 'Wallet balance: $sats sats';
+
+  @override
+  String get v4v_boost => 'Boost';
+
+  @override
+  String get v4v_real => 'This sends real sats from your wallet.';
+
+  @override
+  String get v4v_message => 'Message (optional)';
+
+  @override
+  String get v4v_amount => 'Sats';
+
+  @override
+  String get v4v_confirm => 'I understand this sends real sats';
+
+  @override
+  String get v4v_send => 'Send real sats';
+
+  @override
+  String v4v_suggested(String sats) => 'Suggested: $sats sats';
+
+  @override
+  String v4v_sent(String sats) => 'Sent $sats sats';
+
+  @override
+  String get v4v_failed => 'The wallet did not send the sats';
 }

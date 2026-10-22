@@ -835,4 +835,74 @@ class AppLocalizationsDe extends AppLocalizations {
   @override
   String get media_fell_back =>
       'Diese Quelle ist fehlgeschlagen. Eine andere Version wird abgespielt.';
+
+  @override
+  String get v4v_title => 'Value for Value';
+
+  @override
+  String get v4v_banner =>
+      'Zahlungen sind echt. Es wird nichts gesendet, solange dies aus ist oder das Tageslimit 0 ist.';
+
+  @override
+  String get v4v_enabled => 'Sats senden';
+
+  @override
+  String get v4v_secret => 'Wallet-Verbindungszeichenfolge';
+
+  @override
+  String get v4v_secret_stored => 'Eine Wallet-Zeichenfolge ist gespeichert';
+
+  @override
+  String get v4v_clear_secret => 'Wallet-Zeichenfolge entfernen';
+
+  @override
+  String get v4v_max_boost => 'Maximaler Boost (Sats)';
+
+  @override
+  String get v4v_stream => 'Sats pro Minute beim Hören';
+
+  @override
+  String get v4v_daily => 'Tageslimit (Sats)';
+
+  @override
+  String v4v_spent(String sats) => 'Heute ausgegeben: $sats Sats';
+
+  @override
+  String get v4v_save => 'Speichern';
+
+  @override
+  String get v4v_saved => 'Gespeichert';
+
+  @override
+  String get v4v_test => 'Wallet testen';
+
+  @override
+  String v4v_balance(String sats) => 'Wallet-Guthaben: $sats Sats';
+
+  @override
+  String get v4v_boost => 'Boost';
+
+  @override
+  String get v4v_real => 'Das sendet echte Sats aus deinem Wallet.';
+
+  @override
+  String get v4v_message => 'Nachricht (optional)';
+
+  @override
+  String get v4v_amount => 'Sats';
+
+  @override
+  String get v4v_confirm => 'Mir ist klar, dass dies echte Sats sendet';
+
+  @override
+  String get v4v_send => 'Echte Sats senden';
+
+  @override
+  String v4v_suggested(String sats) => 'Vorschlag: $sats Sats';
+
+  @override
+  String v4v_sent(String sats) => '$sats Sats gesendet';
+
+  @override
+  String get v4v_failed => 'Das Wallet hat die Sats nicht gesendet';
 }

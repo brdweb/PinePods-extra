@@ -123,6 +123,8 @@ A `podcast:remoteItem` without `feedGuid` is ignored. One tag of a kind that the
 
 `time_splits[]`: `start_time`, `duration`, and when present `remote_start_time`, `remote_percentage`, `recipients[]`, `remote_item`. A value block that only has time splits is kept.
 
+Sending sats is separate from this document and is off until a listener turns it on. See `docs/value4value.md`.
+
 `remoteItem` object: `feed_guid`, and when present `feed_url`, `item_guid`, `medium`, `title`.
 
 `live_items[]`: `status`, `start`, `end`, and the RSS children captured inside the live item (`title`, `description`, `link`, `author`, `pub_date`, `enclosure_length`, `enclosure_type`). Nested Podcasting 2.0 tags and the enclosure URL are on `tags`, which has the same shape as an episode's `tags`. A live item is not an episode row.

@@ -18,6 +18,7 @@ import 'package:pinepods_mobile/ui/widgets/episode_description.dart';
 import 'package:pinepods_mobile/ui/pinepods/podcast_details.dart';
 import 'package:pinepods_mobile/ui/pinepods/podcast_nav.dart';
 import 'package:pinepods_mobile/ui/pinepods/episode_ai_section.dart';
+import 'package:pinepods_mobile/ui/pinepods/value_boost.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/add_people_sheet.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/people_widgets.dart';
 import 'package:pinepods_mobile/ui/podcast/mini_player.dart';
@@ -1207,6 +1208,7 @@ class _PinepodsEpisodeDetailsState extends State<PinepodsEpisodeDetails> {
               onPlayClip: _playClip,
               onOpenChapter: _openChapter,
             ),
+            ValueBoost(episodeId: _episode!.episodeId),
 
             const SizedBox(height: 32),
             

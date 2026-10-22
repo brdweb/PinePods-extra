@@ -285,6 +285,20 @@ pub fn settings() -> Html {
                             </div>
                             <div class="settings-section">
                                 <div class="settings-section-head">
+                                    <i class="ph ph-lightning"></i>
+                                    <div>
+                                        <div class="settings-section-title-row">
+                                            <div class="settings-section-title">{ &i18n.t("value4value.title") }</div>
+                                            <button class="info-btn" title={i18n.t("value4value.banner").to_string()}>{"?"}</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="settings-section-body">
+                                    <setting_components::value4value::ValueSettings />
+                                </div>
+                            </div>
+                            <div class="settings-section">
+                                <div class="settings-section-head">
                                     <i class="ph ph-trash"></i>
                                     <div>
                                         <div class="settings-section-title-row">

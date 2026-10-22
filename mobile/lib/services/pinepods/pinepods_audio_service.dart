@@ -66,6 +66,7 @@ class PinepodsAudioService {
   /// Used to detect when the decoded length differs so we can correct it.
   int? _currentEpisodeDuration;
   double _lastRecordedPosition = 0;
+  int? _lastValueMinute;
   bool _isSyncingPosition = false;
   bool _hasPendingPositionSync = false;
   
@@ -144,6 +145,21 @@ class PinepodsAudioService {
     }
   }
 
+  /// Pay one streaming minute when Value for Value streaming is on.
+  /// The server no-ops when the feature is off. A failed minute is skipped
+  /// rather than retried, so a glitch cannot charge the same minute twice.
+  Future<void> _maybeStreamValue(int episodeId, int userId, double positionSeconds) async {
+    if (!_isPlaying || _isYoutube || episodeId <= 0) return;
+    final minute = positionSeconds ~/ 60;
+    if (_lastValueMinute == minute) return;
+    _lastValueMinute = minute;
+    try {
+      await _pinepodsService.streamValue(episodeId, userId, positionSeconds.floor());
+    } catch (e) {
+      log.fine('Value stream tick skipped: $e');
+    }
+  }
+
   /// Play a PinePods episode with full server integration
   Future<void> playPinepodsEpisode({
     required PinepodsEpisode pinepodsEpisode,
@@ -174,6 +190,7 @@ class PinepodsAudioService {
       }
 
       _currentEpisodeId = episodeId;
+      _lastValueMinute = null;
       _currentPinepodsEpisode = pinepodsEpisode;
       _currentEpisodeDuration = pinepodsEpisode.episodeDuration;
       _currentTitle = pinepodsEpisode.episodeTitle;
@@ -551,6 +568,7 @@ class PinepodsAudioService {
       if ((currentPosition - _lastRecordedPosition).abs() > 2) {
         await _recordPosition(_currentEpisodeId!, _currentUserId!, currentPosition);
         _lastRecordedPosition = currentPosition;
+        await _maybeStreamValue(_currentEpisodeId!, _currentUserId!, currentPosition);
       }
     } catch (e) {
       log.warning('Failed to update episode position: $e');

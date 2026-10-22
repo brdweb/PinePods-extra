@@ -10807,6 +10807,282 @@
         ]
       }
     },
+    "/api/data/value/boost": {
+      "post": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Send a one-time boost in sats",
+        "operationId": "boost_value",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValueBoostBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Payment attempt. sent is false when every recipient failed. Partial success lists both paid and failed shares. This spends real sats.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueSendResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Feature off, over the max boost, over the daily limit, or nothing to pay"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          },
+          "404": {
+            "description": "Episode not found for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/value/episode": {
+      "get": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Whether an episode can receive Value4Value sats",
+        "operationId": "preview_value_episode",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "episode_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payable when the stored episode or channel value block has a keysend or lightning-address recipient.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValuePreviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          },
+          "404": {
+            "description": "Episode not found for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/value/settings": {
+      "get": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Get Value4Value settings",
+        "operationId": "get_value_settings",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-user wallet settings. The connection string is never returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueSettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Save Value4Value settings",
+        "operationId": "update_value_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValueSettingsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved configuration. The connection string is redacted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueSettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid wallet string or limits"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/value/stream": {
+      "post": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Send the per-minute streaming amount for one playback minute",
+        "operationId": "stream_value",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValueStreamBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Always HTTP 200. sent is false when streaming is off, the minute was already paid, or the wallet declined. Players should stay quiet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueSendResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/value/test": {
+      "post": {
+        "tags": [
+          "value4value"
+        ],
+        "summary": "Read the wallet balance",
+        "operationId": "test_value_wallet",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValueTestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Balance probe. ok is false when the wallet could not be reached. No payment is sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The supplied wallet string is not a nostr+walletconnect URI"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          },
+          "403": {
+            "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/data/verify_and_reset_password": {
       "post": {
         "tags": [
@@ -19359,6 +19635,86 @@
           }
         }
       },
+      "ValueBoostBody": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "episode_id",
+          "sats"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "episode_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "type": "string"
+          },
+          "sender_name": {
+            "type": "string"
+          },
+          "position_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Playhead in seconds, used for valueTimeSplit and the boostagram."
+          }
+        }
+      },
+      "ValueParty": {
+        "type": "object",
+        "required": [
+          "name",
+          "sats"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "detail": {
+            "type": "string"
+          }
+        }
+      },
+      "ValuePreviewResponse": {
+        "type": "object",
+        "required": [
+          "payable",
+          "recipient_count",
+          "remote_feed_not_loaded"
+        ],
+        "properties": {
+          "payable": {
+            "type": "boolean"
+          },
+          "suggested_sats": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "recipient_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "remote_feed_not_loaded": {
+            "type": "boolean",
+            "description": "A time split named a remote item without inlined recipients. That feed is not loaded."
+          }
+        }
+      },
       "ValueRecipient": {
         "type": "object",
         "required": [
@@ -19397,6 +19753,194 @@
               "boolean",
               "null"
             ]
+          }
+        }
+      },
+      "ValueSendResponse": {
+        "type": "object",
+        "required": [
+          "sent",
+          "reason",
+          "sats_sent",
+          "paid",
+          "failed",
+          "skipped",
+          "unallocated_sats",
+          "remote_feed_not_loaded"
+        ],
+        "properties": {
+          "sent": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "sats_sent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "paid": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueParty"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueParty"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueParty"
+            }
+          },
+          "unallocated_sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "remote_feed_not_loaded": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ValueSettingsBody": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "max_boost_sats",
+          "stream_sats_per_minute",
+          "daily_limit_sats"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Nothing is sent until this is true and the daily limit is above 0."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Nostr Wallet Connect string. Omit or send an empty string to keep the stored one."
+          },
+          "clear_secret": {
+            "type": "boolean"
+          },
+          "max_boost_sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "stream_sats_per_minute": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "daily_limit_sats": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ValueSettingsResponse": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "has_secret",
+          "max_boost_sats",
+          "stream_sats_per_minute",
+          "daily_limit_sats",
+          "spent_today_sats"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "has_secret": {
+            "type": "boolean"
+          },
+          "max_boost_sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "stream_sats_per_minute": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "daily_limit_sats": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "spent_today_sats": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ValueStreamBody": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "episode_id",
+          "position_seconds"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "episode_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "position_seconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ValueTestBody": {
+        "type": "object",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tried for this probe only. Never written."
+          }
+        }
+      },
+      "ValueTestResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "balance_sats",
+          "detail"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "balance_sats": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "detail": {
+            "type": "string"
           }
         }
       },
@@ -19628,6 +20172,10 @@
     {
       "name": "music_assistant",
       "description": "Music Assistant players as PinePods audio outputs"
+    },
+    {
+      "name": "value4value",
+      "description": "Opt-in Lightning boosts and streaming sats via the user's own wallet"
     },
     {
       "name": "sync",
