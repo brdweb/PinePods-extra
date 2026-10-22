@@ -6037,3 +6037,79 @@ def migration_064_music_assistant(conn, db_type: str) -> None:
         logger.info("Migration 064 completed")
     finally:
         cursor.close()
+
+
+@register_migration(
+    "065",
+    "value_wallet",
+    "Per-user Value4Value wallet (Fernet-encrypted NWC string, budgets, stream-minute dedupe)",
+    requires=["003"],
+)
+def migration_065_value_wallet(conn, db_type: str) -> None:
+    """Opt-in Lightning payments. No row means the feature is off for that user.
+
+    The API encrypts the Nostr Wallet Connect string with the same Fernet key as
+    other secrets before writing NwcEncrypted. A daily limit of 0 blocks every send.
+    ValueStreamMinute records a minute that was already paid so a retry cannot
+    charge it twice.
+    """
+    logger.info("Starting migration 065: Value4Value wallet")
+    cursor = conn.cursor()
+    try:
+        if db_type == "postgresql":
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "ValueWallet" (
+                    userid INT PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    nwcencrypted TEXT,
+                    maxboostsats BIGINT NOT NULL DEFAULT 1000,
+                    streampersats BIGINT NOT NULL DEFAULT 0,
+                    dailylimitsats BIGINT NOT NULL DEFAULT 0,
+                    spentdaysats BIGINT NOT NULL DEFAULT 0,
+                    spentday DATE,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "ValueStreamMinute" (
+                    userid INT NOT NULL REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    episodeid INT NOT NULL,
+                    minute INT NOT NULL,
+                    PRIMARY KEY (userid, episodeid, minute)
+                )
+                """
+            )
+        else:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ValueWallet (
+                    UserID INT PRIMARY KEY,
+                    Enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    NwcEncrypted TEXT,
+                    MaxBoostSats BIGINT NOT NULL DEFAULT 1000,
+                    StreamPerSats BIGINT NOT NULL DEFAULT 0,
+                    DailyLimitSats BIGINT NOT NULL DEFAULT 0,
+                    SpentDaySats BIGINT NOT NULL DEFAULT 0,
+                    SpentDay DATE,
+                    UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ValueStreamMinute (
+                    UserID INT NOT NULL,
+                    EpisodeID INT NOT NULL,
+                    Minute INT NOT NULL,
+                    PRIMARY KEY (UserID, EpisodeID, Minute),
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+                """
+            )
+        logger.info("Migration 065 completed")
+    finally:
+        cursor.close()

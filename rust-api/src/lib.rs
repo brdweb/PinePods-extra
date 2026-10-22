@@ -173,6 +173,14 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::music_assistant::test_music_assistant))
         .routes(routes!(handlers::music_assistant::list_music_assistant_players))
         .routes(routes!(handlers::music_assistant::music_assistant_command))
+        .routes(routes!(
+            handlers::value4value::get_value_settings,
+            handlers::value4value::update_value_settings
+        ))
+        .routes(routes!(handlers::value4value::test_value_wallet))
+        .routes(routes!(handlers::value4value::preview_value_episode))
+        .routes(routes!(handlers::value4value::boost_value))
+        .routes(routes!(handlers::value4value::stream_value))
         .routes(routes!(handlers::podcasts::remove_queued_episode))
         .routes(routes!(handlers::podcasts::get_queued_episodes))
         .routes(routes!(handlers::podcasts::reorder_queue))

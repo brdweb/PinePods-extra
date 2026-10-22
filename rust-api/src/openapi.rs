@@ -32,6 +32,7 @@ use utoipa::{Modify, OpenApi};
         (name = "playlists", description = "Smart and manual playlists"),
         (name = "settings", description = "User and server settings"),
         (name = "music_assistant", description = "Music Assistant players as PinePods audio outputs"),
+        (name = "value4value", description = "Opt-in Lightning boosts and streaming sats via the user's own wallet"),
         (name = "sync", description = "gpodder / Nextcloud synchronization"),
         (name = "tasks", description = "Background tasks and progress"),
         (name = "notifications", description = "Durable in-app notifications (Activity center)"),

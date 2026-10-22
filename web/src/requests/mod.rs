@@ -11,5 +11,6 @@ pub(crate) mod pod_req;
 pub(crate) mod podcasting2;
 pub(crate) mod search_pods;
 pub(crate) mod setting_reqs;
+pub(crate) mod value4value;
 pub(crate) mod stat_reqs;
 pub(crate) mod task_reqs;

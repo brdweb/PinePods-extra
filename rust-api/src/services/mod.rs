@@ -14,6 +14,7 @@ pub mod task_manager;
 pub mod tasks;
 pub mod transcription;
 pub mod url_guard;
+pub mod value4value;
 pub mod ytdlp;
 
 // Common service utilities and shared functionality

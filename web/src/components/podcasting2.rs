@@ -3,7 +3,8 @@
 //! The server already returns this from `/api/data/fetch_podcasting_2_pod_data`. Podroll items
 //! are usually just a feed GUID (and a feed URL when the server stored one). Title and artwork
 //! come from the same Podcast Index search the rest of the app uses (`/api/data/proxy_search`).
-//! Value is display-only: recipients and split percentages, no wallet and no payments.
+//! Value recipients are shown here. Sending sats is the boost form, which asks
+//! the server to pay the stored block from the listener's own wallet.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ use yew_router::history::BrowserHistory;
 use yewdux::prelude::*;
 
 use crate::components::click_events::create_on_title_click;
+use crate::components::value4value::ValueBoost;
 use crate::components::context::{AppState, NotificationState};
 use crate::components::gen_components::FallbackImage;
 use crate::components::people::use_auth;
@@ -1003,7 +1005,14 @@ pub fn episode_tags_panel(props: &EpisodeTagsPanelProps) -> Html {
         && splits.is_empty()
         && props.tags.funding.is_empty();
     if empty {
-        return html! {};
+        return html! {
+            <ValueBoost
+                episode_id={props.episode.episodeid}
+                api_key={props.api_key.clone()}
+                user_id={props.user_id}
+                server_name={props.server_name.clone()}
+            />
+        };
     }
 
     html! {
@@ -1155,6 +1164,12 @@ pub fn episode_tags_panel(props: &EpisodeTagsPanelProps) -> Html {
                     </ul>
                 })
             } else { html! {} } }
+            <ValueBoost
+                episode_id={props.episode.episodeid}
+                api_key={props.api_key.clone()}
+                user_id={props.user_id}
+                server_name={props.server_name.clone()}
+            />
         </div>
     }
 }

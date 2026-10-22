@@ -20,6 +20,9 @@ use crate::requests::pod_req::{
     call_get_queued_episodes,
     call_increment_listen_time, call_increment_played, call_mark_episode_completed,
     call_move_queue_episode_to_top, call_record_listen_duration,
+};
+use crate::requests::value4value::call_value_stream;
+use crate::requests::pod_req::{
     call_update_episode_duration, EpisodeRequest, HistoryAddRequest, MarkEpisodeCompletedRequest,
     MediaPlan, PlaybackStep, QueuePodcastRequest, RecordListenDurationRequest,
     UpdateEpisodeDurationRequest,
@@ -965,6 +968,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
             // Create an interval task
             let interval_handle = Rc::new(Cell::new(None));
             let interval_handle_clone = interval_handle.clone();
+            let last_value_minute = Rc::new(Cell::new(-1i32));
 
             let interval = gloo_timers::callback::Interval::new(30_000, move || {
                 let state_clone = audio_state_clone.clone(); // Access the latest state
@@ -990,6 +994,11 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                                 listen_duration,
                                 is_youtube: Some(is_youtube_vid),
                             };
+                            let stream_server = server_name.clone();
+                            let stream_key = api_key.clone();
+                            let stream_user = user_id;
+                            let stream_episode = episode_id_loop.unwrap_or(0);
+                            let stream_minute = (listen_duration as i32).div_euclid(60);
 
                             wasm_bindgen_futures::spawn_local(async move {
                                 match call_record_listen_duration(
@@ -1003,6 +1012,16 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                                     Err(_e) => {}
                                 }
                             });
+                            if stream_episode > 0 && !is_youtube_vid && last_value_minute.get() != stream_minute {
+                                last_value_minute.set(stream_minute);
+                                let stream_position = listen_duration as i64;
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let Some(server) = stream_server else { return };
+                                    let Some(key) = stream_key.and_then(|key| key) else { return };
+                                    let Some(uid) = stream_user else { return };
+                                    let _ = call_value_stream(&server, &key, uid, stream_episode, stream_position).await;
+                                });
+                            }
                     }
                 }
             });

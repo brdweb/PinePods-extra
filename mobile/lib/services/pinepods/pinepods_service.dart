@@ -914,6 +914,21 @@ class PinepodsService {
       _setPodcastEnabled(
           'adjust_ad_skip_auto_activate', userId, podcastId, enabled);
 
+  /// One streaming-sats minute. Failures are ignored by the player.
+  Future<void> streamValue(int episodeId, int userId, int positionSeconds) async {
+    if (_server == null || _apiKey == null || episodeId <= 0) return;
+    final url = Uri.parse('$_server/api/data/value/stream');
+    await _post(
+      url,
+      headers: {'Api-Key': _apiKey!, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'episode_id': episodeId,
+        'position_seconds': positionSeconds,
+      }),
+    );
+  }
+
   // Record listen duration for episode
   Future<bool> recordListenDuration(
     int episodeId,

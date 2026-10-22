@@ -1595,6 +1595,100 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'That source failed. Playing another.'**
   String get media_fell_back;
+
+  /// No description provided for @v4v_title.
+  ///
+  /// In en, this message translates to:
+  /// **'Value for Value'**
+  String get v4v_title;
+
+  /// In en, this message translates to:
+  /// **'Payments are real. Nothing is sent until this is on and a daily limit is set.'**
+  String get v4v_banner;
+
+  /// In en, this message translates to:
+  /// **'Send sats'**
+  String get v4v_enabled;
+
+  /// In en, this message translates to:
+  /// **'Wallet connection string'**
+  String get v4v_secret;
+
+  /// In en, this message translates to:
+  /// **'A wallet string is saved'**
+  String get v4v_secret_stored;
+
+  /// In en, this message translates to:
+  /// **'Remove wallet string'**
+  String get v4v_clear_secret;
+
+  /// In en, this message translates to:
+  /// **'Max boost (sats)'**
+  String get v4v_max_boost;
+
+  /// In en, this message translates to:
+  /// **'Sats per minute while listening'**
+  String get v4v_stream;
+
+  /// In en, this message translates to:
+  /// **'Daily limit (sats)'**
+  String get v4v_daily;
+
+  /// In en, this message translates to:
+  /// **'Spent today: {sats} sats'**
+  String v4v_spent(String sats);
+
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get v4v_save;
+
+  /// In en, this message translates to:
+  /// **'Saved'**
+  String get v4v_saved;
+
+  /// In en, this message translates to:
+  /// **'Test wallet'**
+  String get v4v_test;
+
+  /// In en, this message translates to:
+  /// **'Wallet balance: {sats} sats'**
+  String v4v_balance(String sats);
+
+  /// In en, this message translates to:
+  /// **'Boost'**
+  String get v4v_boost;
+
+  /// In en, this message translates to:
+  /// **'This sends real sats from your wallet.'**
+  String get v4v_real;
+
+  /// In en, this message translates to:
+  /// **'Message (optional)'**
+  String get v4v_message;
+
+  /// In en, this message translates to:
+  /// **'Sats'**
+  String get v4v_amount;
+
+  /// In en, this message translates to:
+  /// **'I understand this sends real sats'**
+  String get v4v_confirm;
+
+  /// In en, this message translates to:
+  /// **'Send real sats'**
+  String get v4v_send;
+
+  /// In en, this message translates to:
+  /// **'Suggested: {sats} sats'**
+  String v4v_suggested(String sats);
+
+  /// In en, this message translates to:
+  /// **'Sent {sats} sats'**
+  String v4v_sent(String sats);
+
+  /// In en, this message translates to:
+  /// **'The wallet did not send the sats'**
+  String get v4v_failed;
 }
 
 class _AppLocalizationsDelegate
