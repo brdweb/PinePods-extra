@@ -6312,7 +6312,7 @@
         "tags": [
           "nowplaying"
         ],
-        "summary": "List the user's active devices and what each is currently playing. Backed by\nephemeral Valkey snapshots with a TTL, so a device that stops reporting drops\noff automatically. Powers the \"see / control my other devices\" UI for clients\nthat aren't holding a live socket.",
+        "summary": "List the user's active devices and what each is currently playing. Backed by\nephemeral Valkey snapshots with a TTL, so a device that stops reporting drops\noff automatically. `devices` powers the \"see / control my other devices\" UI.\nMusic Assistant players are returned in `ma_devices` instead, for the\nMA-Speakers panel and the now-playing bar.",
         "operationId": "now_playing_devices",
         "parameters": [
           {
@@ -16470,14 +16470,23 @@
       "NowPlayingDevicesResponse": {
         "type": "object",
         "required": [
-          "devices"
+          "devices",
+          "ma_devices"
         ],
         "properties": {
           "devices": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/NowPlayingSnapshot"
-            }
+            },
+            "description": "PinePods clients (web, mobile, Firewood, and anything else on the relay).\nMusic Assistant players are not in this list."
+          },
+          "ma_devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NowPlayingSnapshot"
+            },
+            "description": "Music Assistant virtual devices. The MA-Speakers panel and the now-playing\nbar read these. They are not other-devices targets."
           }
         }
       },

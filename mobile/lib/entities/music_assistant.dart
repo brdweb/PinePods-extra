@@ -438,18 +438,38 @@ bool isMusicAssistant(String deviceType) =>
 /// "other devices" list. Every other now-playing device stays there.
 bool includeInOtherDevices(String deviceType) => !isMusicAssistant(deviceType);
 
+/// How long a playing, buffering, paused, or loaded-queue observation keeps
+/// the speaker-row buttons up. Longer than the 12 second player refresh.
+const recentTransportWindow = Duration(seconds: 60);
+
 /// `true` shows pause, `false` shows play, `null` hides transport.
 ///
 /// Playing and buffering show pause. Paused shows play. Idle, unknown, off,
-/// and a missing state still show play while an episode is loaded or the relay
-/// says the speaker is playing. Sonos reports idle for a Music Assistant pause
-/// and for a sync member whose coordinator is playing.
-bool? transportShown(String playerState, bool episodeLoaded, bool relayPlaying) {
+/// unavailable, and a missing state still show play while an episode is loaded,
+/// the relay says the speaker is playing, or [recent] is set. A 12 second poll
+/// that reports some other state must not hide the buttons.
+bool? transportShown(
+  String playerState,
+  bool episodeLoaded,
+  bool relayPlaying, {
+  bool recent = false,
+}) {
   final state = playerState.trim().toLowerCase();
   final playing = relayPlaying || state == 'playing' || state == 'buffering';
   if (playing) return true;
-  if (state == 'paused' || episodeLoaded) return false;
+  if (state == 'paused' || episodeLoaded || recent) return false;
   return null;
+}
+
+bool transportStateLive(String playerState) {
+  final state = playerState.trim().toLowerCase();
+  return state == 'playing' || state == 'buffering' || state == 'paused';
+}
+
+bool transportIsRecent(DateTime? seenAt, DateTime now) {
+  if (seenAt == null) return false;
+  final age = now.difference(seenAt);
+  return !age.isNegative && age <= recentTransportWindow;
 }
 
 /// Playback state the transport buttons should follow. A synced speaker's own

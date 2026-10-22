@@ -40,8 +40,9 @@
 //!   and echoed back in the ack.
 //!
 //! ## Server → client
-//! - `{"type":"devices","devices":[NowPlayingSnapshot…]}` — the user's devices
-//!   (including the receiver; filter yourself out by `device_id`).
+//! - `{"type":"devices","devices":[NowPlayingSnapshot…],"ma_devices":[…]}` — the
+//!   user's PinePods clients in `devices` (including the receiver; filter yourself
+//!   out by `device_id`). Music Assistant players are only in `ma_devices`.
 //! - `{"type":"command","from_device_id":"…","action":"…","args":{…}}` — apply to
 //!   the local player; ignore unknown actions.
 //! - `{"type":"ack","ok":true,"detail":"relayed","cmd_id":"…","target_device_id":"…"}`
@@ -67,8 +68,8 @@
 //! The connection registry is not only for browser sockets. A backend service can
 //! register a device id and receive the same relayed `command` frames. Music
 //! Assistant players are registered that way (`device_type` `music_assistant`).
-//! The MA Speakers panel and the now-playing bar target them. The generic
-//! other-devices list filters that type out.
+//! The MA-Speakers panel and the now-playing bar target them through `ma_devices`.
+//! They are not included in the `devices` list that powers Other devices.
 
 use axum::{
     extract::{
@@ -113,8 +114,9 @@ pub struct NowPlayingDevicesQuery {
 
 /// List the user's active devices and what each is currently playing. Backed by
 /// ephemeral Valkey snapshots with a TTL, so a device that stops reporting drops
-/// off automatically. Powers the "see / control my other devices" UI for clients
-/// that aren't holding a live socket.
+/// off automatically. `devices` powers the "see / control my other devices" UI.
+/// Music Assistant players are returned in `ma_devices` instead, for the
+/// MA-Speakers panel and the now-playing bar.
 #[utoipa::path(
     get,
     path = "/now_playing_devices",
@@ -141,12 +143,16 @@ pub async fn now_playing_devices(
         return Err(AppError::forbidden("You can only view your own devices!"));
     }
 
-    let devices = state
+    let all = state
         .redis_client
         .get_now_playing_devices(query.user_id)
         .await?;
+    let (devices, ma_devices) = partition_device_list(all);
 
-    Ok(Json(crate::models::NowPlayingDevicesResponse { devices }))
+    Ok(Json(crate::models::NowPlayingDevicesResponse {
+        devices,
+        ma_devices,
+    }))
 }
 
 // ============================ Connection registry ============================
@@ -178,7 +184,12 @@ impl NowPlayingManager {
     /// Register a socket for a device and return its connection id. If the device
     /// already had a live socket (reconnect racing the old teardown, or two
     /// players sharing an id), the old one is told to close with [`CLOSE_REPLACED`].
-    async fn add(&self, user_id: i32, device_id: String, tx: mpsc::UnboundedSender<Message>) -> u64 {
+    async fn add(
+        &self,
+        user_id: i32,
+        device_id: String,
+        tx: mpsc::UnboundedSender<Message>,
+    ) -> u64 {
         let conn_id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
         let previous = self
             .connections
@@ -308,7 +319,12 @@ enum ClientMsg {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
     /// The user's current set of active devices and their now-playing state.
-    Devices { devices: Vec<NowPlayingSnapshot> },
+    Devices {
+        /// PinePods clients. Music Assistant players are not included.
+        devices: Vec<NowPlayingSnapshot>,
+        /// Music Assistant virtual devices, for the MA-Speakers panel and bar.
+        ma_devices: Vec<NowPlayingSnapshot>,
+    },
     /// A command relayed from another device, to be applied on the local player.
     Command {
         from_device_id: String,
@@ -379,9 +395,8 @@ pub async fn now_playing_websocket(
 ) -> Response {
     match state.db_pool.verify_api_key(&query.api_key).await {
         Ok(true) => match state.db_pool.get_user_id_from_api_key(&query.api_key).await {
-            Ok(key_user_id) if key_user_id == user_id || key_user_id == 1 => {
-                ws.on_upgrade(move |socket| handle_now_playing_socket(socket, user_id, query, state))
-            }
+            Ok(key_user_id) if key_user_id == user_id || key_user_id == 1 => ws
+                .on_upgrade(move |socket| handle_now_playing_socket(socket, user_id, query, state)),
             Ok(_) => forbidden("API key does not belong to requested user"),
             Err(_) => forbidden("Invalid API key"),
         },
@@ -426,7 +441,7 @@ async fn handle_now_playing_socket(
         .get_now_playing_devices(user_id)
         .await
         .unwrap_or_default();
-    let _ = tx.send(to_ws(&ServerMsg::Devices { devices }));
+    let _ = tx.send(devices_frame(devices));
 
     // Liveness: any inbound frame (incl. pongs) bumps this; the pinger tears the
     // socket down if it goes quiet for too long.
@@ -536,7 +551,8 @@ async fn handle_now_playing_socket(
                                         ),
                                     )
                                     .await;
-                                notify_devices_changed(&reader_state, user_id, &reader_device).await;
+                                notify_devices_changed(&reader_state, user_id, &reader_device)
+                                    .await;
                             }
                         }
                         Ok(ClientMsg::Command {
@@ -715,8 +731,34 @@ async fn broadcast_devices(state: &AppState, user_id: i32, origin_device: &str) 
         .unwrap_or_default();
     state
         .now_playing_manager
-        .broadcast_user_except(user_id, origin_device, to_ws(&ServerMsg::Devices { devices }))
+        .broadcast_user_except(user_id, origin_device, devices_frame(devices))
         .await;
+}
+
+/// `devices` is the other-devices list. Music Assistant virtual devices stay on
+/// the relay (commands and the speaker panel need their snapshots) but travel
+/// in `ma_devices` so a client that lists `devices` does not show speakers there.
+fn partition_device_list(
+    devices: Vec<NowPlayingSnapshot>,
+) -> (Vec<NowPlayingSnapshot>, Vec<NowPlayingSnapshot>) {
+    let mut others = Vec::new();
+    let mut ma = Vec::new();
+    for device in devices {
+        if device.device_type.eq_ignore_ascii_case("music_assistant") {
+            ma.push(device);
+        } else {
+            others.push(device);
+        }
+    }
+    (others, ma)
+}
+
+fn devices_frame(devices: Vec<NowPlayingSnapshot>) -> Message {
+    let (devices, ma_devices) = partition_device_list(devices);
+    to_ws(&ServerMsg::Devices {
+        devices,
+        ma_devices,
+    })
 }
 
 // ======================= Multi-replica pub/sub bridge =======================
@@ -877,6 +919,7 @@ async fn run_nowplaying_bridge(state: &AppState) -> crate::error::AppResult<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::NowPlayingSnapshot;
 
     fn txt(s: &str) -> Message {
         Message::Text(s.to_string().into())
@@ -950,5 +993,66 @@ mod tests {
         // The owning connection's teardown does remove it.
         assert!(mgr.remove(1, "D", new_conn).await);
         assert!(!mgr.send_to_device(1, "D", txt("cmd")).await);
+    }
+
+    fn snap(device_id: &str, device_type: &str) -> NowPlayingSnapshot {
+        NowPlayingSnapshot {
+            device_id: device_id.to_string(),
+            device_name: device_id.to_string(),
+            device_type: device_type.to_string(),
+            episode_id: 0,
+            is_youtube: false,
+            title: String::new(),
+            artwork_url: String::new(),
+            position_sec: 0.0,
+            duration_sec: 0.0,
+            playing: false,
+            speed: 1.0,
+            updated_at: 0,
+            capabilities: Vec::new(),
+            volume_level: None,
+            volume_muted: None,
+            ma_player_id: None,
+            group_members: None,
+        }
+    }
+
+    #[test]
+    fn music_assistant_players_leave_the_other_devices_list() {
+        let (devices, ma_devices) = partition_device_list(vec![
+            snap("web-1", "Web"),
+            snap("ma:1:kitchen", "music_assistant"),
+            snap("phone", "iOS"),
+            snap("ma:1:living", "Music_Assistant"),
+        ]);
+        assert_eq!(
+            devices
+                .iter()
+                .map(|d| d.device_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["web-1", "phone"]
+        );
+        assert_eq!(
+            ma_devices
+                .iter()
+                .map(|d| d.device_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ma:1:kitchen", "ma:1:living"]
+        );
+        let frame: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&ServerMsg::Devices {
+                devices,
+                ma_devices,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(frame["type"], "devices");
+        assert!(frame["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["device_type"] != "music_assistant"));
+        assert_eq!(frame["ma_devices"].as_array().unwrap().len(), 2);
     }
 }

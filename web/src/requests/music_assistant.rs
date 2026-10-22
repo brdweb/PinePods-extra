@@ -7,11 +7,17 @@
 // the now-playing bar follows), and the yewdux store the settings page and the
 // speaker picker share.
 
+use std::collections::HashMap;
+
 use anyhow::Error;
 use gloo_net::http::Request;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use yewdux::prelude::*;
+
+/// How long a playing, buffering, paused, or loaded-queue observation keeps
+/// the speaker-row buttons up. Longer than the 12 second player refresh.
+pub const RECENT_TRANSPORT_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MaSettings {
@@ -116,6 +122,9 @@ pub struct MusicAssistantState {
     pub pending_episode: Option<PendingEpisode>,
     /// Speaker the user last sent audio to. The now-playing bar prefers it.
     pub focus_device_id: Option<String>,
+    /// Unix seconds when a player last had transport, a loaded episode, or
+    /// relay playback. A later idle or unavailable poll still shows controls.
+    pub recent_transport: HashMap<String, i64>,
 }
 
 pub fn apply_settings(view: &MaSettings) {
@@ -129,20 +138,81 @@ pub fn apply_settings(view: &MaSettings) {
         if !view.enabled {
             s.players.clear();
             s.picker_open = false;
+            s.recent_transport.clear();
         }
     });
 }
 
 pub fn apply_players(list: MaPlayersResponse) {
+    let now = unix_now();
     Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
+        // Remember the state this refresh is about to replace. A Sonos poll
+        // that comes back idle or unavailable must not drop the buttons.
+        for player in &s.players {
+            if transport_state_live(&player.state) {
+                s.recent_transport.insert(player.player_id.clone(), now);
+            }
+        }
         s.loaded = true;
         s.enabled = list.enabled;
         s.connected = list.connected;
-        s.players = if list.enabled { list.players } else { Vec::new() };
+        s.players = if list.enabled {
+            list.players
+        } else {
+            Vec::new()
+        };
         if !list.enabled {
             s.picker_open = false;
+            s.recent_transport.clear();
+        } else {
+            for player in &s.players {
+                if transport_state_live(&player.state) {
+                    s.recent_transport.insert(player.player_id.clone(), now);
+                }
+            }
         }
     });
+}
+
+/// Record players whose relay snapshot still has an episode or is playing.
+pub fn note_relay_transport(player_ids: &[String]) {
+    if player_ids.is_empty() {
+        return;
+    }
+    let now = unix_now();
+    Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
+        for id in player_ids {
+            if !id.is_empty() {
+                s.recent_transport.insert(id.clone(), now);
+            }
+        }
+    });
+}
+
+pub fn unix_now() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0) as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
+}
+
+/// True when `seen_at` is within [`RECENT_TRANSPORT_SECS`] of `now`.
+pub fn transport_is_recent(seen_at: Option<i64>, now: i64) -> bool {
+    match seen_at {
+        Some(seen) if now >= seen && now.saturating_sub(seen) <= RECENT_TRANSPORT_SECS => true,
+        _ => false,
+    }
+}
+
+pub fn transport_state_live(player_state: &str) -> bool {
+    let state = player_state.trim();
+    state.eq_ignore_ascii_case("playing")
+        || state.eq_ignore_ascii_case("buffering")
+        || state.eq_ignore_ascii_case("paused")
 }
 
 /// Open the speaker picker for one episode (episode context menu).
@@ -206,7 +276,10 @@ pub fn message_from_error_body(body: &str) -> String {
 /// Host of an http(s) URL, without port or brackets. Empty when it cannot be split.
 pub fn external_host(raw: &str) -> String {
     let trimmed = raw.trim();
-    let after_scheme = trimmed.split_once("://").map(|(_, rest)| rest).unwrap_or(trimmed);
+    let after_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
     let hostport = after_scheme
         .split(['/', '?', '#'])
         .next()
@@ -412,7 +485,10 @@ pub fn plan_group(players: &[MaPlayer], selected: &[String]) -> Result<GroupPlan
     }
     if groups.len() == 1 {
         let group = groups[0];
-        let desired: Vec<&String> = selected.iter().filter(|id| *id != &group.player_id).collect();
+        let desired: Vec<&String> = selected
+            .iter()
+            .filter(|id| *id != &group.player_id)
+            .collect();
         let add: Vec<String> = desired
             .iter()
             .filter(|id| !group.group_members.iter().any(|m| m == **id))
@@ -462,11 +538,17 @@ pub fn include_in_other_devices(device_type: &str) -> bool {
 /// `Some(true)` shows pause, `Some(false)` shows play. `None` hides transport.
 ///
 /// Playing and buffering show pause. Paused shows play. Idle, unknown, off,
-/// and a missing state still show play while an episode is loaded or the relay
-/// says the speaker is playing. Sonos reports idle for a Music Assistant pause
-/// and for a sync member whose coordinator is playing; hiding the buttons there
-/// leaves nothing to press.
-pub fn transport_shown(player_state: &str, episode_loaded: bool, relay_playing: bool) -> Option<bool> {
+/// unavailable, and a missing state still show play while an episode is loaded,
+/// the relay says the speaker is playing, or this player was playing or paused
+/// recently (`recent`). A 12 second poll that reports some other state must not
+/// hide the buttons. Sonos reports idle for a Music Assistant pause and for a
+/// sync member whose coordinator is playing.
+pub fn transport_shown(
+    player_state: &str,
+    episode_loaded: bool,
+    relay_playing: bool,
+    recent: bool,
+) -> Option<bool> {
     let state = player_state.trim();
     let playing = relay_playing
         || state.eq_ignore_ascii_case("playing")
@@ -474,7 +556,7 @@ pub fn transport_shown(player_state: &str, episode_loaded: bool, relay_playing: 
     if playing {
         return Some(true);
     }
-    if state.eq_ignore_ascii_case("paused") || episode_loaded {
+    if state.eq_ignore_ascii_case("paused") || episode_loaded || recent {
         return Some(false);
     }
     None
@@ -795,7 +877,10 @@ mod tests {
     fn error_body_uses_message_and_leaves_plain_text() {
         let body = r#"{"error":"Bad request","message":"Bad request: external base URL must be a LAN or public host Music Assistant can reach, not localhost","status_code":400}"#;
         assert!(message_from_error_body(body).contains("not localhost"));
-        assert_eq!(message_from_error_body("timed out connecting"), "timed out connecting");
+        assert_eq!(
+            message_from_error_body("timed out connecting"),
+            "timed out connecting"
+        );
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
@@ -890,11 +975,7 @@ mod tests {
             player("living", "player", &[]),
             player("den", "player", &[]),
         ];
-        let plan = plan_group(
-            &players,
-            &["kitchen".into(), "living".into()],
-        )
-        .unwrap();
+        let plan = plan_group(&players, &["kitchen".into(), "living".into()]).unwrap();
         assert_eq!(
             plan,
             GroupPlan::GroupMany {
@@ -910,11 +991,8 @@ mod tests {
             player("living", "player", &[]),
             player("den", "player", &[]),
         ];
-        let plan = plan_group(
-            &grouped,
-            &["kitchen".into(), "living".into(), "den".into()],
-        )
-        .unwrap();
+        let plan =
+            plan_group(&grouped, &["kitchen".into(), "living".into(), "den".into()]).unwrap();
         assert_eq!(
             plan,
             GroupPlan::SetMembers {
@@ -960,13 +1038,22 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn transport_stays_when_sonos_reports_idle() {
-        assert_eq!(transport_shown("playing", true, false), Some(true));
-        assert_eq!(transport_shown("paused", true, false), Some(false));
-        assert_eq!(transport_shown("idle", true, false), Some(false));
-        assert_eq!(transport_shown("idle", true, true), Some(true));
-        assert_eq!(transport_shown("", true, false), Some(false));
-        assert_eq!(transport_shown("idle", false, false), None);
-        assert_eq!(transport_shown("unknown", false, true), Some(true));
+        assert_eq!(transport_shown("playing", true, false, false), Some(true));
+        assert_eq!(transport_shown("paused", true, false, false), Some(false));
+        assert_eq!(transport_shown("idle", true, false, false), Some(false));
+        assert_eq!(transport_shown("idle", true, true, false), Some(true));
+        assert_eq!(transport_shown("", true, false, false), Some(false));
+        assert_eq!(transport_shown("idle", false, false, false), None);
+        assert_eq!(transport_shown("unknown", false, true, false), Some(true));
+        assert_eq!(transport_shown("idle", false, false, true), Some(false));
+        assert_eq!(transport_shown("mystery", false, false, true), Some(false));
+        assert!(transport_is_recent(Some(1_000), 1_012));
+        assert!(transport_is_recent(Some(1_000), 1_060));
+        assert!(!transport_is_recent(Some(1_000), 1_061));
+        assert!(!transport_is_recent(None, 1_000));
+        assert!(transport_state_live("Playing"));
+        assert!(transport_state_live("paused"));
+        assert!(!transport_state_live("idle"));
         assert!(!include_in_other_devices("music_assistant"));
         assert!(!include_in_other_devices("Music_Assistant"));
         assert!(include_in_other_devices("Web"));

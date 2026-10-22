@@ -179,4 +179,61 @@ void main() {
     expect(find.byTooltip('Play'), findsNothing);
     expect(find.byTooltip('Stop'), findsNothing);
   });
+
+  testWidgets('keeps transport across an unavailable or unknown refresh', (tester) async {
+    Future<void> pump({
+      required String state,
+      bool available = true,
+      Set<String> loaded = const {},
+    }) {
+      return tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MusicAssistantPlayerList(
+              players: [
+                speaker('living', 'Living Room', state: state, available: available),
+              ],
+              connected: true,
+              playLabel: 'Play this episode',
+              loadedPlayerIds: loaded,
+              onPlay: (_) async {},
+              onCommand: (_, _, _) async {},
+            ),
+          ),
+        ),
+      );
+    }
+
+    await pump(state: 'playing');
+    expect(find.byTooltip('Pause'), findsOneWidget);
+
+    await pump(state: 'idle', available: false);
+    expect(find.byTooltip('Play'), findsOneWidget);
+    expect(find.byTooltip('Stop'), findsOneWidget);
+    expect(find.textContaining('Reconnecting'), findsOneWidget);
+    expect(find.textContaining('Unavailable'), findsNothing);
+
+    await pump(state: 'mystery');
+    expect(find.byTooltip('Play'), findsOneWidget);
+    expect(find.textContaining('Unknown'), findsOneWidget);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MusicAssistantPlayerList(
+            players: [
+              speaker('den', 'Den', state: 'idle', available: false),
+            ],
+            connected: true,
+            playLabel: 'Play this episode',
+            loadedPlayerIds: const {'den'},
+            onPlay: (_) async {},
+            onCommand: (_, _, _) async {},
+          ),
+        ),
+      ),
+    );
+    expect(find.byTooltip('Play'), findsOneWidget);
+    expect(find.textContaining('Reconnecting'), findsOneWidget);
+  });
 }

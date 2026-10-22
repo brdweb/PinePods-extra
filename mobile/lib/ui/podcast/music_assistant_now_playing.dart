@@ -64,7 +64,7 @@ class _MaNowPlayingBannerState extends State<MaNowPlayingBanner> {
     final service = GlobalServices.nowPlayingService;
     if (service == null) return const SizedBox.shrink();
     return ValueListenableBuilder<List<NowPlayingDevice>>(
-      valueListenable: service.devices,
+      valueListenable: service.maDevices,
       builder: (context, devices, _) {
         return ValueListenableBuilder<bool>(
           valueListenable: MusicAssistantController.instance.enabled,
@@ -160,7 +160,7 @@ class _MaTransportSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return SafeArea(
       child: ValueListenableBuilder<List<NowPlayingDevice>>(
-        valueListenable: service.devices,
+        valueListenable: service.maDevices,
         builder: (context, devices, _) {
           NowPlayingDevice? device;
           for (final candidate in devices) {
@@ -317,7 +317,7 @@ class _MaTransportSheet extends StatelessWidget {
                         showMusicAssistantSpeakers(host);
                       },
                       icon: const Icon(Icons.speaker_group),
-                      label: const Text('MA Speakers'),
+                      label: const Text('MA-Speakers'),
                     ),
                   ),
                 ],

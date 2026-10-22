@@ -104,11 +104,15 @@ pub struct PendingRemotePlay {
     pub resume_pos_sec: Option<f64>,
 }
 
-/// Reactive store for the remote-control UI. `devices` excludes this device.
+/// Reactive store for the remote-control UI. `devices` excludes this device
+/// and every Music Assistant player. Speakers live in `ma_devices`.
 #[derive(Default, Clone, PartialEq, Store)]
 pub struct NowPlayingState {
     pub self_device_id: String,
     pub devices: Vec<NowPlayingDevice>,
+    /// Music Assistant players from `ma_devices`, plus any the server still
+    /// placed in `devices`. The speaker panel and now-playing bar read this.
+    pub ma_devices: Vec<NowPlayingDevice>,
     pub connected: bool,
     /// Set when an episode should start on this device (local "Play here" or an
     /// inbound command); the audio component observes this, plays, and clears it.
@@ -123,6 +127,8 @@ pub struct NowPlayingState {
 enum ServerMsg {
     Devices {
         devices: Vec<NowPlayingDevice>,
+        #[serde(default)]
+        ma_devices: Vec<NowPlayingDevice>,
     },
     Command {
         #[allow(dead_code)]
@@ -440,13 +446,29 @@ fn take_handoff(cmd_id: &Option<String>) -> bool {
 
 fn handle_inbound(text: &str) {
     match serde_json::from_str::<ServerMsg>(text) {
-        Ok(ServerMsg::Devices { devices }) => {
+        Ok(ServerMsg::Devices {
+            devices,
+            ma_devices,
+        }) => {
             Dispatch::<NowPlayingState>::global().reduce_mut(|s| {
                 let self_id = s.self_device_id.clone();
-                s.devices = devices
-                    .into_iter()
-                    .filter(|d| d.device_id != self_id)
-                    .collect();
+                let mut speakers = ma_devices;
+                speakers.retain(|d| d.device_id != self_id);
+                let mut others = Vec::new();
+                for device in devices {
+                    if device.device_id == self_id {
+                        continue;
+                    }
+                    if crate::requests::music_assistant::is_music_assistant(&device.device_type) {
+                        if speakers.iter().all(|d| d.device_id != device.device_id) {
+                            speakers.push(device);
+                        }
+                    } else {
+                        others.push(device);
+                    }
+                }
+                s.devices = others;
+                s.ma_devices = speakers;
             });
         }
         Ok(ServerMsg::Command { action, args, .. }) => apply_command(&action, &args),

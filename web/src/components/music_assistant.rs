@@ -13,12 +13,13 @@ use yewdux::prelude::*;
 use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
-    choose_playback, explain_test, format_clock, is_music_assistant, plan_group,
-    playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    transport_shown, GroupPlanError, MaPlayer, MusicAssistantState, PlaybackCandidate,
+    choose_playback, explain_test, format_clock, is_music_assistant, note_relay_transport,
+    plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
+    transport_is_recent, transport_shown, unix_now, GroupPlanError, MaPlayer, MusicAssistantState,
+    PlaybackCandidate,
 };
-use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
 use crate::requests::notify::{toast_error, toast_info};
+use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
 use i18nrs::yew::use_translation;
 
 fn session() -> Option<(String, String, i32)> {
@@ -165,6 +166,21 @@ fn transport_player_id(player: &MaPlayer) -> String {
         .to_string()
 }
 
+fn player_id_from_device(device_id: &str) -> Option<String> {
+    let mut parts = device_id.splitn(3, ':');
+    let prefix = parts.next()?;
+    if !prefix.eq_ignore_ascii_case("ma") {
+        return None;
+    }
+    let _user = parts.next()?;
+    let player = parts.next()?.trim();
+    if player.is_empty() {
+        None
+    } else {
+        Some(player.to_string())
+    }
+}
+
 fn state_i18n_key(state: &str) -> Option<&'static str> {
     if state.eq_ignore_ascii_case("playing") || state.eq_ignore_ascii_case("buffering") {
         Some("music_assistant.state_playing")
@@ -190,7 +206,7 @@ pub fn ma_now_playing_bar() -> Html {
     let tick = use_state(|| 0u32);
 
     let candidates: Vec<PlaybackCandidate> = np
-        .devices
+        .ma_devices
         .iter()
         .map(|d| PlaybackCandidate {
             device_id: d.device_id.clone(),
@@ -202,7 +218,7 @@ pub fn ma_now_playing_bar() -> Html {
         .collect();
     let device: Option<NowPlayingDevice> = if ma.enabled {
         choose_playback(&candidates, ma.focus_device_id.as_deref()).and_then(|c| {
-            np.devices
+            np.ma_devices
                 .iter()
                 .find(|d| d.device_id == c.device_id)
                 .cloned()
@@ -271,11 +287,7 @@ pub fn ma_now_playing_bar() -> Html {
     let on_play_pause = {
         let id = id.clone();
         Callback::from(move |_: MouseEvent| {
-            send_command(
-                &id,
-                if is_playing { "pause" } else { "play" },
-                json!({}),
-            );
+            send_command(&id, if is_playing { "pause" } else { "play" }, json!({}));
         })
     };
     let on_stop = {
@@ -325,7 +337,11 @@ pub fn ma_now_playing_bar() -> Html {
             });
         })
     };
-    let speed = if device.speed > 0.0 { device.speed } else { 1.0 };
+    let speed = if device.speed > 0.0 {
+        device.speed
+    } else {
+        1.0
+    };
     let speeds = [0.5_f64, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
     let members = device.group_members.clone().unwrap_or_default();
     let volume = device.volume_level.unwrap_or(0.0);
@@ -431,12 +447,10 @@ pub fn ma_now_playing_bar() -> Html {
 
 #[function_component(MusicAssistantHost)]
 pub fn music_assistant_host() -> Html {
-    let server = use_selector(|s: &AppState| {
-        s.auth_details.as_ref().map(|a| a.server_name.clone())
-    });
-    let api_key = use_selector(|s: &AppState| {
-        s.auth_details.as_ref().and_then(|a| a.api_key.clone())
-    });
+    let server =
+        use_selector(|s: &AppState| s.auth_details.as_ref().map(|a| a.server_name.clone()));
+    let api_key =
+        use_selector(|s: &AppState| s.auth_details.as_ref().and_then(|a| a.api_key.clone()));
     let user_id = use_selector(|s: &AppState| s.user_details.as_ref().map(|u| u.UserID));
     {
         let deps = ((*server).clone(), (*api_key).clone(), *user_id);
@@ -444,6 +458,25 @@ pub fn music_assistant_host() -> Html {
             refresh_music_assistant();
             let iv = Interval::new(12_000, refresh_music_assistant);
             move || drop(iv)
+        });
+    }
+    let relay_active = use_selector(|s: &NowPlayingState| {
+        s.ma_devices
+            .iter()
+            .filter(|d| d.episode_id != 0 || d.playing)
+            .filter_map(|d| {
+                d.ma_player_id
+                    .clone()
+                    .filter(|id| !id.is_empty())
+                    .or_else(|| player_id_from_device(&d.device_id))
+            })
+            .collect::<Vec<_>>()
+    });
+    {
+        let ids = (*relay_active).clone();
+        use_effect_with(ids, move |ids| {
+            note_relay_transport(ids);
+            || ()
         });
     }
     let (ma, _) = use_store::<MusicAssistantState>();
@@ -525,7 +558,13 @@ fn speaker_picker() -> Html {
                 s.picker_open = false;
                 s.pending_episode = None;
             });
-            run_http(player.player_id, "play_episode", args, failure.clone(), true);
+            run_http(
+                player.player_id,
+                "play_episode",
+                args,
+                failure.clone(),
+                true,
+            );
         })
     };
 
@@ -565,9 +604,8 @@ fn speaker_picker() -> Html {
 
     // Episode id and playing flag only. Position ticks must not rebuild the picker.
     let relay = use_selector(|s: &NowPlayingState| {
-        s.devices
+        s.ma_devices
             .iter()
-            .filter(|d| is_music_assistant(&d.device_type))
             .map(|d| (d.device_id.clone(), d.episode_id, d.playing))
             .collect::<Vec<_>>()
     });
@@ -630,15 +668,6 @@ fn speaker_picker() -> Html {
                             i18n.t("music_assistant.player").to_string()
                         };
                         let playback_state = playback_state_for(player, &ma.players);
-                        let state = match state_i18n_key(playback_state) {
-                            Some(key) => i18n.t(key).to_string(),
-                            None => playback_state.to_string(),
-                        };
-                        let unavailable = if player.available {
-                            String::new()
-                        } else {
-                            i18n.t("music_assistant.unavailable").to_string()
-                        };
                         let synced = player.synced_to.as_ref().map(|id| {
                             player_name(&ma.players, id).to_string()
                         });
@@ -704,9 +733,32 @@ fn speaker_picker() -> Html {
                             || loaded_leader
                                 .map(|(episode, playing)| episode != 0 && playing)
                                 .unwrap_or(false);
-                        // Idle, unknown, and a sync member's own state still keep
-                        // play/pause/stop up while an episode is loaded.
-                        let playing_now = transport_shown(playback_state, episode_loaded, relay_playing);
+                        // A 12s refresh that reports idle, some other state, or
+                        // unavailable keeps play/pause/stop while a queue is
+                        // loaded or this speaker was playing recently.
+                        let now = unix_now();
+                        let recent = transport_is_recent(
+                            ma.recent_transport.get(&player.player_id).copied(),
+                            now,
+                        ) || transport_is_recent(ma.recent_transport.get(&transport_id).copied(), now);
+                        let playing_now =
+                            transport_shown(playback_state, episode_loaded, relay_playing, recent);
+                        let state = if !player.available && playing_now.is_some() {
+                            i18n.t("music_assistant.reconnecting").to_string()
+                        } else if state_i18n_key(playback_state).is_none() && playing_now.is_some()
+                        {
+                            i18n.t("music_assistant.state_unknown").to_string()
+                        } else {
+                            match state_i18n_key(playback_state) {
+                                Some(key) => i18n.t(key).to_string(),
+                                None => playback_state.to_string(),
+                            }
+                        };
+                        let unavailable = if player.available || playing_now.is_some() {
+                            String::new()
+                        } else {
+                            i18n.t("music_assistant.unavailable").to_string()
+                        };
                         let on_toggle = {
                             let failure = failure.clone();
                             let transport_id = transport_id.clone();
@@ -799,15 +851,13 @@ fn speaker_picker() -> Html {
                                     }
                                 }
                                 <div class="rd-controls">
-                                    if player.available {
-                                        if let Some(is_playing) = playing_now {
-                                            <button type="button" class="iconbtn" title={ if is_playing { i18n.t("music_assistant.pause").to_string() } else { i18n.t("music_assistant.play").to_string() } } onclick={on_toggle}>
-                                                <i class={ if is_playing { "ph ph-pause" } else { "ph ph-play" } }></i>
-                                            </button>
-                                            <button type="button" class="iconbtn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
-                                                <i class="ph ph-stop"></i>
-                                            </button>
-                                        }
+                                    if let Some(is_playing) = playing_now {
+                                        <button type="button" class="iconbtn" title={ if is_playing { i18n.t("music_assistant.pause").to_string() } else { i18n.t("music_assistant.play").to_string() } } onclick={on_toggle}>
+                                            <i class={ if is_playing { "ph ph-pause" } else { "ph ph-play" } }></i>
+                                        </button>
+                                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
+                                            <i class="ph ph-stop"></i>
+                                        </button>
                                     }
                                     <button type="button" class="rd-play-here" disabled={!player.available} onclick={play}>
                                         <i class="ph ph-play mr-1"></i>{ play_label.clone() }
