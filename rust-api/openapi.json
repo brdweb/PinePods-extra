@@ -17445,7 +17445,7 @@
       },
       "Podping": {
         "type": "object",
-        "description": "Present when the feed includes `podcast:podping`. Listening for Podping notifications\nis not implemented; this only records the tag.",
+        "description": "Present when the feed includes `podcast:podping`. This records the tag. The optional\nHive listener is separate and matches the stored feed URL.",
         "properties": {
           "uses_podping": {
             "type": [

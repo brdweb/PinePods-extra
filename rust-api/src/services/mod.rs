@@ -8,6 +8,7 @@ pub mod download_metadata;
 pub mod music_assistant;
 pub mod people;
 pub mod podcasting2;
+pub mod podping;
 pub mod recommendations;
 pub mod scheduler;
 pub mod task_manager;
