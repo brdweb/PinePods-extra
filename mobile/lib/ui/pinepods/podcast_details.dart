@@ -1720,6 +1720,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                     ),
                   ],
 
+                  // The show payload already drops an ended live item whose guid
+                  // matches a stored episode. This episode list has no guid.
                   ShowPodcasting2Panel(
                     tags: _showTags,
                     onPlayTrailer: _playTrailer,
