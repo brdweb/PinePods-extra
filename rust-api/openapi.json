@@ -13151,6 +13151,13 @@
               }
             ]
           },
+          "complete": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Channel `podcast:complete`. Presence of the tag means the show will not add episodes."
+          },
           "remote_items": {
             "type": "array",
             "items": {
@@ -13184,6 +13191,13 @@
               "string",
               "null"
             ]
+          },
+          "embed_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Web client for the room, for example a KiwiIRC link next to an `irc://` server."
           }
         }
       },
@@ -15601,8 +15615,40 @@
               "null"
             ]
           },
+          "live_value": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LiveValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "tags": {
             "$ref": "#/components/schemas/ItemTags"
+          }
+        }
+      },
+      "LiveValue": {
+        "type": "object",
+        "description": "`podcast:liveValue` on a live item: where the live split is published, plus any\nnested `podcast:value` block. Stored only. Nothing here sends a payment.",
+        "required": [
+          "uri",
+          "protocol"
+        ],
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValueBlock"
+            }
           }
         }
       },

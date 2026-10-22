@@ -983,8 +983,14 @@ mod tests {
         member.synced_to = Some("living".into());
         let mut leader = player("living", "player", &["bed"]);
         leader.state = "playing".into();
-        assert_eq!(playback_state_for(&member, &[member.clone(), leader.clone()]), "playing");
-        assert_eq!(playback_state_for(&leader, &[member, leader]), "playing");
+        assert_eq!(
+            playback_state_for(&member, &[member.clone(), leader.clone()]),
+            "playing"
+        );
+        assert_eq!(
+            playback_state_for(&leader, &[member, leader.clone()]),
+            "playing"
+        );
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
