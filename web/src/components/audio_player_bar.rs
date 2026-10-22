@@ -1,7 +1,9 @@
 use crate::components::audio::AudioPlayer;
 use crate::components::context::UIState;
 use crate::components::music_assistant::MaNowPlayingBar;
-use crate::requests::music_assistant::{show_ma_now_playing, MusicAssistantState, PlaybackCandidate};
+use crate::requests::music_assistant::{
+    show_ma_now_playing, MusicAssistantState, PlaybackCandidate,
+};
 use crate::requests::now_playing::NowPlayingState;
 use yew::{function_component, html, Html};
 use yewdux::prelude::*;
@@ -16,7 +18,7 @@ pub fn audio_player_bar() -> Html {
     let (ma, _) = use_store::<MusicAssistantState>();
     let (np, _) = use_store::<NowPlayingState>();
     let candidates: Vec<PlaybackCandidate> = np
-        .devices
+        .ma_devices
         .iter()
         .map(|d| PlaybackCandidate {
             device_id: d.device_id.clone(),

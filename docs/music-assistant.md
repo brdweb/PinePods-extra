@@ -1,6 +1,6 @@
 # Music Assistant output
 
-PinePods can play episodes on [Music Assistant](https://www.music-assistant.io/) (MA) players and groups. The bridge is opt-in, per user, and off until that user saves an enabled configuration. Web and mobile remote-device screens target other PinePods clients on the now-playing relay. Music Assistant players are not in that list. They appear only in the MA Speakers panel. This document is the contract for the extra settings, volume, and grouping UI.
+PinePods can play episodes on [Music Assistant](https://www.music-assistant.io/) (MA) players and groups. The bridge is opt-in, per user, and off until that user saves an enabled configuration. Web and mobile remote-device screens target other PinePods clients on the now-playing relay. Music Assistant players are not in that list. They appear only in the MA-Speakers panel. This document is the contract for the extra settings, volume, and grouping UI.
 
 Music Assistant 2.10.x is the tested server. The live transport is MA's WebSocket (`ws://host:8095/ws`). MA also accepts JSON-RPC `POST /api` with `Authorization: Bearer <token>`; PinePods does not call that path.
 
@@ -199,7 +199,9 @@ Transport args match the existing relay: `seek` uses `position_sec` (or `positio
 
 `episode_id` is `0` until the queue is playing a PinePods stream URL. Title, artwork, and duration are filled from episode metadata once that URL is seen. `playing` is true for MA states `playing` and `buffering`.
 
-A Sonos speaker often reports `playback_state: idle` while a Music Assistant queue is still loaded: the Sonos provider rewrites a pause as idle, a sync member reports idle while its coordinator plays, and a coordinator change moves `active_source` (which Music Assistant sets to null while its own queue is the source). PinePods keeps the loaded episode across those updates. An idle report does not clear the stream and does not force `playing` off. An explicit `paused` sets `playing` to false and keeps the stream. A null `current_item` or `current_media` is a real stop and clears it. A partial player update with a missing or null state keeps the previous state. An unavailable player stays registered while an episode is loaded. `player_removed` still drops it. The MA Speakers panel keeps play, pause, and stop visible in that idle window, and a PinePods websocket reconnect does not clear the device list the bar is reading.
+Those snapshots are registered on the relay so commands and the MA-Speakers panel can read them. The device-list frame splits them out of the other-devices list: `devices` is other PinePods clients, and `ma_devices` is every Music Assistant player. `GET /api/data/now_playing_devices` uses the same split. Web and mobile read `ma_devices` for the panel and the now-playing bar. A client that only lists `devices` does not show speakers there.
+
+A Sonos speaker often reports `playback_state: idle` while a Music Assistant queue is still loaded: the Sonos provider rewrites a pause as idle, a sync member reports idle while its coordinator plays, and a coordinator change moves `active_source` (which Music Assistant sets to null while its own queue is the source). PinePods keeps the loaded episode across those updates. An idle report does not clear the stream and does not force `playing` off. An explicit `paused` sets `playing` to false and keeps the stream. A null `current_item` or `current_media` is a real stop and clears it. A partial player update with a missing or null state keeps the previous state. An unavailable player stays registered while an episode is loaded. `player_removed` still drops it. The speaker list refreshes every 12 seconds. Play, pause, and stop stay on the row while that player has a loaded episode or was playing, buffering, or paused in the last 60 seconds, including when a refresh reports idle, some other state, or unavailable. An unavailable row says Reconnecting. An unrecognized state says Unknown. A PinePods websocket reconnect does not clear the device list the bar is reading.
 
 ## Progress
 
@@ -234,7 +236,7 @@ curl -sS -X PUT "$PINEPODS/api/data/music_assistant/settings" \
 ```
 
 5. Probe first if you want, with `POST /api/data/music_assistant/test` and the same URL and token. Then `GET /api/data/music_assistant/players?user_id=1` until `connected` is true.
-6. In the web or mobile app, open Settings and turn on Music Assistant, or save with the curl above. After `connected` is true, the MA Speakers panel lists players and groups. Play, volume, mute, and grouping are on that panel and on the now-playing bar while an MA device has an episode. Those players do not appear under Other devices. The same actions work over `POST /api/data/music_assistant/command` and over the now-playing relay.
+6. In the web or mobile app, open Settings and turn on Music Assistant, or save with the curl above. After `connected` is true, the MA-Speakers panel lists players and groups. Play, volume, mute, and grouping are on that panel and on the now-playing bar while an MA device has an episode. Those players do not appear under Other devices. The same actions work over `POST /api/data/music_assistant/command` and over the now-playing relay.
 
 MA must be able to open the stream URL. If playback starts and immediately stops, check that `external_base_url` is reachable from the MA host and that the episode's podcast is the one the scoped RSS key allows.
 

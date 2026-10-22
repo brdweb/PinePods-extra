@@ -282,7 +282,12 @@ pub struct NowPlayingSnapshot {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct NowPlayingDevicesResponse {
+    /// PinePods clients (web, mobile, Firewood, and anything else on the relay).
+    /// Music Assistant players are not in this list.
     pub devices: Vec<NowPlayingSnapshot>,
+    /// Music Assistant virtual devices. The MA-Speakers panel and the now-playing
+    /// bar read these. They are not other-devices targets.
+    pub ma_devices: Vec<NowPlayingSnapshot>,
 }
 
 // Saved episodes models

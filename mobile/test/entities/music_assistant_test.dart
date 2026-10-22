@@ -181,6 +181,13 @@ void main() {
     expect(transportShown('', true, false), isFalse);
     expect(transportShown('idle', false, false), isNull);
     expect(transportShown('unknown', false, true), isTrue);
+    expect(transportShown('idle', false, false, recent: true), isFalse);
+    expect(transportShown('mystery', false, false, recent: true), isFalse);
+    final now = DateTime.utc(2026, 10, 22, 12);
+    expect(transportIsRecent(now.subtract(const Duration(seconds: 12)), now), isTrue);
+    expect(transportIsRecent(now.subtract(const Duration(seconds: 61)), now), isFalse);
+    expect(transportStateLive('buffering'), isTrue);
+    expect(transportStateLive('idle'), isFalse);
     expect(includeInOtherDevices('music_assistant'), isFalse);
     expect(includeInOtherDevices('Music_Assistant'), isFalse);
     expect(includeInOtherDevices('Web'), isTrue);

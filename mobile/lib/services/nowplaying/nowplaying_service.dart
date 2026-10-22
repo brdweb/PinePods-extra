@@ -20,6 +20,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 import 'package:pinepods_mobile/core/alternate_media.dart';
+import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
@@ -143,8 +144,13 @@ class NowPlayingService {
   static const _storage = FlutterSecureStorage();
   static const _deviceIdKey = 'pinepods_device_id';
 
-  /// The user's other active devices (this device is excluded by the server).
+  /// The user's other PinePods clients. Music Assistant players are not here.
   final ValueNotifier<List<NowPlayingDevice>> devices =
+      ValueNotifier<List<NowPlayingDevice>>(const []);
+
+  /// Music Assistant players from the relay's `ma_devices` list. The speaker
+  /// sheet and the now-playing bar read this, not [devices].
+  final ValueNotifier<List<NowPlayingDevice>> maDevices =
       ValueNotifier<List<NowPlayingDevice>>(const []);
 
   /// Whether the socket is currently open.
@@ -366,6 +372,7 @@ class NowPlayingService {
     }
     connected.value = false;
     devices.value = const [];
+    maDevices.value = const [];
   }
 
   /// Intentionally close the socket (e.g. on logout). Cancels reconnection.
@@ -481,11 +488,16 @@ class NowPlayingService {
 
     switch (msg['type'] as String?) {
       case 'devices':
-        final list = (msg['devices'] as List?) ?? const [];
-        devices.value = list
-            .whereType<Map>()
-            .map((d) => NowPlayingDevice.fromJson(d.cast<String, dynamic>()))
-            .where((d) => d.deviceId != _deviceId)
+        final parsed = _deviceList(msg['devices']);
+        final fromField = _deviceList(msg['ma_devices']);
+        final speakers = fromField.isNotEmpty
+            ? fromField
+            : parsed.where((d) => isMusicAssistant(d.deviceType)).toList();
+        maDevices.value =
+            speakers.where((d) => d.deviceId != _deviceId).toList();
+        devices.value = parsed
+            .where((d) =>
+                d.deviceId != _deviceId && includeInOtherDevices(d.deviceType))
             .toList();
         break;
       case 'command':
@@ -615,9 +627,18 @@ class NowPlayingService {
     );
   }
 
+  List<NowPlayingDevice> _deviceList(dynamic raw) {
+    final list = raw is List ? raw : const [];
+    return list
+        .whereType<Map>()
+        .map((d) => NowPlayingDevice.fromJson(d.cast<String, dynamic>()))
+        .toList();
+  }
+
   void dispose() {
     disconnect();
     devices.dispose();
+    maDevices.dispose();
     connected.dispose();
     lastCommandError.dispose();
   }

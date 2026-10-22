@@ -52,7 +52,17 @@ class MusicAssistantPlayerList extends StatefulWidget {
 
 class _MusicAssistantPlayerListState extends State<MusicAssistantPlayerList> {
   final Set<String> _selected = {};
+  final Map<String, DateTime> _recentTransport = {};
   String? _message;
+
+  bool _recent(String id, DateTime now) {
+    return transportIsRecent(_recentTransport[id], now);
+  }
+
+  void _remember(String id, DateTime now) {
+    if (id.isEmpty) return;
+    _recentTransport[id] = now;
+  }
 
   void _toggle(String id) {
     setState(() {
@@ -127,16 +137,31 @@ class _MusicAssistantPlayerListState extends State<MusicAssistantPlayerList> {
   Widget _playerTile(BuildContext context, MaPlayer player) {
     final grouped = player.isGroup;
     final playback = playbackStateFor(player, widget.players);
-    final state = stateLabel(playback) ?? playback;
     final kind = grouped ? 'Group' : 'Speaker';
     final leaderId = transportPlayerId(player);
     final episodeLoaded = widget.loadedPlayerIds.contains(player.playerId) ||
         widget.loadedPlayerIds.contains(leaderId);
     final relayPlaying = widget.playingPlayerIds.contains(player.playerId) ||
         widget.playingPlayerIds.contains(leaderId);
-    final shown = player.available
-        ? transportShown(playback, episodeLoaded, relayPlaying)
-        : null;
+    final now = DateTime.now();
+    _recentTransport.removeWhere(
+      (_, seen) => !transportIsRecent(seen, now),
+    );
+    final recent = _recent(player.playerId, now) || _recent(leaderId, now);
+    if (episodeLoaded || relayPlaying || transportStateLive(playback)) {
+      _remember(player.playerId, now);
+      _remember(leaderId, now);
+    }
+    final shown = transportShown(
+      playback,
+      episodeLoaded,
+      relayPlaying,
+      recent: recent,
+    );
+    final known = stateLabel(playback);
+    final state = !player.available && shown != null
+        ? 'Reconnecting'
+        : (known == null && shown != null ? 'Unknown' : (known ?? playback));
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Column(
@@ -148,7 +173,9 @@ class _MusicAssistantPlayerListState extends State<MusicAssistantPlayerList> {
             secondary: Icon(grouped ? Icons.speaker_group : Icons.speaker),
             title: Text(player.name.isEmpty ? player.playerId : player.name),
             subtitle: Text(
-              player.available ? '$kind · $state' : '$kind · $state · Unavailable',
+              player.available || shown != null
+                  ? '$kind · $state'
+                  : '$kind · $state · Unavailable',
             ),
           ),
           if (player.syncedTo != null)
@@ -420,7 +447,7 @@ Future<void> showMusicAssistantSpeakers(
                   children: [
                     const Icon(Icons.speaker_group),
                     const SizedBox(width: 8),
-                    Text('MA Speakers', style: Theme.of(context).textTheme.titleLarge),
+                    Text('MA-Speakers', style: Theme.of(context).textTheme.titleLarge),
                   ],
                 ),
               ),
@@ -443,7 +470,7 @@ Future<void> showMusicAssistantSpeakers(
                     );
                   }
                   return ValueListenableBuilder<List<NowPlayingDevice>>(
-                    valueListenable: service.devices,
+                    valueListenable: service.maDevices,
                     builder: (context, devices, _) {
                       final loaded = <String>{};
                       final playingIds = <String>{};

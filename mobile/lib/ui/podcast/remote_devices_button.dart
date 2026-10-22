@@ -230,7 +230,7 @@ class _RemoteDevicesSheet extends StatelessWidget {
                           showMusicAssistantSpeakers(host);
                         },
                         icon: const Icon(Icons.speaker),
-                        label: const Text('MA Speakers'),
+                        label: const Text('MA-Speakers'),
                       );
                     },
                   ),
