@@ -770,4 +770,46 @@ class AppLocalizationsDe extends AppLocalizations {
 
   @override
   String get podroll_subscribe_failed => 'Abonnieren fehlgeschlagen';
+
+  @override
+  String get media_choose_version => 'Version wählen';
+
+  @override
+  String get media_original => 'Original';
+
+  @override
+  String get media_audio => 'Audio';
+
+  @override
+  String get media_video => 'Video';
+
+  @override
+  String get media_hls => 'HLS-Stream';
+
+  @override
+  String get media_dash => 'DASH-Stream';
+
+  @override
+  String get media_other => 'Andere';
+
+  @override
+  String get media_ipfs => 'IPFS — nur anzeigen';
+
+  @override
+  String get media_torrent => 'Torrent — nur anzeigen';
+
+  @override
+  String get media_cannot_play => 'Wiedergabe auf diesem Gerät nicht möglich';
+
+  @override
+  String get media_integrity =>
+      'Der Integritätshash wird beim Herunterladen der Datei geprüft';
+
+  @override
+  String get media_stream_only =>
+      'Diese Version ist ein Stream und kann nicht als Datei gespeichert werden';
+
+  @override
+  String get media_fell_back =>
+      'Diese Quelle ist fehlgeschlagen. Eine andere Version wird abgespielt.';
 }

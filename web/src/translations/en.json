@@ -406,6 +406,22 @@
     "ad_detection_started": "Ad detection started — this can take a while.",
     "ad_detection_error": "Could not start ad detection"
   },
+  "media": {
+    "choose_version": "Choose a version",
+    "original": "Original",
+    "audio": "Audio",
+    "video": "Video",
+    "hls": "HLS stream",
+    "dash": "DASH stream",
+    "other": "Other",
+    "kbps": "{rate} kbps",
+    "cannot_play": "Cannot play on this device",
+    "ipfs": "IPFS — shown only",
+    "torrent": "Torrent — shown only",
+    "integrity": "Integrity hash is checked when the file is downloaded",
+    "stream_only": "This version is a stream and cannot be saved as a file",
+    "fell_back": "That source failed. Playing another version."
+  },
   "failed_to_find_podcast_metadata": "Failed to find podcast's metadata.",
   "episode_list_item": {
     "completed": "Completed"

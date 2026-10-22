@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
@@ -328,6 +329,10 @@ Future<void> showMusicAssistantSpeakers(
                       'episode_id': chosen.episodeId,
                       'is_youtube': chosen.isYoutube,
                     };
+                    if (MediaChoiceSession.episodeId == chosen.episodeId &&
+                        MediaChoiceSession.optionId != null) {
+                      args['media_option_id'] = MediaChoiceSession.optionId;
+                    }
                     if (chosen.positionSec != null) {
                       args['position_sec'] = chosen.positionSec;
                     }

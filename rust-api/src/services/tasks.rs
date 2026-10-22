@@ -9,6 +9,81 @@ use std::sync::Arc;
 use sqlx::Row;
 use tracing::{debug, warn};
 
+/// Fetch one progressive source, hashing as the bytes land when the enclosure has an SRI.
+/// A hash mismatch deletes nothing itself; the caller removes the partial file and tries
+/// the next source.
+async fn download_one_source(
+    client: &reqwest::Client,
+    url: &str,
+    file_path: &std::path::Path,
+    username: Option<&str>,
+    password: Option<&str>,
+    integrity: Option<&crate::services::alternate_media::MediaIntegrity>,
+    task_manager: &crate::services::task_manager::TaskManager,
+    task_id: &str,
+    episode_id: i32,
+    episode_title: &str,
+) -> Result<u64, String> {
+    let build_request = |user_agent: &str| {
+        let mut request = client.get(url).header("User-Agent", user_agent).header("Accept", "*/*");
+        if let (Some(user), Some(pass)) = (username, password) {
+            if !user.is_empty() {
+                request = request.basic_auth(user, Some(pass));
+            }
+        }
+        request
+    };
+    let mut response = build_request("PinePods/1.0")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to start download: {e}"))?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        let browser = build_request("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to start download: {e}"))?;
+        if browser.status().is_success() {
+            response = browser;
+        }
+    }
+    if !response.status().is_success() {
+        return Err(format!("Server returned error: {}", response.status()));
+    }
+    let total_size = response.content_length().unwrap_or(0);
+    let mut file = std::fs::File::create(file_path).map_err(|e| format!("Failed to create file: {e}"))?;
+    let mut hasher = crate::services::alternate_media::RunningIntegrity::from_integrity(integrity);
+    let mut downloaded: u64 = 0;
+    let mut last_reported_progress = 0.0;
+    use std::io::Write;
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("Download failed: {e}"))? {
+        file.write_all(&chunk).map_err(|e| format!("Failed to write file: {e}"))?;
+        hasher.update(&chunk);
+        downloaded += chunk.len() as u64;
+        if total_size > 0 {
+            let progress = 25.0 + (downloaded as f64 / total_size as f64) * 65.0;
+            if progress - last_reported_progress >= 10.0 || downloaded == total_size {
+                let _ = task_manager
+                    .update_task_progress_with_details(
+                        task_id,
+                        progress,
+                        Some(format!("Downloading {episode_title}")),
+                        Some(episode_id),
+                        Some("podcast_download".to_string()),
+                        Some(episode_title.to_string()),
+                    )
+                    .await;
+                last_reported_progress = progress;
+            }
+        }
+    }
+    file.flush().map_err(|e| format!("Failed to flush file: {e}"))?;
+    drop(file);
+    if hasher.matches() == Some(false) {
+        return Err("Downloaded file did not match its integrity hash".into());
+    }
+    Ok(downloaded)
+}
+
 // New function that actually downloads an episode and waits for completion
 async fn download_episode_and_wait(
     db_pool: &crate::database::DatabasePool,
@@ -274,7 +349,12 @@ impl ProgressReporter for TaskProgressReporter {
 
 impl TaskSpawner {
     // Download task spawners for podcast episodes and YouTube videos
-    pub async fn spawn_download_podcast_episode(&self, episode_id: i32, user_id: i32) -> AppResult<String> {
+    pub async fn spawn_download_podcast_episode(
+        &self,
+        episode_id: i32,
+        user_id: i32,
+        media_option_id: Option<String>,
+    ) -> AppResult<String> {
         let db_pool = self.db_pool.clone();
         
         // Create task with episode_id as item_id for frontend compatibility
@@ -360,7 +440,8 @@ impl TaskSpawner {
                     }
                 };
 
-                let (episode_url, episode_title, podcast_name, pub_date, author, episode_artwork, artwork_url, description, feed_username, feed_password, feed_url, episode_guid, episode_duration) = episode_info;
+                let (mut episode_url, episode_title, podcast_name, pub_date, author, episode_artwork, artwork_url, description, feed_username, feed_password, feed_url, episode_guid, episode_duration) = episode_info;
+                let original_episode_url = episode_url.clone();
 
                 task_manager.set_task_metadata(&task_id_clone, Some(episode_title.clone()), Some(podcast_name.clone())).await?;
 
@@ -395,94 +476,76 @@ impl TaskSpawner {
                     chrono::Utc::now().format("%Y-%m-%d").to_string()
                 };
                 
-                // Create filename with date, title, and IDs (like Python version)
-                let filename = format!("{}_{}_{}_{}.mp3", pub_date_str, safe_episode_title, user_id, episode_id);
-                let file_path = download_dir.join(&filename);
-                
+                let tags = crate::services::people::store::episode_extras(&db_pool, episode_id)
+                    .await
+                    .unwrap_or_default();
+                let prefer = media_option_id.as_deref().filter(|id| !id.trim().is_empty());
+                let plan = crate::services::alternate_media::plan_media(
+                    &crate::services::alternate_media::PrimaryEnclosure {
+                        uri: original_episode_url.clone(),
+                        mime_type: None,
+                        is_video: false,
+                    },
+                    &tags.alternate_enclosures,
+                    prefer,
+                    crate::services::alternate_media::Audience::Player,
+                );
+                if plan.download.is_empty() {
+                    return Err(crate::error::AppError::bad_request(
+                        "This version has no file to save. HLS and DASH can be played, and IPFS or torrent sources are shown but not downloaded.",
+                    ));
+                }
+
                 let status_message = format!("Connecting to {}", episode_title);
                 task_manager.update_task_progress_with_details(&task_id_clone, 20.0, Some(status_message), Some(episode_id), Some("podcast_download".to_string()), Some(episode_title.clone())).await?;
-                
-                // Download the file. Send a podcast-client User-Agent first; some hosts
-                // (e.g. Buzzsprout) reject requests without one with 403 Forbidden.
+
                 let client = reqwest::Client::new();
-                let build_request = |client: &reqwest::Client, user_agent: &str| {
-                    let mut request = client
-                        .get(&episode_url)
-                        .header("User-Agent", user_agent)
-                        .header("Accept", "*/*");
-                    if let (Some(ref username), Some(ref password)) = (&feed_username, &feed_password) {
-                        if !username.is_empty() {
-                            request = request.basic_auth(username, Some(password));
+                let mut saved: Option<(std::path::PathBuf, u64)> = None;
+                let mut last_error = String::from("No source could be downloaded");
+                for step in &plan.download {
+                    if step.uri != original_episode_url {
+                        if let Err(reason) = crate::services::url_guard::ensure_safe_public_url_async(&step.uri).await {
+                            last_error = format!("Refusing alternate source: {reason}");
+                            tracing::info!("Skipping alternate download for episode {episode_id}: {reason}");
+                            continue;
                         }
                     }
-                    request
-                };
-
-                let mut response = build_request(&client, "PinePods/1.0")
-                    .send()
-                    .await
-                    .map_err(|e| crate::error::AppError::internal(&format!("Failed to start download: {}", e)))?;
-
-                // If we get a 403, the host may be blocking podcast-client User-Agents.
-                // Retry with a browser User-Agent as a fallback (mirrors feed-refresh fetch).
-                if response.status() == reqwest::StatusCode::FORBIDDEN {
-                    tracing::debug!("Download got 403 for episode {}, retrying with browser User-Agent", episode_id);
-                    let browser_response = build_request(&client, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                        .send()
-                        .await
-                        .map_err(|e| crate::error::AppError::internal(&format!("Failed to start download: {}", e)))?;
-                    if browser_response.status().is_success() {
-                        response = browser_response;
-                    }
-                }
-
-                if !response.status().is_success() {
-                    return Err(crate::error::AppError::internal(&format!("Server returned error: {}", response.status())));
-                }
-
-                let total_size = response.content_length().unwrap_or(0);
-                let mut downloaded = 0;
-                let mut file = std::fs::File::create(&file_path)
-                    .map_err(|e| crate::error::AppError::internal(&format!("Failed to create file: {}", e)))?;
-                
-                let status_message = format!("Starting download {}", episode_title);
-                task_manager.update_task_progress_with_details(&task_id_clone, 25.0, Some(status_message), Some(episode_id), Some("podcast_download".to_string()), Some(episode_title.clone())).await?;
-                
-                // Download in chunks with progress updates (throttled)
-                use std::io::Write;
-                let mut last_reported_progress = 0.0;
-                
-                while let Some(chunk) = response.chunk().await
-                    .map_err(|e| crate::error::AppError::internal(&format!("Download failed: {}", e)))?
-                {
-                    file.write_all(&chunk)
-                        .map_err(|e| crate::error::AppError::internal(&format!("Failed to write file: {}", e)))?;
-                    
-                    downloaded += chunk.len() as u64;
-                    
-                    if total_size > 0 {
-                        let progress = 25.0 + (downloaded as f64 / total_size as f64) * 65.0; // 25% to 90%
-                        
-                        // Only send WebSocket updates every 10% to avoid overwhelming the browser
-                        if progress - last_reported_progress >= 10.0 || downloaded == total_size {
-                            let status_message = format!("Downloading {}", episode_title);
-                            task_manager.update_task_progress_with_details(
-                                &task_id_clone, 
-                                progress, 
-                                Some(status_message), 
-                                Some(episode_id), 
-                                Some("podcast_download".to_string()),
-                                Some(episode_title.clone())
-                            ).await?;
-                            last_reported_progress = progress;
+                    let ext = crate::services::alternate_media::file_extension(&step.mime_type, &step.uri);
+                    let filename = format!("{}_{}_{}_{}.{}", pub_date_str, safe_episode_title, user_id, episode_id, ext);
+                    let file_path = download_dir.join(&filename);
+                    let _ = std::fs::remove_file(&file_path);
+                    // Feed credentials stay on the original enclosure. Sending them to an
+                    // alternate host would hand the password to a different site.
+                    let (source_user, source_pass) = if step.uri == original_episode_url {
+                        (feed_username.as_deref(), feed_password.as_deref())
+                    } else {
+                        (None, None)
+                    };
+                    match download_one_source(
+                        &client,
+                        &step.uri,
+                        &file_path,
+                        source_user,
+                        source_pass,
+                        step.integrity.as_ref(),
+                        &task_manager,
+                        &task_id_clone,
+                        episode_id,
+                        &episode_title,
+                    ).await {
+                        Ok(size) => {
+                            episode_url = step.uri.clone();
+                            saved = Some((file_path, size));
+                            break;
+                        }
+                        Err(err) => {
+                            let _ = std::fs::remove_file(&file_path);
+                            tracing::info!("Download source failed for episode {episode_id}: {err}");
+                            last_error = err;
                         }
                     }
                 }
-                
-                file.flush()
-                    .map_err(|e| crate::error::AppError::internal(&format!("Failed to flush file: {}", e)))?;
-                
-                drop(file); // Close the file handle before metadata operations
+                let (file_path, downloaded) = saved.ok_or_else(|| crate::error::AppError::internal(last_error))?;
                 // Ownership is handled by running the process as PUID:PGID (see startup.sh); no chown needed.
 
                 let status_message = format!("Processing {}", episode_title);
@@ -503,12 +566,14 @@ impl TaskSpawner {
                     podcast_artwork: artwork_url.clone(),
                 };
 
-                // Add metadata to the downloaded file
-                if let Err(e) = crate::services::download_metadata::add_podcast_metadata(
-                    &file_path,
-                    &episode_meta,
-                ).await {
-                    tracing::warn!("Failed to add metadata to {}: {}", file_path.display(), e);
+                // ID3 tagging is for mp3. Other codecs keep their own container.
+                if file_path.extension().and_then(|ext| ext.to_str()) == Some("mp3") {
+                    if let Err(e) = crate::services::download_metadata::add_podcast_metadata(
+                        &file_path,
+                        &episode_meta,
+                    ).await {
+                        tracing::warn!("Failed to add metadata to {}: {}", file_path.display(), e);
+                    }
                 }
 
                 // Optional sidecar artifacts (folder.jpg, episode cover, metadata files).

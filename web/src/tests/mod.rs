@@ -65,6 +65,49 @@ fn test_pkce_code_challenge_s256_rfc7636_vector() {
 }
 
 #[wasm_bindgen_test]
+fn download_request_omits_unset_media_option() {
+    let request = crate::requests::pod_req::DownloadEpisodeRequest {
+        episode_id: 1,
+        user_id: 2,
+        is_youtube: false,
+        media_option_id: None,
+    };
+    let value = serde_json::to_value(&request).unwrap();
+    assert!(value.get("media_option_id").is_none());
+
+    let request = crate::requests::pod_req::DownloadEpisodeRequest {
+        episode_id: 1,
+        user_id: 2,
+        is_youtube: false,
+        media_option_id: Some("alt-0".to_string()),
+    };
+    let value = serde_json::to_value(&request).unwrap();
+    assert_eq!(value["media_option_id"], "alt-0");
+}
+
+#[wasm_bindgen_test]
+fn reorder_playback_puts_selected_version_first() {
+    use crate::requests::pod_req::PlaybackStep;
+    let step = |id: &str, index: u32, uri: &str| PlaybackStep {
+        option_id: id.to_string(),
+        source_index: index,
+        uri: uri.to_string(),
+        mime_type: "audio/mpeg".to_string(),
+        kind: "audio".to_string(),
+        is_video: false,
+    };
+    let steps = vec![
+        step("primary", 0, "https://cdn.example/a.mp3"),
+        step("alt-0", 0, "https://mirror.example/a.mp3"),
+        step("alt-0", 1, "https://backup.example/a.mp3"),
+    ];
+    let ordered = crate::components::media_options::reorder_playback(&steps, "alt-0");
+    assert_eq!(ordered[0].uri, "https://mirror.example/a.mp3");
+    assert_eq!(ordered[1].uri, "https://backup.example/a.mp3");
+    assert_eq!(ordered[2].uri, "https://cdn.example/a.mp3");
+}
+
+#[wasm_bindgen_test]
 fn test_pkce_code_challenge_s256_is_url_safe_unpadded() {
     let challenge = crate::requests::login_requests::pkce_code_challenge_s256("some-code-verifier");
     // base64url of a 32-byte digest: 43 chars, unpadded, no '+' or '/'

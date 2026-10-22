@@ -1939,7 +1939,48 @@ async fn prepare_play_episode(
         .db_pool
         .get_or_create_podcast_scoped_rss_key(user_id, podcast_id)
         .await?;
-    let media = build_stream_url(base, episode_id, &rss_key, user_id, is_youtube);
+    let downloaded = if is_youtube {
+        state
+            .db_pool
+            .get_youtube_video_location(episode_id, user_id)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        state
+            .db_pool
+            .get_download_location(episode_id, user_id)
+            .await
+            .ok()
+            .flatten()
+    };
+    let prefer = args
+        .get("media_option_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let direct = if is_youtube || downloaded.is_some() {
+        None
+    } else {
+        crate::services::alternate_media::plan_for_episode(
+            &state.db_pool,
+            episode_id,
+            user_id,
+            prefer,
+            crate::services::alternate_media::Audience::MusicAssistant,
+        )
+        .await
+        .ok()
+        .and_then(|plan| plan.playback.into_iter().next().map(|step| step.uri))
+    };
+    // A saved file is served by PinePods (and was saved from a playable source).
+    // Otherwise hand Music Assistant the playable http(s) URL — never IPFS or a torrent.
+    // Feed username/password is not applied to that direct URL; download the episode
+    // first when the host requires those credentials.
+    let media = if let Some(uri) = direct {
+        uri
+    } else {
+        build_stream_url(base, episode_id, &rss_key, user_id, is_youtube)
+    };
     let position = if args.get("position_sec").is_some() {
         args.get("position_sec").and_then(json_f64).unwrap_or(0.0)
     } else {

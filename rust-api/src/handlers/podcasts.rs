@@ -1237,6 +1237,9 @@ pub struct DownloadPodcastRequest {
     pub episode_id: i32,
     pub user_id: i32,
     pub is_youtube: Option<bool>,
+    /// `primary` or `alt-N` from `episode_media_options`. Omit for auto-selection.
+    #[serde(default)]
+    pub media_option_id: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1303,7 +1306,7 @@ pub async fn download_podcast(
     let task_id = if is_youtube {
         state.task_spawner.spawn_download_youtube_video(request.episode_id, request.user_id).await?
     } else {
-        state.task_spawner.spawn_download_podcast_episode(request.episode_id, request.user_id).await?
+        state.task_spawner.spawn_download_podcast_episode(request.episode_id, request.user_id, request.media_option_id).await?
     };
 
     let content_type = if is_youtube { "YouTube video" } else { "Podcast episode" };
@@ -1726,6 +1729,54 @@ pub async fn fetch_podcasting_2_data(
     let data = state.db_pool.fetch_podcasting_2_data(episode_id, user_id).await?;
     
     Ok(Json(data))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct EpisodeMediaOptionsQuery {
+    pub episode_id: i32,
+    pub user_id: i32,
+    /// `primary` or `alt-N`. Unknown ids are ignored and auto-selection is used.
+    #[serde(default)]
+    pub prefer: Option<String>,
+}
+
+/// Versions a client can play or download for one episode: the RSS enclosure plus every
+/// `podcast:alternateEnclosure`. `playback` is the fallback order (selected source first).
+/// `download` is empty when the chosen version is HLS, DASH, IPFS, or a torrent.
+#[utoipa::path(
+    get,
+    path = "/episode_media_options",
+    tag = "podcasts",
+    summary = "List playable and downloadable media versions for an episode",
+    params(EpisodeMediaOptionsQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Media versions, the auto-selected id, and fallback lists", body = crate::services::alternate_media::MediaPlan),
+        (status = 401, description = "Invalid or missing API key"),
+        (status = 404, description = "Episode not found"),
+    ),
+)]
+pub async fn episode_media_options(
+    Query(query): Query<EpisodeMediaOptionsQuery>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<crate::services::alternate_media::MediaPlan>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    let is_valid = state.db_pool.verify_api_key(&api_key).await?;
+    if !is_valid {
+        return Err(AppError::unauthorized("Invalid API key or insufficient permissions"));
+    }
+    crate::handlers::require_user_access(&state, &api_key, query.user_id).await?;
+    require_episode_owner(&state, query.user_id, query.episode_id, false).await?;
+    let plan = crate::services::alternate_media::plan_for_episode(
+        &state.db_pool,
+        query.episode_id,
+        query.user_id,
+        query.prefer.as_deref(),
+        crate::services::alternate_media::Audience::Player,
+    )
+    .await?;
+    Ok(Json(plan))
 }
 
 // Request for get_auto_download_status - matches Python AutoDownloadStatusRequest

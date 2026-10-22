@@ -507,6 +507,7 @@ fn process_node(
                                                             is_youtube: ev_is_youtube,
                                                             is_video: ev_is_video,
                                                         });
+                                                        state.clear_playback_chain();
                                                         state.set_media_source(url_clone.clone(), ev_is_video, dispatch_for_media);
                                                         let session_vol = state.effective_volume();
                                                         if let Some(media) = &state.media_element {

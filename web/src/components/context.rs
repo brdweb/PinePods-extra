@@ -9,8 +9,8 @@ use crate::requests::login_requests::GetApiDetails;
 use crate::requests::pod_req::PodcastResponseExtra;
 
 use crate::requests::pod_req::{
-    Chapter, Funding, HomeOverview, Playlist, PodcastResponse, PodrollItem, QueuedEpisodesResponse,
-    RefreshProgress, SharedEpisodeResponse, Transcript, Value,
+    Chapter, Funding, HomeOverview, MediaPlan, PlaybackStep, Playlist, PodcastResponse,
+    PodrollItem, QueuedEpisodesResponse, RefreshProgress, SharedEpisodeResponse, Transcript, Value,
 };
 use crate::requests::people_req::CreditedPerson;
 use crate::requests::search_pods::{
@@ -20,6 +20,7 @@ use crate::requests::search_pods::{
 use crate::requests::stat_reqs::{UserStats, ExtendedUserStats};
 use serde::Deserialize;
 use serde_json::{from_str, json};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -452,6 +453,50 @@ impl MediaElement {
     }
 }
 
+thread_local! {
+    static MEDIA_LOCK: Cell<bool> = const { Cell::new(false) };
+}
+
+fn with_media_lock(body: impl FnOnce()) {
+    let already = MEDIA_LOCK.with(|lock| lock.replace(true));
+    body();
+    if !already {
+        MEDIA_LOCK.with(|lock| lock.set(false));
+    }
+}
+
+fn source_is_hls(state: &UIState, src: &str) -> bool {
+    if let Some(step) = state.playback_steps.get(state.playback_step_index) {
+        if step.uri == src && step.kind == "hls" {
+            return true;
+        }
+    }
+    let path = src.split('?').next().unwrap_or(src).to_ascii_lowercase();
+    path.ends_with(".m3u8") || path.ends_with(".m3u")
+}
+
+fn attach_playback_source(media: &HtmlMediaElement, url: &str, hls: bool) {
+    let Some(window) = window() else {
+        media.set_src(url);
+        return;
+    };
+    let attached = js_sys::Reflect::get(&window, &JsValue::from_str("pinepodsAttachMedia"))
+        .ok()
+        .filter(|func| func.is_function())
+        .and_then(|func| func.dyn_into::<js_sys::Function>().ok());
+    if let Some(function) = attached {
+        let window_value: JsValue = window.into();
+        let _ = function.call3(
+            &window_value,
+            media.as_ref(),
+            &JsValue::from_str(url),
+            &JsValue::from_bool(hls),
+        );
+    } else {
+        media.set_src(url);
+    }
+}
+
 /// The episode currently loaded on this device, as a queue anchor for "add to
 /// queue → play next". A loaded episode counts whether it's playing OR paused —
 /// it's still the current episode (it sits at queue position 1), so adds should
@@ -513,6 +558,14 @@ pub struct UIState {
     pub loading_episode_id: Option<i32>,
     pub queue_panel_open: bool,
     pub current_playlist_id: Option<i32>,
+    /// Playable sources for the episode in the player, selected version first.
+    pub playback_steps: Vec<PlaybackStep>,
+    pub playback_step_index: usize,
+    /// True after a source failed and another version started.
+    pub playback_fell_back: bool,
+    pub active_media_plan: Option<MediaPlan>,
+    /// Versions for the episode page the user is looking at.
+    pub episode_page_media: Option<MediaPlan>,
 }
 
 impl UIState {
@@ -575,6 +628,25 @@ impl UIState {
         }
     }
 
+    pub fn install_playback_plan(&mut self, plan: Option<MediaPlan>) {
+        self.playback_fell_back = false;
+        self.playback_step_index = 0;
+        match plan {
+            Some(plan) => {
+                self.playback_steps = plan.playback.clone();
+                self.active_media_plan = Some(plan);
+            }
+            None => {
+                self.playback_steps.clear();
+                self.active_media_plan = None;
+            }
+        }
+    }
+
+    pub fn clear_playback_chain(&mut self) {
+        self.install_playback_plan(None);
+    }
+
     pub fn set_media_source(&mut self, src: String, is_video: bool, dispatch: Dispatch<UIState>) {
         // If the existing element is the wrong type (audio when we need video, or vice-versa),
         // release it so a fresh element of the correct type gets created below.
@@ -585,7 +657,7 @@ impl UIState {
         if type_mismatch {
             if let Some(media) = &self.media_element {
                 let _ = media.pause();
-                media.set_src("");
+                attach_playback_source(media.as_media_element(), "", false);
             }
             self.media_element = None;
         }
@@ -595,7 +667,8 @@ impl UIState {
                 // Create video element using DOM API
                 if let Some(window) = window() {
                     if let Some(document) = window.document() {
-                        document.create_element("video")
+                        document
+                            .create_element("video")
                             .ok()
                             .and_then(|elem| elem.dyn_into::<HtmlVideoElement>().ok())
                             .map(MediaElement::Video)
@@ -614,7 +687,10 @@ impl UIState {
                 let canplay_closure = Closure::wrap(Box::new(move || {
                     // Code to handle the media being ready to play
                 }) as Box<dyn Fn()>);
-                let _ = media.add_event_listener_with_callback("canplay", canplay_closure.as_ref().unchecked_ref());
+                let _ = media.add_event_listener_with_callback(
+                    "canplay",
+                    canplay_closure.as_ref().unchecked_ref(),
+                );
                 canplay_closure.forget();
 
                 // Play event - update state when media starts playing
@@ -627,7 +703,10 @@ impl UIState {
                         });
                     }) as Box<dyn Fn()>)
                 };
-                let _ = media.add_event_listener_with_callback("play", play_closure.as_ref().unchecked_ref());
+                let _ = media.add_event_listener_with_callback(
+                    "play",
+                    play_closure.as_ref().unchecked_ref(),
+                );
                 play_closure.forget();
 
                 // Pause event - update state when media pauses
@@ -639,13 +718,73 @@ impl UIState {
                         });
                     }) as Box<dyn Fn()>)
                 };
-                let _ = media.add_event_listener_with_callback("pause", pause_closure.as_ref().unchecked_ref());
+                let _ = media.add_event_listener_with_callback(
+                    "pause",
+                    pause_closure.as_ref().unchecked_ref(),
+                );
                 pause_closure.forget();
+
+                // A failed source advances to the next playable version. The lock ignores the
+                // error that can fire while the element is being pointed at that next source.
+                let err_dispatch = dispatch.clone();
+                let err_closure = Closure::wrap(Box::new(move || {
+                    if MEDIA_LOCK.with(Cell::get) {
+                        return;
+                    }
+                    let state = err_dispatch.get();
+                    let loaded = state
+                        .media_element
+                        .as_ref()
+                        .map(|media| {
+                            let element = media.as_media_element();
+                            let current = element.current_src();
+                            if current.is_empty() {
+                                element.src()
+                            } else {
+                                current
+                            }
+                        })
+                        .unwrap_or_default();
+                    if loaded.is_empty() || state.playback_steps.len() < 2 {
+                        return;
+                    }
+                    let next = state.playback_step_index.saturating_add(1);
+                    if next >= state.playback_steps.len() {
+                        return;
+                    }
+                    let step = state.playback_steps[next].clone();
+                    drop(state);
+                    with_media_lock(|| {
+                        err_dispatch.reduce_mut(|state| {
+                            if state.playback_step_index.saturating_add(1) != next {
+                                return;
+                            }
+                            state.playback_step_index = next;
+                            state.playback_fell_back = true;
+                            if let Some(playing) = state.currently_playing.as_mut() {
+                                playing.src = step.uri.clone();
+                                playing.is_video = step.is_video;
+                            }
+                            let dispatch = err_dispatch.clone();
+                            state.set_media_source(step.uri.clone(), step.is_video, dispatch);
+                            if let Some(media) = &state.media_element {
+                                let _ = media.play();
+                            }
+                        });
+                    });
+                }) as Box<dyn Fn()>);
+                let _ = media.add_event_listener_with_callback(
+                    "error",
+                    err_closure.as_ref().unchecked_ref(),
+                );
+                err_closure.forget();
             }
         }
 
         if let Some(media) = &self.media_element {
-            media.set_src(&src);
+            let hls = source_is_hls(self, &src);
+            let element = media.as_media_element().clone();
+            with_media_lock(|| attach_playback_source(&element, &src, hls));
         }
     }
 

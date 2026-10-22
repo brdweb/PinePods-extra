@@ -11,7 +11,9 @@ import 'package:pinepods_mobile/repository/repository.dart';
 import 'package:pinepods_mobile/services/logging/app_logger.dart';
 import 'package:pinepods_mobile/bloc/podcast/podcast_bloc.dart';
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
+import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/entities/app_settings.dart';
+import 'package:pinepods_mobile/services/global_services.dart';
 import 'package:provider/provider.dart';
 
 /// Utility class for managing local downloads of PinePods episodes
@@ -267,6 +269,40 @@ class LocalDownloadUtils {
         }
       } catch (e) {
         logger.debug('LocalDownload', 'Could not resolve server download URL: $e');
+      }
+
+      // No server copy: save the selected progressive alternate (or the RSS file).
+      // Streams and IPFS/torrent sources are not files, so an explicit choice of
+      // those refuses the download instead of silently saving a different version.
+      if (localEpisode.downloadUrl == null && !episode.isYoutube) {
+        try {
+          final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+          final userId = settings.pinepodsUserId;
+          final service = GlobalServices.pinepodsService;
+          if (userId != null && service != null) {
+            final prefer = await preferredMediaOption(episode.episodeId);
+            final data = await service.fetchPodcasting2Data(episode.episodeId, userId);
+            final tags = data?['tags'];
+            final plan = planFromTags(
+              primaryUri: episode.episodeUrl,
+              tags: tags is Map<String, dynamic> ? tags : (tags is Map ? tags.cast<String, dynamic>() : null),
+              preferOptionId: prefer,
+            );
+            if (prefer != null && plan.download.isEmpty) {
+              logger.debug('LocalDownload', 'Selected version is not a file');
+              return false;
+            }
+            if (plan.download.isNotEmpty) {
+              localEpisode.downloadUrl = plan.download.first.uri;
+              final integrity = plan.download.first.integrity;
+              if (integrity != null && integrity.verifiable) {
+                MediaChoiceSession.pendingIntegrity[episode.episodeId] = integrity;
+              }
+            }
+          }
+        } catch (e) {
+          logger.debug('LocalDownload', 'Could not resolve alternate media: $e');
+        }
       }
 
       final podcastBloc = Provider.of<PodcastBloc>(context, listen: false);

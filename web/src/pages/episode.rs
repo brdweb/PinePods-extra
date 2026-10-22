@@ -1,5 +1,6 @@
 use crate::components::app_drawer::App_drawer;
 use crate::components::audio::on_play_click;
+use crate::components::media_options::{preferred_media_option, render_media_picker};
 use crate::components::audio::AudioPlayer;
 use crate::components::click_events::create_on_title_click;
 use crate::components::context::{AppState, EpisodeDetailState, EpisodeNavigationState, EpisodeStatusState, NotificationState, PageLoadState, UIState, UserPreferencesState};
@@ -16,7 +17,8 @@ use crate::requests::people_req::{call_get_episode_people, CreditedPerson};
 use crate::requests::pod_req;
 use crate::requests::pod_req::{
     call_check_podcast, call_create_share_link, call_download_episode, call_download_episode_file,
-    call_fetch_podcasting_2_data, call_get_episode_id, call_get_episode_metadata,
+    call_episode_media_options, call_fetch_podcasting_2_data, call_get_episode_id,
+    call_get_episode_metadata,
     call_mark_episode_completed, call_mark_episode_uncompleted, call_queue_episode,
     call_remove_downloaded_episode, call_remove_queued_episode, call_remove_saved_episode,
     call_save_episode, DownloadEpisodeRequest, EpisodeRequest, FetchPodcasting2DataRequest,
@@ -95,6 +97,36 @@ async fn fallback_to_podcast_parsing(
                         if !is_youtube {
                             let server_name_clone = server_name.clone();
                             let api_key_clone = api_key.clone();
+                            {
+                                let aud_dispatch = aud_dispatch.clone();
+                                let server_name_media = server_name.clone();
+                                let api_key_media = api_key.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let prefer = preferred_media_option(episode_id);
+                                    match call_episode_media_options(
+                                        &server_name_media,
+                                        &api_key_media,
+                                        episode_id,
+                                        user_id,
+                                        prefer.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(plan) => aud_dispatch.reduce_mut(|state| {
+                                            state.episode_page_media = Some(plan);
+                                        }),
+                                        Err(err) => {
+                                            web_sys::console::log_1(
+                                                &format!("Error fetching media versions: {}", err)
+                                                    .into(),
+                                            );
+                                            aud_dispatch.reduce_mut(|state| {
+                                                state.episode_page_media = None;
+                                            });
+                                        }
+                                    }
+                                });
+                            }
                             wasm_bindgen_futures::spawn_local(async move {
                                 match call_fetch_podcasting_2_data(
                                     &server_name_clone,
@@ -1252,6 +1284,33 @@ pub fn epsiode() -> Html {
                 });
             }
 
+            {
+                let audio_dispatch = audio_dispatch.clone();
+                let server_name = server_name.clone();
+                let api_key = api_key.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let prefer = preferred_media_option(episode_id);
+                    match call_episode_media_options(
+                        &server_name,
+                        &api_key,
+                        episode_id,
+                        user_id,
+                        prefer.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(plan) => audio_dispatch
+                            .reduce_mut(|state| state.episode_page_media = Some(plan)),
+                        Err(err) => {
+                            web_sys::console::log_1(
+                                &format!("Error fetching media versions: {}", err).into(),
+                            );
+                            audio_dispatch.reduce_mut(|state| state.episode_page_media = None);
+                        }
+                    }
+                });
+            }
+
             wasm_bindgen_futures::spawn_local(async move {
                 match call_fetch_podcasting_2_data(&server_name, &api_key, &chap_request).await {
                     Ok(response) => {
@@ -1681,8 +1740,14 @@ pub fn epsiode() -> Html {
                 if let (Some(_api_key), Some(server_name)) =
                     (api_key.as_ref(), server_name.as_ref())
                 {
-                    match call_download_episode_file(&server_name, &api_key.unwrap(), episode_id)
-                        .await
+                    let prefer = preferred_media_option(episode_id);
+                    match call_download_episode_file(
+                        &server_name,
+                        &api_key.unwrap(),
+                        episode_id,
+                        prefer.as_deref(),
+                    )
+                    .await
                     {
                         Ok(_) => {
                             web_sys::console::log_1(&"Episode download started".into());
@@ -2097,10 +2162,12 @@ pub fn epsiode() -> Html {
                                 let _post_state = download_post.clone();
                                 let is_downloaded = *download_status;
                                 let download_status = download_status.clone();
+                                let prefer = preferred_media_option(episode_id);
                                 let request = DownloadEpisodeRequest {
                                     episode_id,
                                     user_id: user_id_download.unwrap(),
                                     is_youtube,
+                                    media_option_id: if is_downloaded { None } else { prefer },
                                 };
 
                                 // Set loading state
@@ -2575,6 +2642,7 @@ pub fn epsiode() -> Html {
                                                     } }
                                                 </button>
                                             </div>
+                                            { render_media_picker((*audio_state).episode_page_media.clone(), episode_id) }
                                         </div>
                                     </div>
 

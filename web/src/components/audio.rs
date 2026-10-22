@@ -11,9 +11,10 @@ use crate::requests::episode::Episode;
 use crate::requests::setting_reqs::call_get_default_volume;
 use crate::requests::pod_req::call_get_episode_id;
 use crate::requests::pod_req::FetchPodcasting2DataRequest;
+use crate::components::media_options::{preferred_media_option, render_media_picker};
 use crate::requests::pod_req::{
-    call_add_history, call_check_episode_in_db, call_fetch_podcasting_2_data,
-    call_get_episode_skip_segments,
+    call_add_history, call_check_episode_in_db, call_episode_media_options,
+    call_fetch_podcasting_2_data, call_get_episode_skip_segments,
     call_get_auto_play_next_status, call_get_next_playlist_episode, call_get_next_podcast_episode,
     call_get_episode_metadata, call_get_play_episode_details, call_get_podcast_id_from_ep,
     call_get_queued_episodes,
@@ -1823,6 +1824,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
 
                         <div class="player-fs-meta">
                             <div class="player-fs-title">{ &audio_props.title }</div>
+                            { render_media_picker(audio_state.active_media_plan.clone(), audio_props.episode_id) }
                             { match &audio_state.episode_people {
                                 Some(people) if !people.is_empty() => {
                                     let collapse = {
@@ -1941,6 +1943,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                         </div>
                         <div class="player-info">
                             <div class="player-title">{ &audio_props.title }</div>
+                            { render_media_picker(audio_state.active_media_plan.clone(), audio_props.episode_id) }
                         </div>
                     </div>
                     // Center: transport controls + scrub bar
@@ -2372,8 +2375,8 @@ pub fn on_play_click(
             episode.episodeurl.clone()
         };
 
-        // NEW CODE: Analyze the actual audio duration before playing
-        let src_for_analysis = src.clone();
+        // Analyze the actual audio duration before playing. Alternate versions are
+        // resolved inside the task so a saved choice replaces the feed enclosure.
         let audio_dispatch_for_duration = audio_dispatch.clone();
         let server_name_for_player = server_name.clone();
         let api_key_for_player = api_key.clone();
@@ -2446,6 +2449,43 @@ pub fn on_play_click(
                     Err(_) => None,
                 }
             }
+
+            let use_remote_versions = episode.episodeid != 0
+                && !episode.is_youtube
+                && !is_local
+                && !is_server_download
+                && !episode.episodeurl.starts_with("local://")
+                && !episode.episodeurl.contains("youtube.com");
+            let mut src = src;
+            let mut is_video = episode.is_video;
+            let mut playback_plan = None;
+            if use_remote_versions {
+                let prefer = preferred_media_option(episode.episodeid);
+                match call_episode_media_options(
+                    &server_name_for_player,
+                    &Some(api_key_for_player.clone()),
+                    episode.episodeid,
+                    user_id,
+                    prefer.as_deref(),
+                )
+                .await
+                {
+                    Ok(plan) => {
+                        if let Some(step) = plan.playback.first() {
+                            src = step.uri.clone();
+                            is_video = step.is_video;
+                        }
+                        playback_plan = Some(plan);
+                    }
+                    Err(err) => {
+                        web_sys::console::log_1(
+                            &format!("Media versions unavailable, using the feed file: {}", err)
+                                .into(),
+                        );
+                    }
+                }
+            }
+            let src_for_analysis = src.clone();
 
             // Get the actual duration
             let actual_duration_sec = get_actual_duration(&src_for_analysis).await;
@@ -2521,10 +2561,10 @@ pub fn on_play_click(
                                         end_pos_sec: end_pos_sec as f64,
                                         offline: false,
                                         is_youtube: episode.is_youtube,
-                                        is_video: episode.is_video,
+                                        is_video,
                                     });
-                                    // Use new media_element that supports both audio and video
-                                    audio_state.set_media_source(src.to_string(), episode.is_video, dispatch_for_media);
+                                    audio_state.install_playback_plan(playback_plan.clone());
+                                    audio_state.set_media_source(src.to_string(), is_video, dispatch_for_media);
                                     let session_vol = audio_state.effective_volume();
                                     if let Some(media) = &audio_state.media_element {
                                         media.set_current_time(start_pos_sec);
@@ -2578,10 +2618,10 @@ pub fn on_play_click(
                         end_pos_sec: 0.0,
                         offline: false,
                         is_youtube: episode.is_youtube,
-                        is_video: episode.is_video,
+                        is_video,
                     });
-                    // Use new media_element that supports both audio and video
-                    audio_state.set_media_source(src.to_string(), episode.is_video, dispatch_for_media);
+                    audio_state.install_playback_plan(playback_plan.clone());
+                    audio_state.set_media_source(src.to_string(), is_video, dispatch_for_media);
                     let session_vol = audio_state.effective_volume();
                     if let Some(media) = &audio_state.media_element {
                         // Apply the live session volume to the new element (#828/#775)
@@ -2780,7 +2820,7 @@ pub fn on_play_click_offline(
                             is_youtube: episode_is_youtube_for_wasm,
                             is_video: episode.is_video,
                         });
-                        // Use new media_element that supports both audio and video
+                        audio_state.clear_playback_chain();
                         audio_state.set_media_source(src.to_string(), episode.is_video, dispatch_for_media);
                         let session_vol = audio_state.effective_volume();
                         if let Some(media) = &audio_state.media_element {
@@ -2910,6 +2950,7 @@ pub fn on_play_click_shared(
                 audio_state.playback_speed = 1.0;
                 // Keep the live session volume; do NOT reset on episode switch (#775).
                 audio_state.offline = Some(false);
+                audio_state.clear_playback_chain();
                 audio_state.currently_playing = Some(AudioPlayerProps {
                     episode: episode.clone(),
                     src: episode_url.clone(),

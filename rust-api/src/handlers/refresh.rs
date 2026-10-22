@@ -224,7 +224,7 @@ async fn queue_auto_downloads(
         let task_result = if is_yt {
             state.task_spawner.spawn_download_youtube_video(episode.episodeid, user_id).await
         } else {
-            state.task_spawner.spawn_download_podcast_episode(episode.episodeid, user_id).await
+            state.task_spawner.spawn_download_podcast_episode(episode.episodeid, user_id, None).await
         };
         match task_result {
             Ok(task_id) => debug!("Auto-download task queued with ID: {}", task_id),
