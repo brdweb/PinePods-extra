@@ -434,6 +434,45 @@ class PlaybackCandidate {
 bool isMusicAssistant(String deviceType) =>
     deviceType.toLowerCase() == 'music_assistant';
 
+/// Music Assistant players belong on the speaker panel, not in the generic
+/// "other devices" list. Every other now-playing device stays there.
+bool includeInOtherDevices(String deviceType) => !isMusicAssistant(deviceType);
+
+/// `true` shows pause, `false` shows play, `null` hides transport.
+///
+/// Playing and buffering show pause. Paused shows play. Idle, unknown, off,
+/// and a missing state still show play while an episode is loaded or the relay
+/// says the speaker is playing. Sonos reports idle for a Music Assistant pause
+/// and for a sync member whose coordinator is playing.
+bool? transportShown(String playerState, bool episodeLoaded, bool relayPlaying) {
+  final state = playerState.trim().toLowerCase();
+  final playing = relayPlaying || state == 'playing' || state == 'buffering';
+  if (playing) return true;
+  if (state == 'paused' || episodeLoaded) return false;
+  return null;
+}
+
+/// Playback state the transport buttons should follow. A synced speaker's own
+/// state is often idle while the leader is playing.
+String playbackStateFor(MaPlayer player, List<MaPlayer> players) {
+  final id = player.syncedTo?.trim();
+  if (id != null && id.isNotEmpty) {
+    for (final leader in players) {
+      if (leader.playerId == id && leader.state.trim().isNotEmpty) {
+        return leader.state;
+      }
+    }
+  }
+  return player.state;
+}
+
+/// Commands go to the sync parent. A group row is its own leader.
+String transportPlayerId(MaPlayer player) {
+  final id = player.syncedTo?.trim();
+  if (id != null && id.isNotEmpty) return id;
+  return player.playerId;
+}
+
 PlaybackCandidate? choosePlayback(
   List<PlaybackCandidate> devices,
   String? focusDeviceId,

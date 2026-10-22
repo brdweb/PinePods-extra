@@ -14,8 +14,8 @@ use crate::components::context::{current_playing_anchor, AppState, NotificationS
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, plan_group,
-    player_name, refresh_music_assistant, send_player_command, GroupPlanError,
-    MaPlayer, MusicAssistantState, PlaybackCandidate,
+    playback_state_for, player_name, refresh_music_assistant, send_player_command,
+    transport_shown, GroupPlanError, MaPlayer, MusicAssistantState, PlaybackCandidate,
 };
 use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
 use crate::requests::notify::{toast_error, toast_info};
@@ -150,18 +150,6 @@ pub(crate) fn volume_control(props: &VolumeProps) -> Html {
                 <i class={ if props.muted { "ph ph-speaker-slash" } else { "ph ph-speaker-high" } }></i>
             </button>
         </div>
-    }
-}
-
-/// `Some(true)` while playing (show pause), `Some(false)` while paused (show play).
-/// Idle, off, and standby hide the transport buttons.
-fn transport_active(state: &str) -> Option<bool> {
-    if state.eq_ignore_ascii_case("playing") || state.eq_ignore_ascii_case("buffering") {
-        Some(true)
-    } else if state.eq_ignore_ascii_case("paused") {
-        Some(false)
-    } else {
-        None
     }
 }
 
@@ -575,6 +563,14 @@ fn speaker_picker() -> Html {
         })
     };
 
+    // Episode id and playing flag only. Position ticks must not rebuild the picker.
+    let relay = use_selector(|s: &NowPlayingState| {
+        s.devices
+            .iter()
+            .filter(|d| is_music_assistant(&d.device_type))
+            .map(|d| (d.device_id.clone(), d.episode_id, d.playing))
+            .collect::<Vec<_>>()
+    });
     let checked_count = ma
         .players
         .iter()
@@ -633,9 +629,10 @@ fn speaker_picker() -> Html {
                         } else {
                             i18n.t("music_assistant.player").to_string()
                         };
-                        let state = match state_i18n_key(&player.state) {
+                        let playback_state = playback_state_for(player, &ma.players);
+                        let state = match state_i18n_key(playback_state) {
                             Some(key) => i18n.t(key).to_string(),
-                            None => player.state.clone(),
+                            None => playback_state.to_string(),
                         };
                         let unavailable = if player.available {
                             String::new()
@@ -686,8 +683,30 @@ fn speaker_picker() -> Html {
                             })
                         };
                         let show_group_tools = player.is_group();
-                        let playing_now = transport_active(&player.state);
                         let transport_id = transport_player_id(player);
+                        let episode_of = |device_id: &str| {
+                            relay.iter().find(|(id, _, _)| id == device_id).map(|(_, episode, playing)| {
+                                (*episode, *playing)
+                            })
+                        };
+                        let leader_device = ma
+                            .players
+                            .iter()
+                            .find(|p| p.player_id == transport_id)
+                            .map(|p| p.device_id.as_str());
+                        let loaded_here = episode_of(&player.device_id);
+                        let loaded_leader = leader_device.and_then(episode_of);
+                        let episode_loaded = loaded_here.map(|(episode, _)| episode != 0).unwrap_or(false)
+                            || loaded_leader.map(|(episode, _)| episode != 0).unwrap_or(false);
+                        let relay_playing = loaded_here
+                            .map(|(episode, playing)| episode != 0 && playing)
+                            .unwrap_or(false)
+                            || loaded_leader
+                                .map(|(episode, playing)| episode != 0 && playing)
+                                .unwrap_or(false);
+                        // Idle, unknown, and a sync member's own state still keep
+                        // play/pause/stop up while an episode is loaded.
+                        let playing_now = transport_shown(playback_state, episode_loaded, relay_playing);
                         let on_toggle = {
                             let failure = failure.clone();
                             let transport_id = transport_id.clone();
@@ -719,7 +738,7 @@ fn speaker_picker() -> Html {
                                             { player.name.clone() }
                                         </span>
                                     </label>
-                                    <span class={classes!("rd-state", (player.state == "playing").then_some("is-playing"))}>
+                                    <span class={classes!("rd-state", (playback_state.eq_ignore_ascii_case("playing") || playback_state.eq_ignore_ascii_case("buffering")).then_some("is-playing"))}>
                                         { kind }{ " · " }{ state }
                                         if !unavailable.is_empty() {
                                             { format!(" · {unavailable}") }

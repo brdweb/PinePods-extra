@@ -173,6 +173,42 @@ void main() {
     );
   });
 
+  test('transport stays when sonos reports idle', () {
+    expect(transportShown('playing', true, false), isTrue);
+    expect(transportShown('paused', true, false), isFalse);
+    expect(transportShown('idle', true, false), isFalse);
+    expect(transportShown('idle', true, true), isTrue);
+    expect(transportShown('', true, false), isFalse);
+    expect(transportShown('idle', false, false), isNull);
+    expect(transportShown('unknown', false, true), isTrue);
+    expect(includeInOtherDevices('music_assistant'), isFalse);
+    expect(includeInOtherDevices('Music_Assistant'), isFalse);
+    expect(includeInOtherDevices('Web'), isTrue);
+    expect(includeInOtherDevices('iOS'), isTrue);
+    expect(includeInOtherDevices('Android'), isTrue);
+    expect(includeInOtherDevices('Firewood'), isTrue);
+
+    final member = MaPlayer(
+      playerId: 'bed',
+      deviceId: 'ma:1:bed',
+      name: 'Bed',
+      kind: 'player',
+      state: 'idle',
+      syncedTo: 'living',
+    );
+    final leader = MaPlayer(
+      playerId: 'living',
+      deviceId: 'ma:1:living',
+      name: 'Living',
+      kind: 'player',
+      state: 'playing',
+    );
+    expect(playbackStateFor(member, [member, leader]), 'playing');
+    expect(playbackStateFor(leader, [member, leader]), 'playing');
+    expect(transportPlayerId(member), 'living');
+    expect(transportPlayerId(leader), 'living');
+  });
+
   test('displayed position follows speed and freezes when stale', () {
     expect(
       displayedPosition(positionSec: 10, playing: true, speed: 2, updatedAt: 100, now: 105),

@@ -295,11 +295,13 @@ pub fn connect_now_playing_ws(server_name: String, user_id: i32, api_key: String
                         }
                     }
 
-                    // Disconnected — clear state, then fall through to reconnect.
+                    // Disconnected. Mark the socket down, but keep the last device
+                    // list. The next `devices` frame replaces it. Clearing here
+                    // unmounts the Music Assistant now-playing bar for the whole
+                    // reconnect gap even though the speakers have not gone away.
                     NP_TX.with(|c| *c.borrow_mut() = None);
                     Dispatch::<NowPlayingState>::global().reduce_mut(|s| {
                         s.connected = false;
-                        s.devices.clear();
                     });
 
                     // Another tab (e.g. a duplicated one) took over our id: take a

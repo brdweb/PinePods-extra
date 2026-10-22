@@ -16,7 +16,7 @@ use yewdux::prelude::*;
 use crate::components::audio::on_play_click;
 use crate::components::context::{AppState, UIState};
 use crate::components::music_assistant::{device_is_ma, VolumeControl};
-use crate::requests::music_assistant::MusicAssistantState;
+use crate::requests::music_assistant::{include_in_other_devices, MusicAssistantState};
 use crate::requests::now_playing::{
     send_command, send_playback_to, NowPlayingDevice, NowPlayingState, PendingRemotePlay,
 };
@@ -68,7 +68,11 @@ pub fn remote_devices() -> Html {
         e.stop_propagation();
         np_dispatch.reduce_mut(|s| s.panel_open = !s.panel_open);
     });
-    let device_count = np_state.devices.len();
+    let device_count = np_state
+        .devices
+        .iter()
+        .filter(|d| include_in_other_devices(&d.device_type))
+        .count();
     html! {
         <div class="remote-devices">
             <button
@@ -195,6 +199,12 @@ pub fn remote_devices_panel() -> Html {
             || ()
         });
     }
+
+    let other_devices: Vec<&NowPlayingDevice> = np_state
+        .devices
+        .iter()
+        .filter(|d| include_in_other_devices(&d.device_type))
+        .collect();
 
     let close = {
         let np_dispatch = np_dispatch.clone();
@@ -452,14 +462,14 @@ pub fn remote_devices_panel() -> Html {
                     </button>
                 </div>
                 <div class="nc-body">
-                    if np_state.devices.is_empty() {
+                    if other_devices.is_empty() {
                         <div class="nc-empty">
                             <span class="nc-empty-ico"><i class="ph ph-broadcast"></i></span>
                             <div class="nc-empty-t">{ &i18n_no_other_devices }</div>
                             <div class="nc-empty-s">{ &i18n_no_devices_description }</div>
                         </div>
                     } else {
-                        { for np_state.devices.iter().map(|d| render_device(d)) }
+                        { for other_devices.iter().copied().map(render_device) }
                     }
                 </div>
             </div>

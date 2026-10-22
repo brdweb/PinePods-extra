@@ -1,5 +1,6 @@
 // lib/ui/widgets/episode_context_menu.dart
 import 'package:flutter/material.dart';
+import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/entities/pinepods_episode.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
 import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
@@ -191,7 +192,8 @@ class EpisodeContextMenu extends StatelessWidget {
     return ValueListenableBuilder<List<NowPlayingDevice>>(
       valueListenable: service.devices,
       builder: (context, deviceList, _) {
-        if (!deviceList.any((d) => d.supports('play_episode'))) {
+        if (!deviceList.any((d) =>
+            includeInOtherDevices(d.deviceType) && d.supports('play_episode'))) {
           return const SizedBox.shrink();
         }
         return _buildMenuOption(

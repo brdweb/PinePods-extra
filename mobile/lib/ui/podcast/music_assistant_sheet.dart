@@ -4,6 +4,7 @@ import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
 import 'package:pinepods_mobile/services/music_assistant/music_assistant_api.dart';
+import 'package:pinepods_mobile/services/nowplaying/nowplaying_service.dart';
 import 'package:provider/provider.dart';
 
 class MaEpisodeTarget {
@@ -28,6 +29,8 @@ class MusicAssistantPlayerList extends StatefulWidget {
     required this.playLabel,
     required this.onPlay,
     required this.onCommand,
+    this.loadedPlayerIds = const {},
+    this.playingPlayerIds = const {},
   });
 
   final List<MaPlayer> players;
@@ -35,6 +38,13 @@ class MusicAssistantPlayerList extends StatefulWidget {
   final String playLabel;
   final Future<void> Function(MaPlayer player) onPlay;
   final Future<void> Function(String playerId, String action, Map<String, dynamic> args) onCommand;
+
+  /// Player ids whose relay snapshot still has an episode. Idle Sonos rows
+  /// keep play/pause/stop while one of these is set.
+  final Set<String> loadedPlayerIds;
+
+  /// Player ids the relay says are playing. Overrides a stale idle state.
+  final Set<String> playingPlayerIds;
 
   @override
   State<MusicAssistantPlayerList> createState() => _MusicAssistantPlayerListState();
@@ -116,8 +126,17 @@ class _MusicAssistantPlayerListState extends State<MusicAssistantPlayerList> {
 
   Widget _playerTile(BuildContext context, MaPlayer player) {
     final grouped = player.isGroup;
-    final state = stateLabel(player.state) ?? player.state;
+    final playback = playbackStateFor(player, widget.players);
+    final state = stateLabel(playback) ?? playback;
     final kind = grouped ? 'Group' : 'Speaker';
+    final leaderId = transportPlayerId(player);
+    final episodeLoaded = widget.loadedPlayerIds.contains(player.playerId) ||
+        widget.loadedPlayerIds.contains(leaderId);
+    final relayPlaying = widget.playingPlayerIds.contains(player.playerId) ||
+        widget.playingPlayerIds.contains(leaderId);
+    final shown = player.available
+        ? transportShown(playback, episodeLoaded, relayPlaying)
+        : null;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Column(
@@ -194,6 +213,22 @@ class _MusicAssistantPlayerListState extends State<MusicAssistantPlayerList> {
             padding: const EdgeInsets.only(left: 8),
             child: Row(
               children: [
+                if (shown != null) ...[
+                  IconButton(
+                    tooltip: shown ? 'Pause' : 'Play',
+                    onPressed: () => widget.onCommand(
+                      leaderId,
+                      shown ? 'pause' : 'play',
+                      const {},
+                    ),
+                    icon: Icon(shown ? Icons.pause : Icons.play_arrow),
+                  ),
+                  IconButton(
+                    tooltip: 'Stop',
+                    onPressed: () => widget.onCommand(leaderId, 'stop', const {}),
+                    icon: const Icon(Icons.stop),
+                  ),
+                ],
                 TextButton.icon(
                   onPressed: player.available ? () => widget.onPlay(player) : null,
                   icon: const Icon(Icons.play_arrow),
@@ -267,6 +302,84 @@ class _VolumeRowState extends State<_VolumeRow> {
   }
 }
 
+Widget _speakerList({
+  required BuildContext context,
+  required List<MaPlayer> players,
+  required bool connected,
+  required MaEpisodeTarget? episode,
+  required MaEpisodeTarget? target,
+  required MusicAssistantApi api,
+  required ({String server, String apiKey, int userId}) session,
+  required ScaffoldMessengerState? messenger,
+  required Set<String> loaded,
+  required Set<String> playing,
+}) {
+  return MusicAssistantPlayerList(
+    players: players,
+    connected: connected,
+    loadedPlayerIds: loaded,
+    playingPlayerIds: playing,
+    playLabel: episode != null ? 'Play this episode' : 'Play current episode',
+    onPlay: (player) async {
+      final chosen = target;
+      if (chosen == null) {
+        messenger?.showSnackBar(
+          const SnackBar(content: Text('Nothing is playing here to send.')),
+        );
+        return;
+      }
+      final args = <String, dynamic>{
+        'episode_id': chosen.episodeId,
+        'is_youtube': chosen.isYoutube,
+      };
+      if (MediaChoiceSession.episodeId == chosen.episodeId &&
+          MediaChoiceSession.optionId != null) {
+        args['media_option_id'] = MediaChoiceSession.optionId;
+      }
+      if (chosen.positionSec != null) {
+        args['position_sec'] = chosen.positionSec;
+      }
+      try {
+        final result = await api.command(
+          userId: session.userId,
+          playerId: player.playerId,
+          action: 'play_episode',
+          args: args,
+        );
+        MusicAssistantController.instance.focusDeviceId.value = player.deviceId;
+        if (context.mounted) {
+          final audio = Provider.of<AudioPlayerService>(context, listen: false);
+          await audio.pause();
+        }
+        if (result.warnings.isNotEmpty) {
+          messenger?.showSnackBar(SnackBar(content: Text(result.warnings.join(' '))));
+        }
+        if (context.mounted) Navigator.of(context).pop();
+      } catch (err) {
+        final explained = explainTest(externalBase: '', errorText: err.toString());
+        messenger?.showSnackBar(SnackBar(content: Text(explained.detail)));
+      }
+    },
+    onCommand: (playerId, action, args) async {
+      try {
+        final result = await api.command(
+          userId: session.userId,
+          playerId: playerId,
+          action: action,
+          args: args,
+        );
+        if (result.warnings.isNotEmpty) {
+          messenger?.showSnackBar(SnackBar(content: Text(result.warnings.join(' '))));
+        }
+        final refreshed = await api.listPlayers(session.userId);
+        MusicAssistantController.instance.applyPlayers(refreshed);
+      } catch (err) {
+        messenger?.showSnackBar(SnackBar(content: Text('$err')));
+      }
+    },
+  );
+}
+
 /// Opens the speaker picker. Hidden by callers unless the bridge is enabled.
 Future<void> showMusicAssistantSpeakers(
   BuildContext context, {
@@ -307,74 +420,57 @@ Future<void> showMusicAssistantSpeakers(
                   children: [
                     const Icon(Icons.speaker_group),
                     const SizedBox(width: 8),
-                    Text('Music Assistant speakers', style: Theme.of(context).textTheme.titleLarge),
+                    Text('MA Speakers', style: Theme.of(context).textTheme.titleLarge),
                   ],
                 ),
               ),
               ValueListenableBuilder<List<MaPlayer>>(
                 valueListenable: MusicAssistantController.instance.players,
-                builder: (context, players, _) => MusicAssistantPlayerList(
-                  players: players,
-                  connected: list.connected,
-                  playLabel: episode != null ? 'Play this episode' : 'Play current episode',
-                  onPlay: (player) async {
-                    final chosen = target;
-                    if (chosen == null) {
-                      messenger?.showSnackBar(
-                        const SnackBar(content: Text('Nothing is playing here to send.')),
-                      );
-                      return;
-                    }
-                    final args = <String, dynamic>{
-                      'episode_id': chosen.episodeId,
-                      'is_youtube': chosen.isYoutube,
-                    };
-                    if (MediaChoiceSession.episodeId == chosen.episodeId &&
-                        MediaChoiceSession.optionId != null) {
-                      args['media_option_id'] = MediaChoiceSession.optionId;
-                    }
-                    if (chosen.positionSec != null) {
-                      args['position_sec'] = chosen.positionSec;
-                    }
-                    try {
-                      final result = await api.command(
-                        userId: session.userId,
-                        playerId: player.playerId,
-                        action: 'play_episode',
-                        args: args,
-                      );
-                      MusicAssistantController.instance.focusDeviceId.value = player.deviceId;
-                      if (context.mounted) {
-                        final audio = Provider.of<AudioPlayerService>(context, listen: false);
-                        await audio.pause();
+                builder: (context, players, _) {
+                  final service = GlobalServices.nowPlayingService;
+                  if (service == null) {
+                    return _speakerList(
+                      context: context,
+                      players: players,
+                      connected: list.connected,
+                      episode: episode,
+                      target: target,
+                      api: api,
+                      session: session,
+                      messenger: messenger,
+                      loaded: const {},
+                      playing: const {},
+                    );
+                  }
+                  return ValueListenableBuilder<List<NowPlayingDevice>>(
+                    valueListenable: service.devices,
+                    builder: (context, devices, _) {
+                      final loaded = <String>{};
+                      final playingIds = <String>{};
+                      for (final device in devices) {
+                        if (!isMusicAssistant(device.deviceType) || device.episodeId == 0) {
+                          continue;
+                        }
+                        final id = device.maPlayerId;
+                        if (id == null || id.isEmpty) continue;
+                        loaded.add(id);
+                        if (device.playing) playingIds.add(id);
                       }
-                      if (result.warnings.isNotEmpty) {
-                        messenger?.showSnackBar(SnackBar(content: Text(result.warnings.join(' '))));
-                      }
-                      if (context.mounted) Navigator.of(context).pop();
-                    } catch (err) {
-                      final explained = explainTest(externalBase: '', errorText: err.toString());
-                      messenger?.showSnackBar(SnackBar(content: Text(explained.detail)));
-                    }
-                  },
-                  onCommand: (playerId, action, args) async {
-                    try {
-                      final result = await api.command(
-                        userId: session.userId,
-                        playerId: playerId,
-                        action: action,
-                        args: args,
+                      return _speakerList(
+                        context: context,
+                        players: players,
+                        connected: list.connected,
+                        episode: episode,
+                        target: target,
+                        api: api,
+                        session: session,
+                        messenger: messenger,
+                        loaded: loaded,
+                        playing: playingIds,
                       );
-                      if (result.warnings.isNotEmpty) {
-                        messenger?.showSnackBar(SnackBar(content: Text(result.warnings.join(' '))));
-                      }
-                      final refreshed = await api.listPlayers(session.userId);
-                      MusicAssistantController.instance.applyPlayers(refreshed);
-                    } catch (err) {
-                      messenger?.showSnackBar(SnackBar(content: Text('$err')));
-                    }
-                  },
-                ),
+                    },
+                  );
+                },
               ),
             ],
           ),
