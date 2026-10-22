@@ -27,14 +27,14 @@ use crate::requests::search_pods::{call_get_podcast_info, Podcast};
 
 use web_sys::{HtmlAudioElement, HtmlVideoElement};
 
-use crate::components::audio::on_play_click;
+use crate::components::audio::{on_play_click, play_live_stream};
 use crate::components::context::UIState;
 use crate::requests::episode::Episode;
 use crate::requests::podcasting2::{
     artwork_choice, cadence_of, chat_url, format_clock, format_numbers_badge, http_link, location_map_url,
-    resolve_numbers, safe_link, social_url, soundbite_window, time_splits_of, trailer_groups, trailer_is_video,
-    ArtworkChoice, Cadence, ChannelTags, EpisodeNumber, ImageSet, ItemTags, PodcastImage, RemoteItem,
-    Season,
+    live_playback, normalize_live_status, resolve_numbers, safe_link, social_url, soundbite_window,
+    time_splits_of, trailer_groups, trailer_is_video, visible_live_items, ArtworkChoice, Cadence,
+    ChannelTags, EpisodeNumber, ImageSet, ItemTags, PodcastImage, RemoteItem, Season,
 };
 
 /// A Podcast Index (or search-proxy) hit reduced to the fields the podroll needs.
@@ -782,6 +782,19 @@ fn t_replace(template: String, pairs: &[(&str, &str)]) -> String {
     pairs.iter().fold(template, |acc, (key, value)| acc.replace(key, value))
 }
 
+fn preview_text(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    for (index, ch) in flat.chars().enumerate() {
+        if index == 277 {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn medium_label(i18n: &i18nrs::I18n, medium: &str) -> String {
     match medium.trim().to_ascii_lowercase().as_str() {
         "podcast" => i18n.t("podcasting2.medium_podcast").to_string(),
@@ -1174,6 +1187,9 @@ fn remote_rows(items: &[RemoteItem], i18n: &i18nrs::I18n) -> Html {
 #[derive(Properties, PartialEq, Clone)]
 pub struct ShowTagsPanelProps {
     pub tags: ChannelTags,
+    /// Guids of episodes already listed for this show. An ended live item with one of these is hidden.
+    #[prop_or_default]
+    pub episode_guids: Vec<String>,
 }
 
 #[function_component(ShowTagsPanel)]
@@ -1226,6 +1242,12 @@ pub fn show_tags_panel(props: &ShowTagsPanelProps) -> Html {
     let groups = trailer_groups(&tags.trailers);
     let show_season_headers = groups.iter().any(|(season, _)| season.is_some());
 
+    let live_items = visible_live_items(&tags.live_items, &props.episode_guids);
+    let artwork = tags
+        .image
+        .iter()
+        .find_map(|img| http_link(&img.href).map(|url| url.to_string()))
+        .unwrap_or_default();
     let empty = medium.is_none()
         && schedule_text.is_none()
         && tags.trailers.is_empty()
@@ -1234,13 +1256,92 @@ pub fn show_tags_panel(props: &ShowTagsPanelProps) -> Html {
         && chat.is_none()
         && socials.is_empty()
         && !has_license
-        && tags.remote_items.is_empty();
+        && tags.remote_items.is_empty()
+        && live_items.is_empty();
     if empty {
         return html! {};
     }
 
     html! {
         <div class="p2-block">
+            { if !live_items.is_empty() {
+                section(i18n.t("podcasting2.live_items").to_string(), html! {
+                    <ul class="p2-list">
+                        { for live_items.iter().map(|item| {
+                            let status = normalize_live_status(&item.status);
+                            let status_label = match status {
+                                "live" => i18n.t("podcasting2.live_now").to_string(),
+                                "ended" => i18n.t("podcasting2.ended").to_string(),
+                                _ => i18n.t("podcasting2.upcoming").to_string(),
+                            };
+                            let when = item.start.trim();
+                            let starts = if when.is_empty() {
+                                String::new()
+                            } else {
+                                t_replace(i18n.t("podcasting2.starts").to_string(), &[("{when}", when)])
+                            };
+                            let title = item.title.as_deref().map(str::trim).filter(|title| !title.is_empty()).unwrap_or(status_label.as_str()).to_string();
+                            let description = item.description.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(preview_text);
+                            let page = item.link.as_deref().and_then(http_link).map(|url| url.to_string());
+                            let playback = item.tags.enclosure_url.as_deref().and_then(|url| live_playback(item.enclosure_type.as_deref(), url));
+                            let play_label = if status == "ended" {
+                                i18n.t("podcasting2.play_recording").to_string()
+                            } else {
+                                i18n.t("podcasting2.play_live").to_string()
+                            };
+                            let playing_state = playing.clone();
+                            let audio_ref = audio_ref.clone();
+                            let video_ref = video_ref.clone();
+                            let play_title = title.clone();
+                            let play_description = description.clone().unwrap_or_default();
+                            let play_artwork = artwork.clone();
+                            let play_start = item.start.clone();
+                            let onclick = playback.as_ref().map(|stream| {
+                                let stream = stream.clone();
+                                Callback::from(move |_| {
+                                    playing_state.set(None);
+                                    if let Some(el) = audio_ref.cast::<HtmlAudioElement>() {
+                                        let _ = el.pause();
+                                    }
+                                    if let Some(el) = video_ref.cast::<HtmlVideoElement>() {
+                                        let _ = el.pause();
+                                    }
+                                    play_live_stream(
+                                        play_title.clone(),
+                                        play_description.clone(),
+                                        stream.url.clone(),
+                                        play_artwork.clone(),
+                                        stream.hls,
+                                        stream.is_video,
+                                        play_start.clone(),
+                                        Dispatch::<UIState>::global(),
+                                    );
+                                })
+                            });
+                            html! {
+                                <li class="p2-row">
+                                    { if let Some(onclick) = onclick {
+                                        html! {
+                                            <button class="p2-play" onclick={onclick} title={play_label.clone()}>
+                                                <i class="ph ph-play"></i>
+                                            </button>
+                                        }
+                                    } else { html! {} } }
+                                    <span class="p2-row-title">{ title }</span>
+                                    <span class="p2-badge-mini">{ status_label }</span>
+                                    { if starts.is_empty() { html! {} } else { html! { <span class="p2-row-meta">{ starts }</span> } } }
+                                    { if let Some(page) = page {
+                                        html! { { external_link(page, i18n.t("podcasting2.open").to_string()) } }
+                                    } else { html! {} } }
+                                    { if let Some(description) = description {
+                                        html! { <p class="p2-row-meta">{ description }</p> }
+                                    } else { html! {} } }
+                                </li>
+                            }
+                        }) }
+                    </ul>
+                })
+            } else { html! {} } }
             { if let Some(medium) = medium.as_deref() {
                 section(i18n.t("podcasting2.medium").to_string(), html! { <p>{ medium_label(&i18n, medium) }</p> })
             } else { html! {} } }

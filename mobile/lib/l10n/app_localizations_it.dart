@@ -644,6 +644,29 @@ class AppLocalizationsIt extends AppLocalizations {
   String get p2_play_trailer => 'Riproduci trailer';
 
   @override
+  String get p2_live_items => 'Live';
+
+  @override
+  String get p2_live_now => 'In diretta';
+
+  @override
+  String get p2_upcoming => 'In programma';
+
+  @override
+  String get p2_ended => 'Terminato';
+
+  @override
+  String get p2_play_live => 'Riproduci la diretta';
+
+  @override
+  String get p2_play_recording => 'Riproduci la registrazione';
+
+  @override
+  String p2_starts(String when) {
+    return 'Inizia $when';
+  }
+
+  @override
   String get p2_publisher => 'Editore';
 
   @override

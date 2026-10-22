@@ -628,6 +628,29 @@ class AppLocalizationsEn extends AppLocalizations {
   String get p2_play_trailer => 'Play trailer';
 
   @override
+  String get p2_live_items => 'Live';
+
+  @override
+  String get p2_live_now => 'Live now';
+
+  @override
+  String get p2_upcoming => 'Upcoming';
+
+  @override
+  String get p2_ended => 'Ended';
+
+  @override
+  String get p2_play_live => 'Play live stream';
+
+  @override
+  String get p2_play_recording => 'Play recording';
+
+  @override
+  String p2_starts(String when) {
+    return 'Starts $when';
+  }
+
+  @override
   String get p2_publisher => 'Publisher';
 
   @override

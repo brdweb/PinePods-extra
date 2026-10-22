@@ -205,4 +205,48 @@ void main() {
       expect(ChannelTags.fromJson(null).isEmpty, isTrue);
     },
   );
+
+  test('ended live item hides when the episode guid matches', () {
+    final tags = ChannelTags.fromJson({
+      'live_items': [
+        {
+          'status': 'ended',
+          'start': '2026-01-02T00:00:00Z',
+          'tags': {
+            'guid': 'Live-1',
+            'enclosure_url': 'https://cdn.example/rec.mp3',
+          },
+        },
+        {
+          'status': 'pending',
+          'start': '2026-03-01T00:00:00Z',
+          'title': 'Soon',
+          'tags': {'guid': 'soon'},
+        },
+        {
+          'status': 'LIVE',
+          'start': '2026-02-01T00:00:00Z',
+          'enclosure_type': 'application/vnd.apple.mpegurl',
+          'tags': {'guid': 'now', 'enclosure_url': 'https://cdn.example/live'},
+        },
+        {
+          'status': 'ended',
+          'start': '2026-01-01T00:00:00Z',
+          'tags': {'enclosure_url': 'javascript:alert(1)'},
+        },
+      ],
+    });
+    final visible = visibleLiveItems(tags.liveItems, [' live-1 ']);
+    expect(visible.map((item) => normalizeLiveStatus(item.status)).toList(), [
+      'live',
+      'pending',
+      'ended',
+    ]);
+    expect(visible.first.playableUrl, 'https://cdn.example/live');
+    expect(liveStreamIsHls(visible.first.enclosureType, visible.first.playableUrl!), isTrue);
+    expect(liveStreamIsVideo(visible.first.enclosureType), isFalse);
+    expect(visible.last.playableUrl, isNull);
+    expect(liveStreamIsHls('audio/mpeg', 'https://cdn.example/a.m3u8?t=1'), isTrue);
+    expect(liveStreamIsVideo('video/mp4'), isTrue);
+  });
 }

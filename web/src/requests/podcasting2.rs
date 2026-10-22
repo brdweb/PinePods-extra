@@ -50,6 +50,42 @@ pub struct ItemTags {
     pub txts: Vec<IgnoredTag>,
 }
 
+/// One `podcast:liveItem` from the show payload. The enclosure URL lives on `tags`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LiveItem {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub start: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosure_type: Option<String>,
+    #[serde(default)]
+    pub tags: LiveItemTags,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LiveItemTags {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosure_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LivePlayback {
+    pub url: String,
+    pub hls: bool,
+    pub is_video: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChannelTags {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,6 +122,8 @@ pub struct ChannelTags {
     pub blocks: Vec<IgnoredTag>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub txts: Vec<IgnoredTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub live_items: Vec<LiveItem>,
 }
 
 /// A tag we accept so parsing doesn't fail, and do not render.
@@ -593,6 +631,80 @@ pub fn trailer_is_video(mime: Option<&str>) -> bool {
         .starts_with("video/")
 }
 
+/// `pending`, `live`, or `ended`. Any other status is treated as upcoming.
+pub fn normalize_live_status(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "live" => "live",
+        "ended" => "ended",
+        _ => "pending",
+    }
+}
+
+pub fn live_stream_is_hls(mime: Option<&str>, url: &str) -> bool {
+    let mime = mime.unwrap_or("").trim().to_ascii_lowercase();
+    if mime.contains("mpegurl") || mime.contains("m3u8") {
+        return true;
+    }
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
+    path.ends_with(".m3u8") || path.ends_with(".m3u")
+}
+
+pub fn live_stream_is_video(mime: Option<&str>) -> bool {
+    let mime = mime.unwrap_or("").trim().to_ascii_lowercase();
+    mime.starts_with("video/") || mime.contains("dash")
+}
+
+/// Playable http(s) enclosure for a live item. Other schemes are left unplayed.
+pub fn live_playback(mime: Option<&str>, url: &str) -> Option<LivePlayback> {
+    let url = http_link(url)?.to_string();
+    Some(LivePlayback {
+        hls: live_stream_is_hls(mime, &url),
+        is_video: live_stream_is_video(mime),
+        url,
+    })
+}
+
+/// Same visibility rule as the API: hide an ended live item when an episode guid matches.
+pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<LiveItem> {
+    let guids: std::collections::HashSet<String> = episode_guids
+        .iter()
+        .map(|guid| guid.trim().to_ascii_lowercase())
+        .filter(|guid| !guid.is_empty())
+        .collect();
+    let mut out: Vec<LiveItem> = items
+        .iter()
+        .filter(|item| {
+            if normalize_live_status(&item.status) != "ended" {
+                return true;
+            }
+            match item
+                .tags
+                .guid
+                .as_deref()
+                .map(str::trim)
+                .filter(|guid| !guid.is_empty())
+            {
+                Some(guid) => !guids.contains(&guid.to_ascii_lowercase()),
+                None => true,
+            }
+        })
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| {
+        fn rank(status: &str) -> u8 {
+            match normalize_live_status(status) {
+                "live" => 0,
+                "pending" => 1,
+                _ => 2,
+            }
+        }
+        rank(&a.status)
+            .cmp(&rank(&b.status))
+            .then_with(|| a.start.cmp(&b.start))
+    });
+    out
+}
+
 pub fn time_splits_of(blocks: &[ValueBlock]) -> Vec<&ValueTimeSplit> {
     blocks.iter().flat_map(|b| b.time_splits.iter()).collect()
 }
@@ -1006,6 +1118,32 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(groups[0].0.is_none());
         assert_eq!(groups[1].0.as_deref(), Some("4"));
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn live_items_play_hls_and_hide_ended_recordings() {
+        let raw = r##"{
+            "live_items": [
+                {"status": "ended", "start": "2026-01-02T00:00:00Z", "tags": {"guid": "Live-1", "enclosure_url": "https://cdn.example/rec.mp3"}},
+                {"status": "pending", "start": "2026-03-01T00:00:00Z", "title": "Soon", "tags": {"guid": "soon"}},
+                {"status": "live", "start": "2026-02-01T00:00:00Z", "title": "On air", "enclosure_type": "application/vnd.apple.mpegurl", "tags": {"guid": "now", "enclosure_url": "https://cdn.example/live"}}
+            ]
+        }"##;
+        let tags: ChannelTags = serde_json::from_str(raw).unwrap();
+        let visible = visible_live_items(&tags.live_items, &["live-1".into()]);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(normalize_live_status(&visible[0].status), "live");
+        assert_eq!(normalize_live_status(&visible[1].status), "pending");
+        let playback = live_playback(
+            visible[0].enclosure_type.as_deref(),
+            visible[0].tags.enclosure_url.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert!(playback.hls);
+        assert!(!playback.is_video);
+        assert!(live_playback(Some("audio/mpeg"), "javascript:alert(1)").is_none());
+        assert!(live_stream_is_video(Some("video/mp4")));
     }
 
     #[test]

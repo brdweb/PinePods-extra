@@ -96,6 +96,7 @@ class ChannelTags {
   final RemoteItem? publisher;
   final P2Chat? chat;
   final List<RemoteItem> remoteItems;
+  final List<LiveItem> liveItems;
 
   const ChannelTags({
     this.guid,
@@ -110,6 +111,7 @@ class ChannelTags {
     this.publisher,
     this.chat,
     this.remoteItems = const [],
+    this.liveItems = const [],
   });
 
   factory ChannelTags.fromJson(Map<String, dynamic>? json) {
@@ -139,6 +141,7 @@ class ChannelTags {
           ? P2Chat.fromJson(json['chat'] as Map<String, dynamic>)
           : null,
       remoteItems: _list(json['remote_items'], RemoteItem.fromJson),
+      liveItems: _list(json['live_items'], LiveItem.fromJson),
     );
   }
 
@@ -151,7 +154,106 @@ class ChannelTags {
       updateFrequency == null &&
       publisher == null &&
       chat == null &&
-      remoteItems.isEmpty;
+      remoteItems.isEmpty &&
+      liveItems.isEmpty;
+}
+
+/// One `podcast:liveItem`. The enclosure URL is `tags.enclosure_url`.
+class LiveItem {
+  final String status;
+  final String start;
+  final String? title;
+  final String? description;
+  final String? link;
+  final String? enclosureType;
+  final String? guid;
+  final String? enclosureUrl;
+
+  const LiveItem({
+    required this.status,
+    required this.start,
+    this.title,
+    this.description,
+    this.link,
+    this.enclosureType,
+    this.guid,
+    this.enclosureUrl,
+  });
+
+  factory LiveItem.fromJson(Map<String, dynamic> json) {
+    final tags = json['tags'];
+    final tagMap = tags is Map
+        ? Map<String, dynamic>.from(tags)
+        : const <String, dynamic>{};
+    return LiveItem(
+      status: '${json['status'] ?? ''}',
+      start: '${json['start'] ?? ''}',
+      title: json['title'] as String?,
+      description: json['description'] as String?,
+      link: json['link'] as String?,
+      enclosureType: json['enclosure_type'] as String?,
+      guid: tagMap['guid'] as String?,
+      enclosureUrl: tagMap['enclosure_url'] as String?,
+    );
+  }
+
+  String? get playableUrl => httpLink(enclosureUrl);
+
+  String? get pageUrl => httpLink(link);
+}
+
+/// `pending`, `live`, or `ended`. Any other status is treated as upcoming.
+String normalizeLiveStatus(String status) {
+  switch (status.trim().toLowerCase()) {
+    case 'live':
+      return 'live';
+    case 'ended':
+      return 'ended';
+    default:
+      return 'pending';
+  }
+}
+
+bool liveStreamIsHls(String? mime, String url) {
+  final type = (mime ?? '').trim().toLowerCase();
+  if (type.contains('mpegurl') || type.contains('m3u8')) return true;
+  final path = url.split('?').first.split('#').first.toLowerCase();
+  return path.endsWith('.m3u8') || path.endsWith('.m3u');
+}
+
+bool liveStreamIsVideo(String? mime) {
+  final type = (mime ?? '').trim().toLowerCase();
+  return type.startsWith('video/') || type.contains('dash');
+}
+
+/// Hide an ended live item once an episode with the same guid is listed.
+List<LiveItem> visibleLiveItems(List<LiveItem> items, Iterable<String> episodeGuids) {
+  final guids = episodeGuids
+      .map((guid) => guid.trim().toLowerCase())
+      .where((guid) => guid.isNotEmpty)
+      .toSet();
+  final visible = items.where((item) {
+    if (normalizeLiveStatus(item.status) != 'ended') return true;
+    final guid = item.guid?.trim().toLowerCase() ?? '';
+    if (guid.isEmpty) return true;
+    return !guids.contains(guid);
+  }).toList();
+  int rank(String status) {
+    switch (normalizeLiveStatus(status)) {
+      case 'live':
+        return 0;
+      case 'pending':
+        return 1;
+      default:
+        return 2;
+    }
+  }
+  visible.sort((a, b) {
+    final byStatus = rank(a.status).compareTo(rank(b.status));
+    if (byStatus != 0) return byStatus;
+    return a.start.compareTo(b.start);
+  });
+  return visible;
 }
 
 class P2Chapter {

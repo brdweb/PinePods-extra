@@ -1264,6 +1264,48 @@ abstract class AppLocalizations {
   /// **'Play trailer'**
   String get p2_play_trailer;
 
+  /// No description provided for @p2_live_items.
+  ///
+  /// In en, this message translates to:
+  /// **'Live'**
+  String get p2_live_items;
+
+  /// No description provided for @p2_live_now.
+  ///
+  /// In en, this message translates to:
+  /// **'Live now'**
+  String get p2_live_now;
+
+  /// No description provided for @p2_upcoming.
+  ///
+  /// In en, this message translates to:
+  /// **'Upcoming'**
+  String get p2_upcoming;
+
+  /// No description provided for @p2_ended.
+  ///
+  /// In en, this message translates to:
+  /// **'Ended'**
+  String get p2_ended;
+
+  /// No description provided for @p2_play_live.
+  ///
+  /// In en, this message translates to:
+  /// **'Play live stream'**
+  String get p2_play_live;
+
+  /// No description provided for @p2_play_recording.
+  ///
+  /// In en, this message translates to:
+  /// **'Play recording'**
+  String get p2_play_recording;
+
+  /// No description provided for @p2_starts.
+  ///
+  /// In en, this message translates to:
+  /// **'Starts {when}'**
+  String p2_starts(String when);
+
   /// No description provided for @p2_publisher.
   ///
   /// In en, this message translates to:
