@@ -1891,7 +1891,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                                 }}
                             </button>
                             <div class="player-fs-side-btns">
-                                <button onclick={skip_forward.clone()} class="player-fs-ctrl" title="Forward 30s">
+                                <button onclick={skip_forward.clone()} class="player-fs-ctrl" title="Forward 15s">
                                     <i class="ph ph-fast-forward"></i>
                                 </button>
                                 <button onclick={skip_episode.clone()} class="player-fs-ctrl" title="Next episode">

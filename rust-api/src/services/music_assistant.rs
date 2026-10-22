@@ -333,9 +333,9 @@ pub fn ma_playback(
     }
     match direct_uri.filter(|uri| is_http_url(uri)) {
         Some(uri) => Ok(MaPlayback::Direct(uri)),
-        None => Err(
-            "This episode has no URL Music Assistant can play. Download it in PinePods first.",
-        ),
+        None => {
+            Err("This episode has no URL Music Assistant can play. Download it in PinePods first.")
+        }
     }
 }
 
@@ -665,19 +665,38 @@ pub struct ProgressUpdate {
     /// buffering, nor paused. Sonos reports that for a Music Assistant pause and
     /// for a sync group whose leader is still playing.
     pub reported_idle: bool,
+    /// Unix seconds the position was measured. A full queue object uses
+    /// `elapsed_time_last_updated`. A numeric tick leaves this empty so
+    /// [`progress_from_event`] can stamp the time the bridge received it.
+    pub position_updated_at: Option<i64>,
 }
 
 /// Read whatever a queue or player event tells us about PinePods playback.
+///
+/// Music Assistant 2.10.7 sends `queue_time_updated` with `data` as a bare
+/// number of media-time seconds. Older 2.10 builds send an object with
+/// `elapsed_time`. Both are accepted. A number has no timestamp of its own.
 pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
+    if data.is_number() {
+        return ProgressUpdate {
+            queue_id: None,
+            stream: None,
+            position_sec: json_f64(data).map(|n| n.max(0.0)),
+            duration_sec: None,
+            playing: None,
+            title: None,
+            speed: None,
+            media_cleared: false,
+            reported_idle: false,
+            position_updated_at: None,
+        };
+    }
     let queue_id = data
         .get("queue_id")
         .or_else(|| data.get("player_id"))
         .and_then(|s| s.as_str())
         .map(|s| s.to_string());
-    let position_sec = data
-        .get("elapsed_time")
-        .and_then(json_f64)
-        .or_else(|| data.get("elapsed_time").and_then(json_f64));
+    let position_sec = data.get("elapsed_time").and_then(json_f64);
     let state = playback_state_str(data);
     let reported_idle = state.as_deref().is_some_and(|s| {
         let lower = s.to_ascii_lowercase();
@@ -712,6 +731,14 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
         item.and_then(|i| i.get("playback_speed"))
             .and_then(json_f64)
     });
+    // Only a full queue object carries this. It is media-time's clock, so the
+    // snapshot must not add the network delay a second time.
+    let position_updated_at = position_sec.and_then(|_| {
+        data.get("elapsed_time_last_updated")
+            .and_then(json_f64)
+            .filter(|t| t.is_finite() && *t > 0.0)
+            .map(|t| t.trunc() as i64)
+    });
     ProgressUpdate {
         queue_id,
         stream: find_stream_ref(data),
@@ -722,30 +749,55 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
         speed,
         media_cleared,
         reported_idle,
+        position_updated_at,
     }
+}
+
+/// Queue event as the bridge should store it.
+///
+/// `object_id` is the queue id when the payload does not name one. Numeric
+/// ticks are stamped with `received_at`. A full object keeps
+/// `elapsed_time_last_updated` when it sent one, and otherwise uses
+/// `received_at` as well.
+pub fn progress_from_event(
+    object_id: Option<&str>,
+    data: &Value,
+    received_at: i64,
+) -> ProgressUpdate {
+    let mut update = progress_from_payload(data);
+    if update.queue_id.is_none() {
+        update.queue_id = object_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| id.to_string());
+    }
+    if update.position_sec.is_some() && update.position_updated_at.is_none() && received_at > 0 {
+        update.position_updated_at = Some(received_at);
+    }
+    update
 }
 
 /// Next playing flag and whether the loaded episode should be dropped.
 ///
-/// Idle while a PinePods stream is still loaded does not clear it and does not
-/// force `playing` off. That is the Sonos case: Music Assistant rewrites a
-/// pause as idle, and a sync group can sit in idle while the coordinator is
-/// playing. An explicit null `current_item` / `current_media` is a real stop.
+/// Sonos pause is stop-plus-resume. Music Assistant reports that as idle while
+/// the episode is still loaded. The bar stays paused and keeps the episode.
+/// An explicit null `current_item` / `current_media` is a real stop.
+/// The loaded-episode and idle flags stay in the signature so a sync member
+/// and a Sonos pause share one call. Idle does not clear the episode; the
+/// playing flag from the payload (false for idle) is what the bar shows.
 pub fn next_playback(
     currently_playing: bool,
-    has_stream: bool,
+    _has_stream: bool,
     update_playing: Option<bool>,
-    reported_idle: bool,
+    _reported_idle: bool,
     media_cleared: bool,
 ) -> (bool, bool) {
     if media_cleared {
         return (false, true);
     }
     let playing = match update_playing {
-        Some(true) => true,
-        Some(false) if !reported_idle => false,
-        Some(false) if !has_stream => false,
-        _ => currently_playing,
+        Some(is_playing) => is_playing,
+        None => currently_playing,
     };
     (playing, false)
 }
@@ -851,13 +903,63 @@ pub fn should_write_progress(
     since_write >= PROGRESS_WRITE_EVERY
 }
 
+/// Queue that `play_media`, `seek`, and `skip` must target.
+///
+/// A Sonos sync member is not the queue owner. Music Assistant redirects
+/// `players/cmd/play|pause|stop` onto `synced_to` itself, but
+/// `player_queues/play_media` and `player_queues/seek` do not. Sending those
+/// to the member hits "queue is not active", and `play_media` on a member
+/// unsyncs the group. Resolution matches the leader half of
+/// [`snapshot_queue_id`]: `synced_to`, then that leader's `active_source`,
+/// then the leader's player id. A speaker that is not synced uses its own
+/// `active_source` or its player id.
 pub fn queue_id_for(players: &[MaPlayer], player_id: &str) -> String {
-    players
-        .iter()
-        .find(|p| p.player_id == player_id)
-        .and_then(|p| p.active_source.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| player_id.to_string())
+    let Some(player) = players.iter().find(|p| p.player_id == player_id) else {
+        return player_id.to_string();
+    };
+    let leader_id = player
+        .synced_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(player.player_id.as_str());
+    let Some(leader) = players.iter().find(|p| p.player_id == leader_id) else {
+        return leader_id.to_string();
+    };
+    leader
+        .active_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(leader.player_id.as_str())
+        .to_string()
+}
+
+/// Whole seconds for Music Assistant. 2.10.7 types `position` and `seconds` as
+/// `int`. Truncate toward zero; a negative or non-finite value is 0.
+pub fn integer_seconds(position: f64) -> i64 {
+    if !position.is_finite() || position <= 0.0 {
+        return 0;
+    }
+    let truncated = position.trunc();
+    if truncated >= i64::MAX as f64 {
+        return i64::MAX;
+    }
+    truncated as i64
+}
+
+fn integer_seconds_signed(seconds: f64) -> i64 {
+    if !seconds.is_finite() {
+        return 0;
+    }
+    let truncated = seconds.trunc();
+    if truncated >= i64::MAX as f64 {
+        return i64::MAX;
+    }
+    if truncated <= i64::MIN as f64 {
+        return i64::MIN;
+    }
+    truncated as i64
 }
 
 // ============================ Commands ============================
@@ -914,15 +1016,19 @@ pub fn translate_action(
             if position < 0.0 {
                 return Err("seek position must be >= 0".into());
             }
-            queue_cmd("seek", json!({ "position": position }))
+            queue_cmd("seek", json!({ "position": integer_seconds(position) }))
         }
         "skip_forward" => {
-            let seconds = args.get("seconds").and_then(json_f64).unwrap_or(30.0).abs();
-            queue_cmd("skip", json!({ "seconds": seconds }))
+            // Same 15s step as the local web player. Callers may still pass seconds.
+            let seconds = args.get("seconds").and_then(json_f64).unwrap_or(15.0).abs();
+            queue_cmd("skip", json!({ "seconds": integer_seconds(seconds) }))
         }
         "skip_back" => {
             let seconds = args.get("seconds").and_then(json_f64).unwrap_or(15.0).abs();
-            queue_cmd("skip", json!({ "seconds": -seconds }))
+            queue_cmd(
+                "skip",
+                json!({ "seconds": integer_seconds_signed(-seconds) }),
+            )
         }
         "set_speed" => {
             let speed = args
@@ -1141,11 +1247,15 @@ fn track_media(media_url: &str, display: &MaTrackDisplay) -> Option<Value> {
     Some(item)
 }
 
-/// `play_media`, then an optional seek and speed change. Seek/speed failures are warnings.
+/// `play_media`, then an optional speed change.
+///
+/// The resume offset is not in this list. Music Assistant seeks by rebuilding
+/// the stream, and a seek sent before the queue has a duration fails or plays
+/// the start and then jumps. [`resume_seek_command`] is the one seek, sent
+/// after a queue event reports a duration. Speed failures stay warnings.
 pub fn play_media_commands(
     queue_id: &str,
     media_url: &str,
-    position_sec: f64,
     speed: f64,
     display: Option<&MaTrackDisplay>,
 ) -> Vec<MaCommand> {
@@ -1160,12 +1270,6 @@ pub fn play_media_commands(
             "option": "replace",
         }),
     }];
-    if position_sec >= 1.0 {
-        cmds.push(MaCommand {
-            command: "player_queues/seek".into(),
-            args: json!({ "queue_id": queue_id, "position": position_sec }),
-        });
-    }
     if speed > 0.0 && (speed - 1.0).abs() > 0.01 {
         cmds.push(MaCommand {
             command: "player_queues/set_playback_speed".into(),
@@ -1173,6 +1277,177 @@ pub fn play_media_commands(
         });
     }
     cmds
+}
+
+/// One integer `player_queues/seek` once the queue has reported a duration.
+/// `None` when the offset is under a second or the duration is still unknown,
+/// so the bridge does not send a seek Music Assistant will reject.
+pub fn resume_seek_command(
+    queue_id: &str,
+    position_sec: f64,
+    duration_sec: f64,
+) -> Option<MaCommand> {
+    if duration_sec <= 0.0 || position_sec < 1.0 {
+        return None;
+    }
+    let position = integer_seconds(position_sec);
+    if position < 1 {
+        return None;
+    }
+    Some(MaCommand {
+        command: "player_queues/seek".into(),
+        args: json!({ "queue_id": queue_id, "position": position }),
+    })
+}
+
+/// How many times to try the post-load seek. The first try plus a couple of
+/// retries, then the bridge surfaces the warning and stops.
+pub const RESUME_SEEK_ATTEMPTS: u8 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeekPlan {
+    /// Offset is under a second. Do not seek and do not use history.
+    Skip,
+    Send(i64),
+    Wait,
+    GiveUp(&'static str),
+}
+
+/// Decide the next step of the single post-load seek.
+///
+/// `attempt` is how many waits or failed sends already happened.
+pub fn plan_resume_seek(position_sec: f64, duration_sec: f64, attempt: u8) -> SeekPlan {
+    if position_sec < 1.0 {
+        return SeekPlan::Skip;
+    }
+    if let Some(cmd) = resume_seek_command("queue", position_sec, duration_sec) {
+        return SeekPlan::Send(cmd.args["position"].as_i64().unwrap_or(0));
+    }
+    if attempt + 1 >= RESUME_SEEK_ATTEMPTS {
+        return SeekPlan::GiveUp("queue without duration");
+    }
+    SeekPlan::Wait
+}
+
+/// Music Assistant answers "Queue is not active" or "without duration" when the
+/// seek races the queue. Those are worth another try. Anything else is final.
+pub fn seek_is_retryable(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("not active") || lower.contains("without duration")
+}
+
+pub fn plan_seek_failure(message: &str, attempt: u8) -> SeekPlan {
+    if seek_is_retryable(message) && attempt + 1 < RESUME_SEEK_ATTEMPTS {
+        SeekPlan::Wait
+    } else {
+        SeekPlan::GiveUp("failed")
+    }
+}
+
+/// Episode `prepare_play_episode` associated with a queue so a remote enclosure
+/// URL, which is not a PinePods `/api/data/stream/` URL, still writes history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RememberedEpisode {
+    pub user_id: i32,
+    pub episode_id: i32,
+    pub is_youtube: bool,
+    pub duration_sec: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistoryEpisode {
+    /// Real stop. Drop the remembered episode.
+    Clear,
+    /// Another user's stream URL. Do not write and do not replace memory.
+    Foreign,
+    Write(StreamRef),
+    /// No URL and nothing remembered. Leave the track alone.
+    None,
+}
+
+/// Which episode a queue event should write history for.
+pub fn history_stream(
+    remembered: Option<&RememberedEpisode>,
+    parsed: Option<&StreamRef>,
+    media_cleared: bool,
+    bridge_user: i32,
+) -> HistoryEpisode {
+    if media_cleared {
+        return HistoryEpisode::Clear;
+    }
+    if let Some(parsed) = parsed {
+        if parsed.user_id.is_some_and(|id| id != bridge_user) {
+            return HistoryEpisode::Foreign;
+        }
+        return HistoryEpisode::Write(parsed.clone());
+    }
+    if let Some(remembered) = remembered.filter(|row| row.user_id == bridge_user) {
+        return HistoryEpisode::Write(StreamRef {
+            episode_id: remembered.episode_id,
+            user_id: Some(remembered.user_id),
+            is_youtube: remembered.is_youtube,
+        });
+    }
+    HistoryEpisode::None
+}
+
+/// Memory after one event. A real stop clears it. A different PinePods episode
+/// replaces it. A stream URL for another user leaves it unchanged.
+pub fn next_remembered(
+    current: Option<RememberedEpisode>,
+    parsed: Option<&StreamRef>,
+    media_cleared: bool,
+    bridge_user: i32,
+) -> Option<RememberedEpisode> {
+    if media_cleared {
+        return None;
+    }
+    let Some(parsed) = parsed else {
+        return current;
+    };
+    if parsed.user_id.is_some_and(|id| id != bridge_user) {
+        return current;
+    }
+    let duration = current
+        .as_ref()
+        .filter(|row| row.episode_id == parsed.episode_id && row.is_youtube == parsed.is_youtube)
+        .map(|row| row.duration_sec)
+        .unwrap_or(0.0);
+    Some(RememberedEpisode {
+        user_id: bridge_user,
+        episode_id: parsed.episode_id,
+        is_youtube: parsed.is_youtube,
+        duration_sec: duration,
+    })
+}
+
+/// Where playback starts when the client omits `position_sec`.
+///
+/// An explicit value, including 0, is used as sent. An omitted value resumes
+/// at `max(saved, start_skip)` so a low history row still skips the intro.
+pub fn resume_position(explicit: Option<f64>, saved: f64, start_skip: i32) -> f64 {
+    match explicit {
+        Some(position) => position.max(0.0),
+        None => saved.max(0.0).max(start_skip.max(0) as f64),
+    }
+}
+
+/// Mark the episode complete at the podcast outro or the user's auto-complete
+/// window, and at the natural end when neither is set.
+pub fn should_mark_complete(
+    position: f64,
+    duration: f64,
+    auto_complete_seconds: i32,
+    end_skip: i32,
+) -> bool {
+    if !position.is_finite() || !duration.is_finite() || duration <= 0.0 {
+        return false;
+    }
+    let end_skip = end_skip.max(0) as f64;
+    if position >= duration - end_skip {
+        return true;
+    }
+    auto_complete_seconds > 0 && (duration - position) <= auto_complete_seconds as f64
 }
 
 fn string_list(v: Option<&Value>) -> Vec<String> {
@@ -2125,6 +2400,12 @@ struct SessionLive {
     schema_version: RwLock<Option<i64>>,
     warning: RwLock<Option<String>>,
     last_error: RwLock<Option<String>>,
+    /// queue id → episode started by `prepare_play_episode`, including remote URLs.
+    episodes: RwLock<HashMap<String, RememberedEpisode>>,
+    /// Duration last reported by a queue event. Metadata duration does not count.
+    queue_duration: RwLock<HashMap<String, f64>>,
+    /// Offset to seek once that queue reports a duration.
+    pending_resume: RwLock<HashMap<String, f64>>,
 }
 
 impl SessionLive {
@@ -2136,7 +2417,60 @@ impl SessionLive {
             schema_version: RwLock::new(None),
             warning: RwLock::new(None),
             last_error: RwLock::new(None),
+            episodes: RwLock::new(HashMap::new()),
+            queue_duration: RwLock::new(HashMap::new()),
+            pending_resume: RwLock::new(HashMap::new()),
         }
+    }
+
+    async fn remember(&self, queue_id: &str, episode: RememberedEpisode) {
+        self.episodes
+            .write()
+            .await
+            .insert(queue_id.to_string(), episode);
+    }
+
+    async fn remembered(&self, queue_id: &str) -> Option<RememberedEpisode> {
+        self.episodes.read().await.get(queue_id).cloned()
+    }
+
+    async fn forget(&self, queue_id: &str) {
+        self.episodes.write().await.remove(queue_id);
+        self.queue_duration.write().await.remove(queue_id);
+        self.pending_resume.write().await.remove(queue_id);
+    }
+
+    async fn note_queue_duration(&self, queue_id: &str, duration: f64) {
+        if duration > 0.0 {
+            self.queue_duration
+                .write()
+                .await
+                .insert(queue_id.to_string(), duration);
+        }
+    }
+
+    async fn queue_duration(&self, queue_id: &str) -> f64 {
+        self.queue_duration
+            .read()
+            .await
+            .get(queue_id)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    async fn arm_resume(&self, queue_id: &str, position_sec: f64) {
+        if position_sec >= 1.0 {
+            self.pending_resume
+                .write()
+                .await
+                .insert(queue_id.to_string(), position_sec);
+        } else {
+            self.pending_resume.write().await.remove(queue_id);
+        }
+    }
+
+    async fn take_pending_resume(&self, queue_id: &str) -> Option<f64> {
+        self.pending_resume.write().await.remove(queue_id)
     }
 }
 
@@ -2189,6 +2523,15 @@ impl MusicAssistantHub {
             warning,
             last_error,
         }
+    }
+
+    async fn session_live(&self, user_id: i32) -> Option<Arc<SessionLive>> {
+        self.inner
+            .sessions
+            .read()
+            .await
+            .get(&user_id)
+            .map(|slot| slot.live.clone())
     }
 
     pub async fn players(&self, user_id: i32) -> Vec<MaPlayer> {
@@ -2266,7 +2609,62 @@ pub async fn dispatch(
     } else {
         translate_action(&player_id, &queue_id, action, &args).map_err(AppError::bad_request)?
     };
-    state.music_assistant.send_commands(user_id, commands).await
+    let mut outcome = state
+        .music_assistant
+        .send_commands(user_id, commands)
+        .await?;
+    if action == "play_episode" {
+        if let Some(warning) = land_resume_seek(state, user_id, &queue_id).await {
+            outcome.warnings.push(warning);
+        }
+    }
+    Ok(outcome)
+}
+
+/// One seek to the leader queue after it reports a duration.
+///
+/// Retries a couple of times when the queue is not active yet or still has no
+/// duration, then returns the warning the command response already surfaces.
+async fn land_resume_seek(state: &AppState, user_id: i32, queue_id: &str) -> Option<String> {
+    let live = state.music_assistant.session_live(user_id).await?;
+    let position = live.take_pending_resume(queue_id).await?;
+    let mut attempt = 0u8;
+    loop {
+        let duration = live.queue_duration(queue_id).await;
+        match plan_resume_seek(position, duration, attempt) {
+            SeekPlan::Skip => return None,
+            SeekPlan::GiveUp(reason) => {
+                return Some(format!("player_queues/seek: {reason}"));
+            }
+            SeekPlan::Wait => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(350)).await;
+            }
+            SeekPlan::Send(seconds) => {
+                let cmd = MaCommand {
+                    command: "player_queues/seek".into(),
+                    args: json!({ "queue_id": queue_id, "position": seconds }),
+                };
+                match state
+                    .music_assistant
+                    .send_commands(user_id, vec![cmd])
+                    .await
+                {
+                    Ok(_) => return None,
+                    Err(err) => {
+                        let msg = err.to_string();
+                        match plan_seek_failure(&msg, attempt) {
+                            SeekPlan::Wait => {
+                                attempt += 1;
+                                tokio::time::sleep(Duration::from_millis(350)).await;
+                            }
+                            _ => return Some(format!("player_queues/seek: {msg}")),
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn prepare_play_episode(
@@ -2371,11 +2769,19 @@ async fn prepare_play_episode(
             return Err(AppError::bad_request(msg));
         }
     };
-    let position = if args.get("position_sec").is_some() {
-        args.get("position_sec").and_then(json_f64).unwrap_or(0.0)
+    let explicit = args.get("position_sec").and_then(json_f64);
+    let saved = meta.get("listenduration").and_then(json_f64).unwrap_or(0.0);
+    let start_skip = if explicit.is_some() {
+        0
     } else {
-        meta.get("listenduration").and_then(json_f64).unwrap_or(0.0)
+        state
+            .db_pool
+            .get_play_episode_details(user_id, podcast_id, is_youtube)
+            .await
+            .map(|(_, start, _, _)| start)
+            .unwrap_or(0)
     };
+    let position = resume_position(explicit, saved, start_skip);
     let speed = state
         .db_pool
         .get_playback_speed(user_id, is_youtube, Some(podcast_id))
@@ -2383,13 +2789,22 @@ async fn prepare_play_episode(
         .unwrap_or(1.0);
     let speed = if speed > 0.0 { speed } else { 1.0 };
     let display = display_from_meta(&meta, base);
-    Ok(play_media_commands(
-        queue_id,
-        &media,
-        position,
-        speed,
-        Some(&display),
-    ))
+    // Remember the episode before play_media returns so a remote enclosure,
+    // which never matches `/api/data/stream/`, still gets a history row.
+    if let Some(live) = state.music_assistant.session_live(user_id).await {
+        live.remember(
+            queue_id,
+            RememberedEpisode {
+                user_id,
+                episode_id,
+                is_youtube,
+                duration_sec: display.duration_sec.max(0) as f64,
+            },
+        )
+        .await;
+        live.arm_resume(queue_id, position).await;
+    }
+    Ok(play_media_commands(queue_id, &media, speed, Some(&display)))
 }
 
 pub fn spawn_supervisor(state: AppState) {
@@ -2509,11 +2924,17 @@ struct QueueTrack {
     artwork: String,
     duration: f64,
     position: f64,
+    /// Unix seconds the position was measured. 0 until a queue clock arrives.
+    updated_at: i64,
     playing: bool,
     speed: f64,
     sample: Option<ProgressSample>,
     last_write: Option<Instant>,
     loaded_episode: Option<(i32, bool)>,
+    /// Podcast outro, in seconds. Completion uses this and auto-complete.
+    end_skip: i32,
+    played_counted: bool,
+    listen_marked_at: Option<Instant>,
 }
 
 async fn maintain(
@@ -2659,7 +3080,8 @@ async fn apply_note(
         }
         SessionNote::Players(players) => {
             *live.players.write().await = players.clone();
-            if let Err(e) = sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await
+            if let Err(e) =
+                sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await
             {
                 tracing::debug!("music assistant device sync: {e}");
             }
@@ -2675,9 +3097,9 @@ async fn apply_note(
                     .and_then(|s| s.as_str())
                     .map(|s| s.to_string());
                 let mut players = live.players.write().await;
-                let previous = player_id.as_deref().and_then(|id| {
-                    players.iter().find(|p| p.player_id == id).cloned()
-                });
+                let previous = player_id
+                    .as_deref()
+                    .and_then(|id| players.iter().find(|p| p.player_id == id).cloned());
                 if let Some(player) = merge_player_update(previous.as_ref(), &data) {
                     if let Some(slot) = players.iter_mut().find(|p| p.player_id == player.player_id)
                     {
@@ -2706,13 +3128,11 @@ async fn apply_note(
                     live.players.write().await.retain(|p| p.player_id != id);
                     retained.remove(&id);
                     let players = live.players.read().await.clone();
-                    let _ = sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await;
+                    let _ =
+                        sync_virtuals(state, user_id, &players, virtuals, tracks, retained).await;
                 }
             } else if event.starts_with("queue_") {
-                let mut update = progress_from_payload(&data);
-                if update.queue_id.is_none() {
-                    update.queue_id = object_id;
-                }
+                let update = progress_from_event(object_id.as_deref(), &data, unix_secs());
                 apply_progress(state, user_id, live, tracks, retained, update).await;
             }
         }
@@ -2725,12 +3145,35 @@ async fn apply_progress(
     live: &Arc<SessionLive>,
     tracks: &mut HashMap<String, QueueTrack>,
     retained: &mut HashMap<String, String>,
-    update: ProgressUpdate,
+    mut update: ProgressUpdate,
 ) {
     let Some(queue_id) = update.queue_id.clone() else {
         return;
     };
     let players = live.players.read().await.clone();
+    let remembered = live.remembered(&queue_id).await;
+    let history = history_stream(
+        remembered.as_ref(),
+        update.stream.as_ref(),
+        update.media_cleared,
+        user_id,
+    );
+    match &history {
+        HistoryEpisode::Clear => {
+            live.forget(&queue_id).await;
+        }
+        HistoryEpisode::Foreign => {}
+        HistoryEpisode::Write(stream) => {
+            if update.stream.is_none() {
+                update.stream = Some(stream.clone());
+            }
+            if let Some(next) = next_remembered(remembered, update.stream.as_ref(), false, user_id)
+            {
+                live.remember(&queue_id, next).await;
+            }
+        }
+        HistoryEpisode::None => {}
+    }
     let donor = if update.stream.is_none() && !update.media_cleared {
         donor_track(tracks, &players, &queue_id, retained)
     } else {
@@ -2744,11 +3187,15 @@ async fn apply_progress(
             artwork: String::new(),
             duration: 0.0,
             position: 0.0,
+            updated_at: 0,
             playing: false,
             speed: 1.0,
             sample: None,
             last_write: None,
             loaded_episode: None,
+            end_skip: 0,
+            played_counted: false,
+            listen_marked_at: None,
         });
     let (playing, clear_stream) = next_playback(
         track.playing,
@@ -2757,19 +3204,23 @@ async fn apply_progress(
         update.reported_idle,
         update.media_cleared,
     );
+    let episode_changed = update.stream.as_ref().map(|s| (s.episode_id, s.is_youtube))
+        != track.stream.as_ref().map(|s| (s.episode_id, s.is_youtube))
+        && update.stream.is_some();
     if clear_stream {
         track.stream = None;
         track.title.clear();
         track.artwork.clear();
         track.duration = 0.0;
+        track.position = 0.0;
+        track.updated_at = 0;
         track.playing = false;
         track.loaded_episode = None;
+        track.end_skip = 0;
+        track.played_counted = false;
+        track.listen_marked_at = None;
         retained.retain(|_, queue| queue != &queue_id);
-    }
-    let episode_changed = update.stream.as_ref().map(|s| s.episode_id)
-        != track.stream.as_ref().map(|s| s.episode_id)
-        && update.stream.is_some();
-    if !clear_stream {
+    } else {
         if let Some(stream) = update.stream.clone() {
             track.stream = Some(stream);
         } else if track.stream.is_none() {
@@ -2790,23 +3241,28 @@ async fn apply_progress(
             }
         }
         track.playing = playing;
-    }
-    if let Some(p) = update.position_sec {
-        track.position = p.max(0.0);
-    }
-    if let Some(d) = update.duration_sec {
-        if d > 0.0 {
-            track.duration = d;
+        if let Some(p) = update.position_sec {
+            track.position = p.max(0.0);
+            if let Some(at) = update.position_updated_at {
+                track.updated_at = at;
+            }
         }
-    }
-    if let Some(title) = update.title.clone() {
-        if !title.is_empty() && track.title.is_empty() {
-            track.title = title;
+        if let Some(d) = update.duration_sec {
+            if d > 0.0 {
+                track.duration = d;
+                // Only a queue-reported duration may release the resume seek.
+                live.note_queue_duration(&queue_id, d).await;
+            }
         }
-    }
-    if let Some(speed) = update.speed {
-        if speed > 0.0 {
-            track.speed = speed;
+        if let Some(title) = update.title.clone() {
+            if !title.is_empty() && track.title.is_empty() {
+                track.title = title;
+            }
+        }
+        if let Some(speed) = update.speed {
+            if speed > 0.0 {
+                track.speed = speed;
+            }
         }
     }
     let Some(stream) = track.stream.clone() else {
@@ -2825,6 +3281,11 @@ async fn apply_progress(
     if stream.user_id.is_some_and(|id| id != user_id) {
         return;
     }
+    if episode_changed {
+        track.played_counted = false;
+        track.listen_marked_at = None;
+        track.end_skip = 0;
+    }
     if episode_changed || track.loaded_episode != Some((stream.episode_id, stream.is_youtube)) {
         if let Ok(meta) = state
             .db_pool
@@ -2840,6 +3301,15 @@ async fn apply_progress(
             if let Some(dur) = meta.get("episodeduration").and_then(json_f64) {
                 if dur > 0.0 && track.duration <= 0.0 {
                     track.duration = dur;
+                }
+            }
+            if let Some(podcast_id) = meta.get("podcastid").and_then(json_i64) {
+                if let Ok((_, _, end_skip, _)) = state
+                    .db_pool
+                    .get_play_episode_details(user_id, podcast_id as i32, stream.is_youtube)
+                    .await
+                {
+                    track.end_skip = end_skip.max(0);
                 }
             }
             track.loaded_episode = Some((stream.episode_id, stream.is_youtube));
@@ -2862,21 +3332,29 @@ async fn apply_progress(
             stream.is_youtube,
             track.position,
             track.duration,
+            track.end_skip,
         )
         .await;
         track.last_write = Some(Instant::now());
         track.sample = Some(sample);
     }
-    publish_track_snapshot(
-        state,
-        user_id,
-        live,
-        tracks,
-        retained,
-        &queue_id,
-        false,
-    )
-    .await;
+    if track.playing {
+        if !track.played_counted && state.db_pool.increment_played(user_id).await.is_ok() {
+            track.played_counted = true;
+        }
+        match track.listen_marked_at {
+            None => track.listen_marked_at = Some(Instant::now()),
+            Some(started) if started.elapsed() >= Duration::from_secs(60) => {
+                if state.db_pool.increment_listen_time(user_id).await.is_ok() {
+                    track.listen_marked_at = Some(Instant::now());
+                }
+            }
+            Some(_) => {}
+        }
+    } else {
+        track.listen_marked_at = None;
+    }
+    publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
 }
 
 async fn write_listen_progress(
@@ -2886,6 +3364,7 @@ async fn write_listen_progress(
     is_youtube: bool,
     position: f64,
     duration_hint: f64,
+    end_skip: i32,
 ) {
     if let Err(e) = state
         .db_pool
@@ -2900,32 +3379,26 @@ async fn write_listen_progress(
         .get_user_auto_complete_seconds(user_id)
         .await
         .unwrap_or(0);
-    if auto <= 0 {
-        return;
-    }
     let duration = if duration_hint > 0.0 {
-        duration_hint as i32
+        duration_hint
     } else if is_youtube {
         state
             .db_pool
             .get_youtube_episode_duration(episode_id)
             .await
-            .unwrap_or(0)
+            .unwrap_or(0) as f64
     } else {
         state
             .db_pool
             .get_episode_duration(episode_id)
             .await
-            .unwrap_or(0)
+            .unwrap_or(0) as f64
     };
-    if duration > 0 {
-        let remaining = duration as f64 - position;
-        if remaining <= auto as f64 || position >= duration as f64 {
-            let _ = state
-                .db_pool
-                .mark_episode_completed(episode_id, user_id, is_youtube)
-                .await;
-        }
+    if should_mark_complete(position, duration, auto, end_skip) {
+        let _ = state
+            .db_pool
+            .mark_episode_completed(episode_id, user_id, is_youtube)
+            .await;
     }
 }
 
@@ -3180,13 +3653,21 @@ fn snapshot_for(user_id: i32, player: &MaPlayer, track: Option<&QueueTrack>) -> 
         duration_sec: duration,
         playing,
         speed,
-        updated_at: 0,
+        updated_at: track.map(|t| t.updated_at).unwrap_or(0),
         capabilities: MA_CAPABILITIES.iter().map(|s| (*s).to_string()).collect(),
         volume_level: player.volume_level,
         volume_muted: Some(player.volume_muted),
         ma_player_id: Some(player.player_id.clone()),
         group_members: Some(player.group_members.clone()),
     }
+}
+
+fn unix_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn json_f64(v: &Value) -> Option<f64> {
@@ -3206,8 +3687,8 @@ fn json_i64(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use futures::{SinkExt, StreamExt};
+    use std::collections::HashSet;
     use tokio::io::DuplexStream;
     use tokio_tungstenite::tungstenite::protocol::Role;
     use tokio_tungstenite::WebSocketStream;
@@ -3310,10 +3791,12 @@ mod tests {
             translate_action("kitchen", "q1", "seek", &json!({"position_sec": 12.5})).unwrap();
         assert_eq!(seek[0].command, "player_queues/seek");
         assert_eq!(seek[0].args["queue_id"], "q1");
-        assert_eq!(seek[0].args["position"], 12.5);
+        assert_eq!(seek[0].args["position"], json!(12));
 
         let back = translate_action("kitchen", "q1", "skip_back", &json!({})).unwrap();
-        assert_eq!(back[0].args["seconds"], -15.0);
+        assert_eq!(back[0].args["seconds"], json!(-15));
+        let fwd = translate_action("kitchen", "q1", "skip_forward", &json!({})).unwrap();
+        assert_eq!(fwd[0].args["seconds"], json!(15));
 
         let vol =
             translate_action("kitchen", "q1", "volume_set", &json!({"volume_level": 140})).unwrap();
@@ -3355,18 +3838,23 @@ mod tests {
     }
 
     #[test]
-    fn play_media_seeks_and_sets_speed_when_needed() {
+    fn play_media_sets_speed_and_leaves_seek_until_duration() {
         let url = "http://h/api/data/stream/1?api_key=k&user_id=2";
-        let cmds = play_media_commands("q", url, 30.0, 1.25, None);
-        assert_eq!(cmds.len(), 3);
+        let cmds = play_media_commands("q", url, 1.25, None);
+        assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].command, "player_queues/play_media");
         assert_eq!(cmds[0].args["media"], url);
         assert_eq!(cmds[0].args["option"], "replace");
-        assert_eq!(cmds[1].command, "player_queues/seek");
-        assert_eq!(cmds[2].args["speed"], 1.25);
-        let plain = play_media_commands("q", "http://h/a", 0.0, 1.0, None);
+        assert_eq!(cmds[1].command, "player_queues/set_playback_speed");
+        assert_eq!(cmds[1].args["speed"], 1.25);
+        let plain = play_media_commands("q", "http://h/a", 1.0, None);
         assert_eq!(plain.len(), 1);
         assert_eq!(plain[0].args["media"], "http://h/a");
+        let seek = resume_seek_command("q", 30.5, 3600.0).unwrap();
+        assert_eq!(seek.command, "player_queues/seek");
+        assert_eq!(seek.args["position"], json!(30));
+        assert!(resume_seek_command("q", 30.0, 0.0).is_none());
+        assert!(resume_seek_command("q", 0.4, 3600.0).is_none());
     }
 
     #[test]
@@ -3378,7 +3866,7 @@ mod tests {
             duration_sec: 3600,
             artwork_url: Some("https://cdn.example/ep.jpg".into()),
         };
-        let cmds = play_media_commands("kitchen", url, 0.0, 1.0, Some(&with_art));
+        let cmds = play_media_commands("kitchen", url, 1.0, Some(&with_art));
         assert_eq!(cmds.len(), 1);
         let media = &cmds[0].args["media"];
         assert_eq!(media["media_type"], "track");
@@ -3393,10 +3881,16 @@ mod tests {
         assert_eq!(media["artists"][0]["available"], true);
         assert_eq!(media["provider_mappings"][0]["item_id"], url);
         assert_eq!(media["provider_mappings"][0]["provider_domain"], "builtin");
-        assert_eq!(media["provider_mappings"][0]["provider_instance"], "builtin");
+        assert_eq!(
+            media["provider_mappings"][0]["provider_instance"],
+            "builtin"
+        );
         assert_eq!(media["provider_mappings"][0]["available"], true);
         assert_eq!(media["metadata"]["images"][0]["type"], "thumb");
-        assert_eq!(media["metadata"]["images"][0]["path"], "https://cdn.example/ep.jpg");
+        assert_eq!(
+            media["metadata"]["images"][0]["path"],
+            "https://cdn.example/ep.jpg"
+        );
         assert_eq!(media["metadata"]["images"][0]["provider"], "builtin");
         assert_eq!(media["metadata"]["images"][0]["remotely_accessible"], true);
 
@@ -3406,9 +3900,13 @@ mod tests {
             duration_sec: 3600,
             artwork_url: None,
         };
-        let plain = play_media_commands("kitchen", url, 12.0, 1.0, Some(&no_art));
+        let plain = play_media_commands("kitchen", url, 1.0, Some(&no_art));
+        assert_eq!(plain.len(), 1);
         assert_eq!(plain[0].args["media"], url);
-        assert_eq!(plain[1].command, "player_queues/seek");
+        let seek = resume_seek_command("kitchen", 12.5, 3600.0).unwrap();
+        assert_eq!(seek.args["queue_id"], "kitchen");
+        assert_eq!(seek.args["position"], json!(12));
+        assert!(resume_seek_command("kitchen", 12.0, 0.0).is_none());
     }
 
     #[test]
@@ -3436,7 +3934,9 @@ mod tests {
             "artworkurl": "https://cdn.example/show.jpg",
         });
         assert_eq!(
-            display_from_meta(&fallback, "https://pods.example").artwork_url.as_deref(),
+            display_from_meta(&fallback, "https://pods.example")
+                .artwork_url
+                .as_deref(),
             Some("https://cdn.example/show.jpg")
         );
 
@@ -3445,7 +3945,9 @@ mod tests {
             "episodeartwork": "javascript:alert(1)",
             "artworkurl": "",
         });
-        assert!(display_from_meta(&none, "https://pods.example").artwork_url.is_none());
+        assert!(display_from_meta(&none, "https://pods.example")
+            .artwork_url
+            .is_none());
         assert!(artwork_url_for_ma("https://cdn.example/a.jpg", "https://pods.example").is_some());
         assert_eq!(
             artwork_url_for_ma(
@@ -3639,7 +4141,7 @@ mod tests {
     #[test]
     fn idle_with_a_loaded_episode_does_not_clear_it() {
         let (playing, clear) = next_playback(true, true, Some(false), true, false);
-        assert!(playing);
+        assert!(!playing);
         assert!(!clear);
         let (playing, clear) = next_playback(true, true, Some(false), false, false);
         assert!(!playing);
@@ -3716,6 +4218,221 @@ mod tests {
         assert!(should_write_progress(
             Some(&later),
             &seek,
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn numeric_and_object_queue_times_stamp_the_right_clock() {
+        let numeric = progress_from_event(Some("kitchen"), &json!(43.5), 1_700_000_100);
+        assert_eq!(numeric.queue_id.as_deref(), Some("kitchen"));
+        assert_eq!(numeric.position_sec, Some(43.5));
+        assert_eq!(numeric.position_updated_at, Some(1_700_000_100));
+        assert!(numeric.stream.is_none());
+        assert!(numeric.duration_sec.is_none());
+
+        let object = progress_from_event(
+            Some("kitchen"),
+            &json!({
+                "elapsed_time": 42.5,
+                "elapsed_time_last_updated": 1_700_000_000.4
+            }),
+            1_700_000_050,
+        );
+        assert_eq!(object.position_sec, Some(42.5));
+        assert_eq!(object.position_updated_at, Some(1_700_000_000));
+
+        let unstamped = progress_from_event(
+            Some("kitchen"),
+            &json!({ "elapsed_time": 10.0 }),
+            1_700_000_050,
+        );
+        assert_eq!(unstamped.position_updated_at, Some(1_700_000_050));
+
+        let empty = progress_from_event(Some("kitchen"), &json!({}), 1_700_000_050);
+        assert!(empty.position_sec.is_none());
+        assert!(empty.position_updated_at.is_none());
+    }
+
+    #[test]
+    fn grouped_member_commands_use_the_leader_queue() {
+        let mut bed = sample_player("bed", "idle");
+        bed.synced_to = Some("living".into());
+        bed.active_source = Some("bed".into());
+        let mut living = sample_player("living", "playing");
+        living.active_source = Some("living-queue".into());
+        let players = vec![bed, living];
+        assert_eq!(queue_id_for(&players, "bed"), "living-queue");
+        assert_eq!(queue_id_for(&players, "living"), "living-queue");
+
+        let mut leader_only = sample_player("bed", "idle");
+        leader_only.synced_to = Some("living".into());
+        assert_eq!(queue_id_for(&[leader_only], "bed"), "living");
+
+        let play = play_media_commands("living-queue", "https://cdn.example/ep.mp3", 1.0, None);
+        assert_eq!(play[0].args["queue_id"], "living-queue");
+        let seek = translate_action(
+            "bed",
+            "living-queue",
+            "seek",
+            &json!({"position_sec": 90.9}),
+        )
+        .unwrap();
+        assert_eq!(seek[0].command, "player_queues/seek");
+        assert_eq!(seek[0].args["queue_id"], "living-queue");
+        assert_eq!(seek[0].args["position"], json!(90));
+        let skip = translate_action(
+            "bed",
+            "living-queue",
+            "skip_forward",
+            &json!({"seconds": 15.8}),
+        )
+        .unwrap();
+        assert_eq!(skip[0].args["queue_id"], "living-queue");
+        assert_eq!(skip[0].args["seconds"], json!(15));
+        let pause = translate_action("bed", "living-queue", "pause", &json!({})).unwrap();
+        assert_eq!(pause[0].command, "players/cmd/pause");
+        assert_eq!(pause[0].args["player_id"], "bed");
+    }
+
+    #[test]
+    fn resume_seek_retries_only_while_the_queue_is_not_ready() {
+        assert_eq!(plan_resume_seek(0.0, 0.0, 0), SeekPlan::Skip);
+        assert_eq!(plan_resume_seek(12.5, 0.0, 0), SeekPlan::Wait);
+        assert_eq!(plan_resume_seek(12.5, 0.0, 1), SeekPlan::Wait);
+        assert_eq!(
+            plan_resume_seek(12.5, 0.0, 2),
+            SeekPlan::GiveUp("queue without duration")
+        );
+        assert_eq!(plan_resume_seek(12.5, 3600.0, 0), SeekPlan::Send(12));
+        assert!(seek_is_retryable("Queue is not active"));
+        assert!(seek_is_retryable("cannot seek without duration"));
+        assert!(!seek_is_retryable("player offline"));
+        assert_eq!(plan_seek_failure("not active", 0), SeekPlan::Wait);
+        assert_eq!(plan_seek_failure("without duration", 1), SeekPlan::Wait);
+        assert_eq!(
+            plan_seek_failure("not active", 2),
+            SeekPlan::GiveUp("failed")
+        );
+        assert_eq!(
+            plan_seek_failure("player offline", 0),
+            SeekPlan::GiveUp("failed")
+        );
+        assert_eq!(integer_seconds(12.5), 12);
+        assert_eq!(integer_seconds(-3.0), 0);
+        assert_eq!(integer_seconds(f64::NAN), 0);
+    }
+
+    #[test]
+    fn remembered_remote_url_writes_history_until_a_real_stop() {
+        let remembered = RememberedEpisode {
+            user_id: 3,
+            episode_id: 15,
+            is_youtube: false,
+            duration_sec: 1800.0,
+        };
+        match history_stream(Some(&remembered), None, false, 3) {
+            HistoryEpisode::Write(stream) => {
+                assert_eq!(stream.episode_id, 15);
+                assert_eq!(stream.user_id, Some(3));
+                assert!(!stream.is_youtube);
+            }
+            other => panic!("expected remembered episode, got {other:?}"),
+        }
+        assert_eq!(
+            history_stream(Some(&remembered), None, true, 3),
+            HistoryEpisode::Clear
+        );
+        assert_eq!(
+            next_remembered(Some(remembered.clone()), None, true, 3),
+            None
+        );
+
+        let foreign = StreamRef {
+            episode_id: 99,
+            user_id: Some(8),
+            is_youtube: false,
+        };
+        assert_eq!(
+            history_stream(Some(&remembered), Some(&foreign), false, 3),
+            HistoryEpisode::Foreign
+        );
+        assert_eq!(
+            next_remembered(Some(remembered.clone()), Some(&foreign), false, 3),
+            Some(remembered.clone())
+        );
+
+        let other = StreamRef {
+            episode_id: 44,
+            user_id: Some(3),
+            is_youtube: true,
+        };
+        assert_eq!(
+            next_remembered(Some(remembered.clone()), Some(&other), false, 3),
+            Some(RememberedEpisode {
+                user_id: 3,
+                episode_id: 44,
+                is_youtube: true,
+                duration_sec: 0.0,
+            })
+        );
+        match history_stream(None, Some(&other), false, 3) {
+            HistoryEpisode::Write(stream) => assert!(stream.is_youtube),
+            other => panic!("expected youtube stream, got {other:?}"),
+        }
+        assert_eq!(
+            next_remembered(Some(remembered.clone()), None, false, 3)
+                .unwrap()
+                .duration_sec,
+            1800.0
+        );
+    }
+
+    #[test]
+    fn resume_position_honors_an_explicit_zero_and_the_intro_skip() {
+        assert_eq!(resume_position(None, 90.0, 30), 90.0);
+        assert_eq!(resume_position(None, 10.0, 30), 30.0);
+        assert_eq!(resume_position(Some(0.0), 90.0, 30), 0.0);
+        assert_eq!(resume_position(Some(90.0), 10.0, 30), 90.0);
+        assert_eq!(resume_position(None, 0.0, 0), 0.0);
+    }
+
+    #[test]
+    fn completion_uses_end_skip_and_auto_complete() {
+        assert!(should_mark_complete(70.0, 100.0, 0, 30));
+        assert!(!should_mark_complete(69.0, 100.0, 0, 30));
+        assert!(should_mark_complete(91.0, 100.0, 10, 0));
+        assert!(!should_mark_complete(89.0, 100.0, 10, 0));
+        assert!(should_mark_complete(100.0, 100.0, 0, 0));
+        assert!(!should_mark_complete(99.0, 100.0, 0, 0));
+        assert!(!should_mark_complete(100.0, 0.0, 10, 30));
+    }
+
+    #[test]
+    fn a_one_second_tick_does_not_rewrite_history() {
+        let prev = ProgressSample {
+            episode_id: 15,
+            position_sec: 40.0,
+            playing: true,
+        };
+        let tick = ProgressSample {
+            episode_id: 15,
+            position_sec: 41.0,
+            playing: true,
+        };
+        assert!(!should_write_progress(
+            Some(&prev),
+            &tick,
+            Duration::from_secs(1)
+        ));
+        let backward = ProgressSample {
+            episode_id: 15,
+            position_sec: 20.0,
+            playing: true,
+        };
+        assert!(should_write_progress(
+            Some(&prev),
+            &backward,
             Duration::from_secs(1)
         ));
     }
