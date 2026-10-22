@@ -6283,7 +6283,7 @@ input:checked + .notification-toggle-slider:before {
 @keyframes nc-spin { to { transform: rotate(360deg); } }
 
 /* ---------- Body / scroll ---------- */
-.nc-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 12px 14px; }
+.nc-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 12px 14px; }
 .nc-body::-webkit-scrollbar { width: 8px; }
 .nc-body::-webkit-scrollbar-thumb { background: var(--nc-line); border-radius: 8px; }
 .nc-section-label {
@@ -6541,7 +6541,10 @@ input:checked + .notification-toggle-slider:before {
 .ma-chip .iconbtn { width: 22px; height: 22px; }
 .ma-add-member { margin-top: 6px; max-width: 220px; }
 .ma-group-bar { display: flex; justify-content: flex-end; padding: 12px 0 4px; }
-.ma-picker { z-index: 80; }
+/* Above .nc-scrim (1300) and the Other devices drawer (1301). `.ma-picker` used
+   to set z-index: 80, which put this drawer under its own scrim: the dim overlay
+   covered the speaker list, clicks hit the scrim, and the list could not scroll. */
+.nc-panel.ma-picker { z-index: 1302; }
 .player-fs-topbar-right { display: flex; align-items: center; gap: 4px; }
 
 @keyframes spinner-rotate {

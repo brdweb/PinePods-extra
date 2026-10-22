@@ -158,8 +158,70 @@ async fn full_namespace_is_stored_and_served() {
     assert_eq!(show["tags"]["live_items"][0]["status"], "live");
     assert_eq!(show["tags"]["live_items"][0]["tags"]["people"][0]["name"], "Live Host");
     assert_eq!(show["tags"]["publisher"]["medium"], "publisher");
+    assert_eq!(show["tags"]["complete"], true);
+    assert_eq!(
+        show["tags"]["chat"]["embed_url"],
+        "https://kiwiirc.example.invalid/nextclient/"
+    );
+    assert_eq!(show["tags"]["live_items"][0]["live_value"]["protocol"], "socket.io");
+    assert_eq!(
+        show["tags"]["live_items"][0]["live_value"]["uri"],
+        "https://live.example.invalid/socket.io/"
+    );
+    assert_eq!(
+        show["tags"]["live_items"][0]["live_value"]["value"][0]["recipients"][0]["name"],
+        "Live Split"
+    );
 
     assert_eq!(refresh_interval(&app, pod).await, Some(14 * 24 * 60));
+}
+
+/// The media-options query reads `is_video` (Postgres) / `IsVideo` (MySQL). A wrong
+/// column name 500s this endpoint and makes Music Assistant fall back to a stream URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn episode_media_options_reads_is_video_and_alternate_enclosures() {
+    use pinepods_api::services::alternate_media::{plan_for_episode, Audience};
+
+    let app = TestApp::new().await;
+    let alt = r#"<podcast:alternateEnclosure type="audio/mpeg" default="true" title="Mirror">
+        <podcast:source uri="https://mirror.example.invalid/ep.mp3"/>
+      </podcast:alternateEnclosure>"#;
+    let feed = Feed::new("Media Options")
+        .episode(Episode::new(1).extra(alt))
+        .episode(
+            Episode::new(2)
+                .enclosure("https://cdn.example.invalid/video/ep2.mp4")
+                .video(),
+        );
+    let (user, video_id, audio_id) = subscribe_raw(&app, "mediaopt", feed.to_xml()).await;
+
+    let options = app
+        .get("/api/data/episode_media_options")
+        .key(&user)
+        .query("episode_id", audio_id)
+        .query("user_id", user.id)
+        .send()
+        .await
+        .ok_json();
+    assert_eq!(options["playback"][0]["uri"], "https://mirror.example.invalid/ep.mp3", "{options:#}");
+    assert_eq!(options["playback"][0]["is_video"], false);
+
+    let video = app
+        .get("/api/data/episode_media_options")
+        .key(&user)
+        .query("episode_id", video_id)
+        .query("user_id", user.id)
+        .send()
+        .await
+        .ok_json();
+    assert_eq!(video["playback"][0]["uri"], "https://cdn.example.invalid/video/ep2.mp4", "{video:#}");
+    assert_eq!(video["playback"][0]["is_video"], true);
+
+    let plan = plan_for_episode(app.db(), video_id, user.id, None, Audience::MusicAssistant)
+        .await
+        .expect("plan");
+    assert_eq!(plan.playback[0].uri, "https://cdn.example.invalid/video/ep2.mp4");
+    assert!(plan.playback[0].is_video);
 }
 
 async fn refresh_interval(app: &TestApp, podcast_id: i32) -> Option<i32> {

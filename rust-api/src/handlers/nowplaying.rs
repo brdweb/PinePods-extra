@@ -45,7 +45,10 @@
 //! - `{"type":"command","from_device_id":"…","action":"…","args":{…}}` — apply to
 //!   the local player; ignore unknown actions.
 //! - `{"type":"ack","ok":true,"detail":"relayed","cmd_id":"…","target_device_id":"…"}`
-//!   — `ok:false` means the target is offline. Delivery is not execution.
+//!   — `ok:false` means the target is offline or the command failed (`detail` says which).
+//!   A relay ack means the frame was delivered, not that the player finished it.
+//!   A Music Assistant player connected to this instance is the exception: the
+//!   command runs here and the ack is the real result, so the sender can wait.
 //!
 //! ## Actions (args)
 //! `play`, `pause`, `stop`, `seek {position_sec}`, `skip_forward {seconds=30}`,
@@ -227,6 +230,15 @@ impl NowPlayingManager {
             }
         }
         owned
+    }
+
+    /// Whether this instance has a live socket or virtual device for `device_id`.
+    pub async fn has_device(&self, user_id: i32, device_id: &str) -> bool {
+        self.connections
+            .read()
+            .await
+            .get(&user_id)
+            .is_some_and(|devs| devs.contains_key(device_id))
     }
 
     /// Relay a message to one specific device. Returns true if a live connection
@@ -532,47 +544,62 @@ async fn handle_now_playing_socket(
                             args,
                             cmd_id,
                         }) => {
-                            let relay = to_ws(&ServerMsg::Command {
-                                from_device_id: reader_device.clone(),
-                                action: action.clone(),
-                                args: args.clone(),
-                            });
-                            let delivered = reader_state
-                                .now_playing_manager
-                                .send_to_device(user_id, &target_device_id, relay)
-                                .await;
-                            let (ok, detail) = if delivered {
-                                (true, "relayed")
+                            // A Music Assistant player on this instance runs here, and the
+                            // ack is that result. Relaying into the virtual device as well
+                            // would play the episode twice.
+                            let (ok, detail) = if let Some(result) = dispatch_local_music_assistant(
+                                &reader_state,
+                                user_id,
+                                &target_device_id,
+                                &action,
+                                &args,
+                            )
+                            .await
+                            {
+                                result
                             } else {
-                                // Target isn't on this instance — fan the command out
-                                // over pub/sub so whichever replica holds it delivers.
-                                let other_instance = publish_command(
-                                    &reader_state,
-                                    user_id,
-                                    &target_device_id,
-                                    &reader_device,
-                                    &action,
-                                    &args,
-                                )
-                                .await;
-                                // Another replica merely *listening* doesn't mean it
-                                // holds the target: also require the target to still be
-                                // present (every live socket keeps a snapshot).
-                                let present = other_instance
-                                    && reader_state
-                                        .redis_client
-                                        .now_playing_exists(user_id, &target_device_id)
-                                        .await
-                                        .unwrap_or(false);
-                                if present {
-                                    (true, "relayed to another instance")
+                                let relay = to_ws(&ServerMsg::Command {
+                                    from_device_id: reader_device.clone(),
+                                    action: action.clone(),
+                                    args: args.clone(),
+                                });
+                                let delivered = reader_state
+                                    .now_playing_manager
+                                    .send_to_device(user_id, &target_device_id, relay)
+                                    .await;
+                                if delivered {
+                                    (true, "relayed".to_string())
                                 } else {
-                                    (false, "device offline")
+                                    // Target isn't on this instance — fan the command out
+                                    // over pub/sub so whichever replica holds it delivers.
+                                    let other_instance = publish_command(
+                                        &reader_state,
+                                        user_id,
+                                        &target_device_id,
+                                        &reader_device,
+                                        &action,
+                                        &args,
+                                    )
+                                    .await;
+                                    // Another replica merely *listening* doesn't mean it
+                                    // holds the target: also require the target to still be
+                                    // present (every live socket keeps a snapshot).
+                                    let present = other_instance
+                                        && reader_state
+                                            .redis_client
+                                            .now_playing_exists(user_id, &target_device_id)
+                                            .await
+                                            .unwrap_or(false);
+                                    if present {
+                                        (true, "relayed to another instance".to_string())
+                                    } else {
+                                        (false, "device offline".to_string())
+                                    }
                                 }
                             };
                             let _ = reader_tx.send(to_ws(&ServerMsg::Ack {
                                 ok,
-                                detail: detail.to_string(),
+                                detail,
                                 cmd_id,
                                 target_device_id,
                             }));
@@ -636,6 +663,44 @@ fn idle_snapshot(
         volume_muted: None,
         ma_player_id: None,
         group_members: None,
+    }
+}
+
+/// Run a command against a Music Assistant player registered on this instance.
+///
+/// Returns `None` when the target is not a local virtual player, so the caller
+/// relays the frame instead. A `Some` result is the ack: success or the error
+/// text. The virtual device is not also sent the frame.
+async fn dispatch_local_music_assistant(
+    state: &AppState,
+    user_id: i32,
+    target_device_id: &str,
+    action: &str,
+    args: &Value,
+) -> Option<(bool, String)> {
+    crate::services::music_assistant::player_id_from_device(user_id, target_device_id)?;
+    if !state
+        .now_playing_manager
+        .has_device(user_id, target_device_id)
+        .await
+    {
+        return None;
+    }
+    match crate::services::music_assistant::dispatch(state, user_id, target_device_id, action, args)
+        .await
+    {
+        Ok(outcome) => {
+            let detail = if outcome.warnings.is_empty() {
+                outcome.detail
+            } else {
+                format!("{} ({})", outcome.detail, outcome.warnings.join("; "))
+            };
+            Some((true, detail))
+        }
+        Err(e) => {
+            tracing::warn!("music assistant {action} for {target_device_id} failed: {e}");
+            Some((false, e.to_string()))
+        }
     }
 }
 

@@ -29,7 +29,8 @@
     <podcast:txt purpose="ai-content">true</podcast:txt>
     <podcast:updateFrequency rrule="FREQ=WEEKLY;INTERVAL=2" dtstart="2026-01-05T00:00:00.000Z">Biweekly</podcast:updateFrequency>
     <podcast:podping usesPodping="true"/>
-    <podcast:chat server="irc.example.invalid" protocol="irc" accountId="@ada" space="#show"/>
+    <podcast:complete/>
+    <podcast:chat server="irc.example.invalid" protocol="irc" accountId="@ada" space="#show" embedUrl="https://kiwiirc.example.invalid/nextclient/"/>
     <podcast:podroll>
       <podcast:remoteItem feedGuid="29cdca4a-32d8-56ba-b48b-09a011c5daa9" feedUrl="https://example.invalid/rec.xml" title="Buzzcast"/>
     </podcast:podroll>
@@ -68,6 +69,11 @@
       <podcast:value type="lightning" method="keysend">
         <podcast:valueRecipient name="Live" type="lnaddress" address="live@example.invalid" split="100"/>
       </podcast:value>
+      <podcast:liveValue uri="https://live.example.invalid/socket.io/" protocol="socket.io">
+        <podcast:value type="lightning" method="keysend" suggested="0.00000005000">
+          <podcast:valueRecipient name="Live Split" type="node" address="02aa" split="100"/>
+        </podcast:value>
+      </podcast:liveValue>
     </podcast:liveItem>
 
     <item>

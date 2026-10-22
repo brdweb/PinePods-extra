@@ -245,12 +245,21 @@ fn scale_down_to(amounts: &mut [u64], cap: u64) {
     }
 }
 
+/// A compressed node pubkey is 33 bytes, written as 66 hex characters.
+/// Some feeds label that key `lnaddress` (No Agenda's Fountain split does).
+fn is_node_pubkey(address: &str) -> bool {
+    let address = address.trim();
+    address.len() == 66 && address.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 pub fn classify_recipient(recipient: &ValueRecipient) -> Option<PayKind> {
-    if recipient.address.trim().is_empty() {
+    let address = recipient.address.trim();
+    if address.is_empty() {
         return None;
     }
     match recipient.kind.trim().to_ascii_lowercase().as_str() {
         "node" | "keysend" | "pubkey" => Some(PayKind::Keysend),
+        "lnaddress" | "lightning" | "lnurl" if is_node_pubkey(address) => Some(PayKind::Keysend),
         "lnaddress" | "lightning" | "lnurl" => Some(PayKind::LnAddress),
         _ => None,
     }
@@ -299,13 +308,55 @@ pub fn suggested_sats(block: &ValueBlock) -> Option<i64> {
     if raw.is_empty() {
         return None;
     }
-    let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let parsed: i64 = digits.parse().ok()?;
+    // A decimal is BTC (Podcasting 2.0). A whole number is already sats.
+    let parsed = if raw.contains('.') {
+        btc_decimal_to_sats(raw)?
+    } else {
+        let digits: String = raw.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        digits.parse::<i64>().ok()?
+    };
     if parsed <= 0 {
         None
     } else {
         Some(parsed.min(MAX_SATS))
     }
+}
+
+/// Convert a BTC decimal to sats with integer arithmetic. 1 BTC = 100_000_000 sats.
+/// Eight fractional digits are whole sats; the next digit rounds half up.
+fn btc_decimal_to_sats(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if raw.starts_with('-') || raw.starts_with('+') {
+        return None;
+    }
+    let (whole, frac) = raw.split_once('.')?;
+    if whole.is_empty() || !whole.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut frac_digits = String::new();
+    for c in frac.chars() {
+        if c.is_ascii_digit() {
+            frac_digits.push(c);
+        } else {
+            break;
+        }
+    }
+    let whole: i128 = whole.parse().ok()?;
+    while frac_digits.len() < 9 {
+        frac_digits.push('0');
+    }
+    let sats_frac: i128 = frac_digits[..8].parse().ok()?;
+    let mut sats = whole.saturating_mul(100_000_000).saturating_add(sats_frac);
+    if frac_digits.as_bytes().get(8).copied().unwrap_or(b'0') >= b'5' {
+        sats = sats.saturating_add(1);
+    }
+    if sats <= 0 || sats > i64::MAX as i128 {
+        return None;
+    }
+    Some(sats as i64)
 }
 
 fn parse_millis(raw: &str) -> Option<i64> {
@@ -1685,7 +1736,28 @@ mod tests {
             classify_recipient(&recipient("n", "lightning", "a@b.co", "100", false)),
             Some(PayKind::LnAddress)
         );
+        let pubkey = format!("02{}", "ab".repeat(32));
+        assert_eq!(pubkey.len(), 66);
+        assert_eq!(
+            classify_recipient(&recipient("ace", "lnaddress", &pubkey, "5", false)),
+            Some(PayKind::Keysend)
+        );
+        assert_eq!(
+            classify_recipient(&recipient("ace", "lnaddress", "aceackerman@fountain.fm", "5", false)),
+            Some(PayKind::LnAddress)
+        );
         assert_eq!(classify_recipient(&recipient("n", "hive", "x", "100", false)), None);
+        let mut btc = lightning_block(vec![], vec![]);
+        btc.suggested = Some("0.00000005000".into());
+        assert_eq!(suggested_sats(&btc), Some(5));
+        btc.suggested = Some("0.00000001000".into());
+        assert_eq!(suggested_sats(&btc), Some(1));
+        btc.suggested = Some("1000".into());
+        assert_eq!(suggested_sats(&btc), Some(1000));
+        btc.suggested = Some("0".into());
+        assert_eq!(suggested_sats(&btc), None);
+        btc.suggested = Some("0.000000000".into());
+        assert_eq!(suggested_sats(&btc), None);
         assert_eq!(tlv_hex("Ab"), "ab");
         assert_eq!(tlv_hex("hello"), hex::encode("hello"));
         assert_eq!(parse_split_hundredths("10.5"), 1_050);

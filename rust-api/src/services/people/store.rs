@@ -13,7 +13,7 @@ use crate::services::podcasting2::{normalize_name, normalize_role, FeedPerson, F
 
 /// Bump to make every podcast re-apply its stored tags on the next refresh (when the way tags
 /// are written changes).
-const TAGS_VERSION: &str = "2";
+const TAGS_VERSION: &str = "3";
 const CHUNK: usize = 400;
 
 /// Serializes person creation and credit replacement, so two refreshes never create the same

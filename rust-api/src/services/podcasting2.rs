@@ -200,6 +200,19 @@ pub struct Chat {
     pub account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// Web client for the room, for example a KiwiIRC link next to an `irc://` server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_url: Option<String>,
+}
+
+/// `podcast:liveValue` on a live item: where the live split is published, plus any
+/// nested `podcast:value` block. Stored only. Nothing here sends a payment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct LiveValue {
+    pub uri: String,
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value: Vec<ValueBlock>,
 }
 
 /// A `podcast:remoteItem`. `feed_guid` is the spec's required `feedGuid`.
@@ -373,6 +386,8 @@ pub struct LiveItem {
     pub enclosure_length: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosure_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_value: Option<LiveValue>,
     #[serde(default)]
     pub tags: ItemTags,
 }
@@ -420,6 +435,9 @@ pub struct ChannelExtras {
     pub publisher: Option<RemoteItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<Chat>,
+    /// Channel `podcast:complete`. Presence of the tag means the show will not add episodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
     /// `podcast:remoteItem` children of `<channel>` (list feeds), not podroll or publisher.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_items: Vec<RemoteItem>,
@@ -675,6 +693,7 @@ enum CapKind {
     Link,
     Author,
     PubDate,
+    Complete,
 }
 
 fn cap_name(kind: CapKind) -> &'static str {
@@ -699,12 +718,14 @@ fn cap_name(kind: CapKind) -> &'static str {
         CapKind::Link => "link",
         CapKind::Author => "author",
         CapKind::PubDate => "pubDate",
+        CapKind::Complete => "complete",
     }
 }
 
 enum Frame {
     Item(ItemTags),
     Live(LiveItem),
+    LiveValue(LiveValue),
     Podroll,
     Publisher,
     Value(ValueBlock),
@@ -722,7 +743,14 @@ struct Capture {
 fn blocked(stack: &[Frame]) -> bool {
     matches!(
         stack.last(),
-        Some(Frame::Value(_) | Frame::Alt(_) | Frame::Split(_) | Frame::Podroll | Frame::Publisher)
+        Some(
+            Frame::Value(_)
+                | Frame::Alt(_)
+                | Frame::Split(_)
+                | Frame::Podroll
+                | Frame::Publisher
+                | Frame::LiveValue(_)
+        )
     )
 }
 
@@ -752,6 +780,7 @@ fn text_kind(podcast: bool, local: &str, stack: &[Frame]) -> Option<CapKind> {
             "contentLink" if in_item => Some(CapKind::ContentLink),
             "txt" => Some(CapKind::Txt),
             "updateFrequency" if !in_item => Some(CapKind::UpdateFrequency),
+            "complete" if !in_item => Some(CapKind::Complete),
             "medium" if !in_item => Some(CapKind::Medium),
             "soundbite" if in_item => Some(CapKind::Soundbite),
             "block" => Some(CapKind::Block),
@@ -928,6 +957,14 @@ fn try_open_frame(e: &BytesStart, podcast: bool, stack: &mut Vec<Frame>) -> bool
         }));
         return true;
     }
+    if podcast && local == "liveValue" && direct_live(stack) {
+        stack.push(Frame::LiveValue(LiveValue {
+            uri: attr(e, "uri").unwrap_or_default(),
+            protocol: attr(e, "protocol").unwrap_or_default(),
+            ..LiveValue::default()
+        }));
+        return true;
+    }
     if !podcast && local == "item" && !in_item && !blocked {
         stack.push(Frame::Item(ItemTags::default()));
         return true;
@@ -940,7 +977,9 @@ fn try_open_frame(e: &BytesStart, podcast: bool, stack: &mut Vec<Frame>) -> bool
         stack.push(Frame::Publisher);
         return true;
     }
-    if podcast && local == "value" && !blocked {
+    // A value block nested in liveValue is the live split. liveValue is otherwise
+    // "blocked" so its text does not leak onto the live item.
+    if podcast && local == "value" && (!blocked || matches!(stack.last(), Some(Frame::LiveValue(_)))) {
         stack.push(Frame::Value(ValueBlock {
             kind: attr(e, "type").unwrap_or_default(),
             method: attr(e, "method").unwrap_or_default(),
@@ -981,6 +1020,7 @@ fn close_frame(name: &str, podcast: bool, stack: &mut Vec<Frame>, tags: &mut Fee
     let matches_top = match stack.last() {
         Some(Frame::Item(_)) => !podcast && name == "item",
         Some(Frame::Live(_)) => podcast && name == "liveItem",
+        Some(Frame::LiveValue(_)) => podcast && name == "liveValue",
         Some(Frame::Podroll) => podcast && name == "podroll",
         Some(Frame::Publisher) => podcast && name == "publisher",
         Some(Frame::Value(_)) => podcast && name == "value",
@@ -998,6 +1038,7 @@ fn close_frame(name: &str, podcast: bool, stack: &mut Vec<Frame>, tags: &mut Fee
             }
         }
         Some(Frame::Live(live)) => tags.extras.live_items.push(live),
+        Some(Frame::LiveValue(live_value)) => attach_live_value(stack, live_value),
         Some(Frame::Value(block)) => attach_value(stack, tags, block),
         Some(Frame::Alt(alt)) => attach_alt(stack, alt),
         Some(Frame::Split(split)) => attach_split(stack, split),
@@ -1018,6 +1059,7 @@ fn flush_open(capture: &mut Option<Capture>, stack: &mut Vec<Frame>, tags: &mut 
                 }
             }
             Frame::Live(live) => tags.extras.live_items.push(live),
+            Frame::LiveValue(live_value) => attach_live_value(stack, live_value),
             Frame::Value(block) => attach_value(stack, tags, block),
             Frame::Alt(alt) => attach_alt(stack, alt),
             Frame::Split(split) => attach_split(stack, split),
@@ -1033,7 +1075,19 @@ fn attach_value(stack: &mut [Frame], tags: &mut FeedTags, block: ValueBlock) {
     match stack.last_mut() {
         Some(Frame::Item(it)) => it.value.push(block),
         Some(Frame::Live(live)) => live.tags.value.push(block),
+        Some(Frame::LiveValue(live)) => live.value.push(block),
         _ => tags.extras.value.push(block),
+    }
+}
+
+fn attach_live_value(stack: &mut [Frame], live_value: LiveValue) {
+    if live_value.uri.is_empty() && live_value.protocol.is_empty() && live_value.value.is_empty() {
+        return;
+    }
+    if let Some(Frame::Live(live)) = stack.last_mut() {
+        if live.live_value.is_none() {
+            live.live_value = Some(live_value);
+        }
     }
 }
 
@@ -1311,6 +1365,11 @@ fn commit_text(
                 });
             }
         }
+        CapKind::Complete => {
+            if tags.extras.complete.is_none() {
+                tags.extras.complete = Some(true);
+            }
+        }
         CapKind::Medium => {
             if !text.is_empty() && tags.extras.medium.is_none() {
                 tags.extras.medium = Some(text);
@@ -1500,6 +1559,7 @@ fn handle_leaf(e: &BytesStart, podcast: bool, stack: &mut Vec<Frame>, tags: &mut
                     protocol,
                     account_id: attr(e, "accountId"),
                     space: attr(e, "space"),
+                    embed_url: http_url(attr(e, "embedUrl")),
                 },
             );
         }
@@ -1580,7 +1640,7 @@ fn push_remote(stack: &mut [Frame], tags: &mut FeedTags, item: RemoteItem) {
         }
         Some(Frame::Item(it)) => it.remote_items.push(item),
         Some(Frame::Live(live)) => live.tags.remote_items.push(item),
-        Some(Frame::Value(_)) | Some(Frame::Alt(_)) => {}
+        Some(Frame::Value(_)) | Some(Frame::Alt(_)) | Some(Frame::LiveValue(_)) => {}
         None => tags.extras.remote_items.push(item),
     }
 }
@@ -1651,35 +1711,17 @@ pub fn live_stream_is_video(mime: Option<&str>) -> bool {
     mime.starts_with("video/") || mime.contains("dash")
 }
 
-/// Drop an ended live item once a regular episode with the same guid is stored.
+/// Hide a live item once it is over.
 ///
-/// Pending and live items stay, including when a guid matches, so a show that is still
-/// on the air is not hidden by an older episode. An ended item with no guid stays so
-/// its recording can be played until the feed replaces it. Order is live, then upcoming
-/// by start time, then ended.
+/// `status="ended"` is enough. An end time in the past hides the item too, even
+/// when the status is still `live` or `pending` and even when no stored episode
+/// guid matches. `episode_guids` is accepted so existing callers keep compiling.
+/// Order is live, then upcoming, by start time.
 pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<LiveItem> {
-    let guids: std::collections::HashSet<String> = episode_guids
-        .iter()
-        .map(|guid| guid.trim().to_ascii_lowercase())
-        .filter(|guid| !guid.is_empty())
-        .collect();
+    let _ = episode_guids;
     let mut out: Vec<LiveItem> = items
         .iter()
-        .filter(|item| {
-            if normalize_live_status(&item.status) != "ended" {
-                return true;
-            }
-            match item
-                .tags
-                .guid
-                .as_deref()
-                .map(str::trim)
-                .filter(|guid| !guid.is_empty())
-            {
-                Some(guid) => !guids.contains(&guid.to_ascii_lowercase()),
-                None => true,
-            }
-        })
+        .filter(|item| !live_item_is_over(item))
         .cloned()
         .collect();
     out.sort_by(|a, b| {
@@ -1695,6 +1737,16 @@ pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<L
             .then_with(|| a.start.cmp(&b.start))
     });
     out
+}
+
+fn live_item_is_over(item: &LiveItem) -> bool {
+    if normalize_live_status(&item.status) == "ended" {
+        return true;
+    }
+    item.end
+        .as_deref()
+        .and_then(parse_dtstart)
+        .is_some_and(|end| end < Utc::now())
 }
 
 /// Episode response for `/api/data/fetch_podcasting_2_data`.
@@ -1935,6 +1987,11 @@ mod tests {
         assert_eq!(x.podping.as_ref().unwrap().uses_podping, Some(true));
         assert_eq!(x.chat.as_ref().unwrap().protocol, "irc");
         assert_eq!(x.chat.as_ref().unwrap().space.as_deref(), Some("#show"));
+        assert_eq!(
+            x.chat.as_ref().unwrap().embed_url.as_deref(),
+            Some("https://kiwiirc.example.invalid/nextclient/")
+        );
+        assert_eq!(x.complete, Some(true));
         assert_eq!(x.podroll[0].title.as_deref(), Some("Buzzcast"));
         assert_eq!(
             x.podroll[0].feed_url.as_deref(),
@@ -1988,6 +2045,13 @@ mod tests {
         );
         assert_eq!(live.tags.value[0].recipients[0].kind, "lnaddress");
         assert!(live.tags.chat.is_some());
+        let live_value = live.live_value.as_ref().unwrap();
+        assert_eq!(live_value.protocol, "socket.io");
+        assert_eq!(
+            live_value.uri,
+            "https://live.example.invalid/socket.io/"
+        );
+        assert_eq!(live_value.value[0].recipients[0].name, "Live Split");
 
         assert_eq!(t.items.len(), 1, "the plain episode has only itunes tags");
         let it = &t.items[0];
@@ -2193,10 +2257,16 @@ mod tests {
                 ("live", Some("Live-1".into())),
                 ("pending", Some("soon".into())),
                 ("pending", Some("later".into())),
-                ("ended", None),
-                ("ended", Some("kept".into())),
             ]
         );
+        let mut past = sample_live("live", Some("old"), "2020-01-01T00:00:00Z");
+        past.end = Some("2020-01-01T01:00:00Z".into());
+        let mut future = sample_live("pending", Some("next"), "2099-01-01T00:00:00Z");
+        future.end = Some("2099-01-01T02:00:00Z".into());
+        let ended = sample_live("ended", Some("no-match"), "2024-01-01T00:00:00Z");
+        let visible = visible_live_items(&[past, future, ended], &[]);
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].tags.guid.as_deref(), Some("next"));
         assert!(live_stream_is_hls(
             Some("application/x-mpegURL"),
             "https://cdn.example/live"

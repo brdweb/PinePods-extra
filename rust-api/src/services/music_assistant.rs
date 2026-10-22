@@ -3,8 +3,10 @@
 //! A per-user, opt-in bridge dials Music Assistant's WebSocket
 //! (`ws://host:8095/ws`, first command `auth`), registers each available player
 //! or group as a now-playing virtual device, and turns relay commands into MA
-//! `players/cmd/*` and `player_queues/*` calls. Playback hands MA the PinePods
-//! stream URL (podcast-scoped RSS key). Queue events write listen progress back.
+//! `players/cmd/*` and `player_queues/*` calls. A downloaded file is served from
+//! the PinePods stream URL (podcast-scoped RSS key). An episode that was never
+//! downloaded is the remote enclosure, not that stream URL, which 404s until a
+//! file exists. Queue events write listen progress back.
 //!
 //! Nothing here runs unless the user saved an enabled configuration. The
 //! WebSocket client is the only extra crate, and it is unused until then.
@@ -288,6 +290,38 @@ pub fn server_info_from_result(v: &Value) -> ServerInfo {
         schema_version,
         server_id,
         assessment,
+    }
+}
+
+/// Where Music Assistant should load an episode from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaPlayback {
+    /// PinePods can serve a file (a download, or `local://` media).
+    Stream,
+    /// Remote http(s) enclosure. Never a PinePods stream URL.
+    Direct(String),
+}
+
+fn is_http_url(uri: &str) -> bool {
+    let lower = uri.trim().to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// `served_by_pinepods` is a file the stream endpoint can actually return.
+/// Anything else must be a playable http(s) enclosure. The stream URL is not a
+/// fallback: it 404s when the episode was never saved.
+pub fn ma_playback(
+    served_by_pinepods: bool,
+    direct_uri: Option<String>,
+) -> Result<MaPlayback, &'static str> {
+    if served_by_pinepods {
+        return Ok(MaPlayback::Stream);
+    }
+    match direct_uri.filter(|uri| is_http_url(uri)) {
+        Some(uri) => Ok(MaPlayback::Direct(uri)),
+        None => Err(
+            "This episode has no URL Music Assistant can play. Download it in PinePods first.",
+        ),
     }
 }
 
@@ -1958,10 +1992,13 @@ async fn prepare_play_episode(
         .get("media_option_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let direct = if is_youtube || downloaded.is_some() {
+    // A saved file is served by PinePods. Otherwise plan a remote enclosure.
+    // Swallowing a planner error used to fall through to the stream URL, which
+    // 404s until the episode is downloaded.
+    let plan = if is_youtube || downloaded.is_some() {
         None
     } else {
-        crate::services::alternate_media::plan_for_episode(
+        match crate::services::alternate_media::plan_for_episode(
             &state.db_pool,
             episode_id,
             user_id,
@@ -1969,17 +2006,36 @@ async fn prepare_play_episode(
             crate::services::alternate_media::Audience::MusicAssistant,
         )
         .await
-        .ok()
-        .and_then(|plan| plan.playback.into_iter().next().map(|step| step.uri))
+        {
+            Ok(plan) => Some(plan),
+            Err(e) => {
+                tracing::warn!(
+                    "music assistant media plan failed for episode {episode_id} user {user_id}: {e}"
+                );
+                return Err(e);
+            }
+        }
     };
-    // A saved file is served by PinePods (and was saved from a playable source).
-    // Otherwise hand Music Assistant the playable http(s) URL — never IPFS or a torrent.
-    // Feed username/password is not applied to that direct URL; download the episode
+    let served_by_pinepods = downloaded.is_some()
+        || plan.as_ref().is_some_and(|plan| {
+            plan.options.iter().any(|opt| {
+                opt.id == "primary"
+                    && opt
+                        .sources
+                        .iter()
+                        .any(|src| src.uri.trim().to_ascii_lowercase().starts_with("local://"))
+            })
+        });
+    let direct = plan.and_then(|plan| plan.playback.into_iter().next().map(|step| step.uri));
+    // Feed username/password is not applied to a direct URL; download the episode
     // first when the host requires those credentials.
-    let media = if let Some(uri) = direct {
-        uri
-    } else {
-        build_stream_url(base, episode_id, &rss_key, user_id, is_youtube)
+    let media = match ma_playback(served_by_pinepods, direct) {
+        Ok(MaPlayback::Direct(uri)) => uri,
+        Ok(MaPlayback::Stream) => build_stream_url(base, episode_id, &rss_key, user_id, is_youtube),
+        Err(msg) => {
+            tracing::warn!("music assistant episode {episode_id} user {user_id}: {msg}");
+            return Err(AppError::bad_request(msg));
+        }
     };
     let position = if args.get("position_sec").is_some() {
         args.get("position_sec").and_then(json_f64).unwrap_or(0.0)
@@ -2508,7 +2564,7 @@ async fn sync_virtuals(
                         continue;
                     };
                     if let Err(e) = dispatch(&state, user_id, &player_id, &action, &args).await {
-                        tracing::debug!("music assistant {player_id} {action} failed: {e}");
+                        tracing::warn!("music assistant {player_id} {action} failed: {e}");
                     }
                 }
             });
@@ -2663,6 +2719,18 @@ mod tests {
         assert!(parse_server_url("file:///etc/passwd").is_err());
         let def = parse_server_url("http://ma.home").unwrap();
         assert_eq!(def.ws, "ws://ma.home:8095/ws");
+    }
+
+    #[test]
+    fn undownloaded_episode_uses_the_enclosure_and_never_a_missing_stream() {
+        assert_eq!(
+            ma_playback(false, Some("https://cdn.example/ep.mp3".into())).unwrap(),
+            MaPlayback::Direct("https://cdn.example/ep.mp3".into())
+        );
+        assert_eq!(ma_playback(true, None).unwrap(), MaPlayback::Stream);
+        assert!(ma_playback(false, None).is_err());
+        assert!(ma_playback(false, Some("ipfs://bafy".into())).is_err());
+        assert!(ma_playback(false, Some("magnet:?xt=urn:btih:abc".into())).is_err());
     }
 
     #[test]

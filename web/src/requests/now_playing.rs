@@ -133,7 +133,6 @@ enum ServerMsg {
     },
     Ack {
         ok: bool,
-        #[allow(dead_code)]
         detail: String,
         #[serde(default)]
         cmd_id: Option<String>,
@@ -399,8 +398,8 @@ pub fn play_on_device(target_device_id: &str, episode_id: i32, is_youtube: bool)
 }
 
 /// "Send to ▸": hand off what this tab is playing to another device at our live
-/// position — the push mirror of "Play here". The local player pauses once the
-/// server acks delivery. Returns false when nothing is playing here.
+/// position — the push mirror of "Play here". The local player pauses only after
+/// the server acks success. Returns false when nothing is playing here.
 pub fn send_playback_to(target_device_id: &str) -> bool {
     let state = Dispatch::<UIState>::global().get();
     let Some(cp) = state.currently_playing.as_ref() else {
@@ -451,9 +450,9 @@ fn handle_inbound(text: &str) {
         Ok(ServerMsg::Command { action, args, .. }) => apply_command(&action, &args),
         Ok(ServerMsg::Ack {
             ok: false,
+            detail,
             cmd_id,
             target_device_id,
-            ..
         }) => {
             // A failed handoff leaves local playback running.
             take_handoff(&cmd_id);
@@ -465,10 +464,13 @@ fn handle_inbound(text: &str) {
                 .map(|d| d.device_name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "That device".to_string());
-            toast_error(
-                &Dispatch::<NotificationState>::global(),
-                format!("{} is offline — command not delivered", name),
-            );
+            let offline = format!("{name} is offline — command not delivered");
+            let message = if detail.trim().is_empty() || detail == "device offline" {
+                offline
+            } else {
+                detail
+            };
+            toast_error(&Dispatch::<NotificationState>::global(), message);
         }
         Ok(ServerMsg::Ack {
             ok: true, cmd_id, ..

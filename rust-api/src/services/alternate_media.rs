@@ -144,9 +144,13 @@ pub async fn plan_for_episode(
     audience: Audience,
 ) -> AppResult<MediaPlan> {
     let (uri, is_video) = load_primary(db, episode_id, user_id).await?;
-    let tags = crate::services::people::store::episode_extras(db, episode_id)
-        .await
-        .unwrap_or_default();
+    let tags = match crate::services::people::store::episode_extras(db, episode_id).await {
+        Ok(tags) => tags,
+        Err(e) => {
+            tracing::warn!("alternate enclosures for episode {episode_id} could not be loaded: {e}");
+            Default::default()
+        }
+    };
     Ok(plan_media(
         &PrimaryEnclosure {
             uri,
@@ -163,7 +167,7 @@ async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppRe
     match db {
         DatabasePool::Postgres(pool) => {
             let row = sqlx::query(
-                r#"SELECT e.episodeurl AS episodeurl, COALESCE(e.isvideo, FALSE) AS is_video
+                r#"SELECT e.episodeurl AS episodeurl, COALESCE(e.is_video, FALSE) AS is_video
                    FROM "Episodes" e
                    JOIN "Podcasts" p ON e.podcastid = p.podcastid
                    WHERE e.episodeid = $1 AND p.userid = $2"#,

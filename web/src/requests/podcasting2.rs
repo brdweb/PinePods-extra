@@ -67,6 +67,9 @@ pub struct LiveItem {
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosure_type: Option<String>,
+    /// `podcast:liveValue`. Stored for display. Nothing here sends a payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_value: Option<LiveValue>,
     #[serde(default)]
     pub tags: LiveItemTags,
 }
@@ -112,6 +115,9 @@ pub struct ChannelTags {
     pub publisher: Option<RemoteItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat: Option<Chat>,
+    /// Channel `podcast:complete`. Presence means the show will not add episodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub complete: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_items: Vec<RemoteItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -251,6 +257,20 @@ pub struct Chat {
     pub account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space: Option<String>,
+    /// Web client for the room, for example a KiwiIRC link next to an `irc://` server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_url: Option<String>,
+}
+
+/// `podcast:liveValue` on a live item. Stored only. Nothing here sends a payment.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LiveValue {
+    #[serde(default)]
+    pub uri: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value: Vec<ValueBlock>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -486,6 +506,13 @@ pub fn chat_url(chat: &Chat) -> Option<String> {
     let server = chat.server.trim();
     let protocol = chat.protocol.trim().to_ascii_lowercase();
     let space = chat.space.as_deref().unwrap_or("").trim();
+    if let Some(embed) = chat.embed_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(url) = http_link(embed) {
+            if !is_dangerous(url) {
+                return Some(url.to_string());
+            }
+        }
+    }
     if is_dangerous(server) {
         return None;
     }
@@ -664,30 +691,16 @@ pub fn live_playback(mime: Option<&str>, url: &str) -> Option<LivePlayback> {
     })
 }
 
-/// Same visibility rule as the API: hide an ended live item when an episode guid matches.
+/// Same visibility rule as the API: hide a live item once it is over.
+///
+/// `status="ended"` is enough. An end time in the past hides the item too, even
+/// when the status is still `live` or `pending` and even when no episode guid
+/// matches. `episode_guids` is accepted so existing callers keep compiling.
 pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<LiveItem> {
-    let guids: std::collections::HashSet<String> = episode_guids
-        .iter()
-        .map(|guid| guid.trim().to_ascii_lowercase())
-        .filter(|guid| !guid.is_empty())
-        .collect();
+    let _ = episode_guids;
     let mut out: Vec<LiveItem> = items
         .iter()
-        .filter(|item| {
-            if normalize_live_status(&item.status) != "ended" {
-                return true;
-            }
-            match item
-                .tags
-                .guid
-                .as_deref()
-                .map(str::trim)
-                .filter(|guid| !guid.is_empty())
-            {
-                Some(guid) => !guids.contains(&guid.to_ascii_lowercase()),
-                None => true,
-            }
-        })
+        .filter(|item| !live_item_is_over(item))
         .cloned()
         .collect();
     out.sort_by(|a, b| {
@@ -703,6 +716,47 @@ pub fn visible_live_items(items: &[LiveItem], episode_guids: &[String]) -> Vec<L
             .then_with(|| a.start.cmp(&b.start))
     });
     out
+}
+
+fn live_item_is_over(item: &LiveItem) -> bool {
+    if normalize_live_status(&item.status) == "ended" {
+        return true;
+    }
+    item.end
+        .as_deref()
+        .and_then(parse_live_end)
+        .is_some_and(|end| end < chrono::Utc::now())
+}
+
+/// RFC3339, a date, or an offset written without a colon (`+0000`).
+fn parse_live_end(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if raw.len() == 10 {
+        if let Ok(d) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+            return Some(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0)?));
+        }
+    }
+    let b = raw.as_bytes();
+    let n = b.len();
+    if n > 5
+        && (b[n - 5] == b'+' || b[n - 5] == b'-')
+        && b[n - 4..].iter().all(|c| c.is_ascii_digit())
+    {
+        let mut fixed = String::from(&raw[..n - 2]);
+        fixed.push(':');
+        fixed.push_str(&raw[n - 2..]);
+        if let Ok(dt) = DateTime::parse_from_rfc3339(&fixed) {
+            return Some(dt.with_timezone(&Utc));
+        }
+    }
+    None
 }
 
 pub fn time_splits_of(blocks: &[ValueBlock]) -> Vec<&ValueTimeSplit> {
@@ -997,13 +1051,28 @@ mod tests {
             protocol: "irc".into(),
             account_id: Some("@ada".into()),
             space: Some("#show".into()),
+            embed_url: None,
         };
         assert_eq!(chat_url(&irc).as_deref(), Some("irc://irc.example.invalid/show"));
+        let kiwi = Chat {
+            embed_url: Some("https://kiwiirc.example.invalid/nextclient/".into()),
+            ..irc.clone()
+        };
+        assert_eq!(
+            chat_url(&kiwi).as_deref(),
+            Some("https://kiwiirc.example.invalid/nextclient/")
+        );
+        let unsafe_embed = Chat {
+            embed_url: Some("javascript:alert(1)".into()),
+            ..irc.clone()
+        };
+        assert_eq!(chat_url(&unsafe_embed).as_deref(), Some("irc://irc.example.invalid/show"));
         let matrix = Chat {
             server: "matrix.example.invalid".into(),
             protocol: "matrix".into(),
             account_id: None,
             space: Some("#ep".into()),
+            embed_url: None,
         };
         assert_eq!(
             chat_url(&matrix).as_deref(),
@@ -1124,16 +1193,25 @@ mod tests {
     #[wasm_bindgen_test]
     fn live_items_play_hls_and_hide_ended_recordings() {
         let raw = r##"{
+            "complete": true,
             "live_items": [
-                {"status": "ended", "start": "2026-01-02T00:00:00Z", "tags": {"guid": "Live-1", "enclosure_url": "https://cdn.example/rec.mp3"}},
-                {"status": "pending", "start": "2026-03-01T00:00:00Z", "title": "Soon", "tags": {"guid": "soon"}},
-                {"status": "live", "start": "2026-02-01T00:00:00Z", "title": "On air", "enclosure_type": "application/vnd.apple.mpegurl", "tags": {"guid": "now", "enclosure_url": "https://cdn.example/live"}}
+                {"status": "ended", "start": "2026-01-02T00:00:00Z", "tags": {"guid": "kept", "enclosure_url": "https://cdn.example/rec.mp3"}},
+                {"status": "ended", "start": "2026-01-03T00:00:00Z", "title": "Unmatched ended", "tags": {"guid": "other"}},
+                {"status": "live", "start": "2020-01-01T00:00:00Z", "end": "2020-01-01T01:00:00Z", "title": "Past end", "tags": {"guid": "past"}},
+                {"status": "pending", "start": "2099-03-01T00:00:00Z", "end": "2099-03-01T02:00:00+0000", "title": "Soon", "tags": {"guid": "soon"}},
+                {"status": "live", "start": "2099-02-01T00:00:00Z", "title": "On air", "enclosure_type": "application/vnd.apple.mpegurl", "live_value": {"uri": "https://live.example.invalid/socket.io/", "protocol": "socket.io"}, "tags": {"guid": "now", "enclosure_url": "https://cdn.example/live"}}
             ]
         }"##;
         let tags: ChannelTags = serde_json::from_str(raw).unwrap();
+        assert_eq!(tags.complete, Some(true));
         let visible = visible_live_items(&tags.live_items, &["live-1".into()]);
         assert_eq!(visible.len(), 2);
         assert_eq!(normalize_live_status(&visible[0].status), "live");
+        assert_eq!(visible[0].title.as_deref(), Some("On air"));
+        assert_eq!(
+            visible[0].live_value.as_ref().map(|v| v.protocol.as_str()),
+            Some("socket.io")
+        );
         assert_eq!(normalize_live_status(&visible[1].status), "pending");
         let playback = live_playback(
             visible[0].enclosure_type.as_deref(),
