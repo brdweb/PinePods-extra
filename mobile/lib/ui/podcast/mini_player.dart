@@ -9,7 +9,6 @@ import 'package:pinepods_mobile/bloc/podcast/audio_bloc.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/l10n/L.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
-import 'package:pinepods_mobile/ui/podcast/music_assistant_now_playing.dart';
 import 'package:pinepods_mobile/ui/podcast/now_playing.dart';
 import 'package:pinepods_mobile/ui/widgets/placeholder_builder.dart';
 import 'package:pinepods_mobile/ui/widgets/podcast_image.dart';
@@ -39,7 +38,7 @@ class MiniPlayer extends StatelessWidget {
           return AnimatedSize(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOut,
-            child: active ? _MiniPlayerBuilder() : const MaNowPlayingBanner(),
+            child: active ? _MiniPlayerBuilder() : const SizedBox.shrink(),
           );
         });
   }
