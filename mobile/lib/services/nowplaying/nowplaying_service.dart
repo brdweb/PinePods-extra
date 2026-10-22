@@ -20,7 +20,6 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 
 import 'package:pinepods_mobile/core/alternate_media.dart';
-import 'package:pinepods_mobile/entities/music_assistant.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
@@ -43,16 +42,6 @@ class NowPlayingDevice {
   /// Actions the device says it applies. Empty: it predates the `capabilities`
   /// connect parameter, so it handles [legacyActions].
   final List<String> capabilities;
-
-  /// 0–100 when the device reported a volume (Music Assistant).
-  final double? volumeLevel;
-  final bool? volumeMuted;
-
-  /// Raw Music Assistant player id when [deviceType] is `music_assistant`.
-  final String? maPlayerId;
-
-  /// Other player ids grouped with this one.
-  final List<String> groupMembers;
 
   /// What every client applied before devices could list their actions.
   static const legacyActions = [
@@ -79,10 +68,6 @@ class NowPlayingDevice {
     required this.speed,
     required this.updatedAt,
     this.capabilities = const [],
-    this.volumeLevel,
-    this.volumeMuted,
-    this.maPlayerId,
-    this.groupMembers = const [],
   });
 
   /// Whether this device applies [action], so the UI can hide controls it lacks.
@@ -110,15 +95,6 @@ class NowPlayingDevice {
       capabilities:
           (json['capabilities'] as List?)?.whereType<String>().toList() ??
               const [],
-      volumeLevel: json['volume_level'] is num
-          ? (json['volume_level'] as num).toDouble()
-          : null,
-      volumeMuted: json['volume_muted'] as bool?,
-      maPlayerId: json['ma_player_id'] as String?,
-      groupMembers: (json['group_members'] as List?)
-              ?.map((entry) => entry.toString())
-              .toList() ??
-          const [],
     );
   }
 }
@@ -144,13 +120,8 @@ class NowPlayingService {
   static const _storage = FlutterSecureStorage();
   static const _deviceIdKey = 'pinepods_device_id';
 
-  /// The user's other PinePods clients. Music Assistant players are not here.
+  /// The user's other PinePods clients. Music Assistant speakers are omitted.
   final ValueNotifier<List<NowPlayingDevice>> devices =
-      ValueNotifier<List<NowPlayingDevice>>(const []);
-
-  /// Music Assistant players from the relay's `ma_devices` list. The speaker
-  /// sheet and the now-playing bar read this, not [devices].
-  final ValueNotifier<List<NowPlayingDevice>> maDevices =
       ValueNotifier<List<NowPlayingDevice>>(const []);
 
   /// Whether the socket is currently open.
@@ -333,10 +304,8 @@ class NowPlayingService {
 
   void _onDisconnected({int? closeCode}) {
     connected.value = false;
-    // Keep the last device list across a reconnect. Clearing it hides the
-    // Music Assistant now-playing bar until the next snapshot, even though the
-    // speakers have not gone away. Logout and session switch still clear in
-    // [_teardown]. The next devices frame replaces this list.
+    // Keep the last device list across a reconnect. Logout and session switch
+    // still clear it in [_teardown]. The next devices frame replaces this list.
     _channelSub?.cancel();
     _channelSub = null;
     _channel = null;
@@ -372,7 +341,6 @@ class NowPlayingService {
     }
     connected.value = false;
     devices.value = const [];
-    maDevices.value = const [];
   }
 
   /// Intentionally close the socket (e.g. on logout). Cancels reconnection.
@@ -488,13 +456,9 @@ class NowPlayingService {
 
     switch (msg['type'] as String?) {
       case 'devices':
+        // `ma_devices` is the Music Assistant speaker list. Mobile ignores it
+        // and also drops any speaker that still arrives inside `devices`.
         final parsed = _deviceList(msg['devices']);
-        final fromField = _deviceList(msg['ma_devices']);
-        final speakers = fromField.isNotEmpty
-            ? fromField
-            : parsed.where((d) => isMusicAssistant(d.deviceType)).toList();
-        maDevices.value =
-            speakers.where((d) => d.deviceId != _deviceId).toList();
         devices.value = parsed
             .where((d) =>
                 d.deviceId != _deviceId && includeInOtherDevices(d.deviceType))
@@ -638,8 +602,12 @@ class NowPlayingService {
   void dispose() {
     disconnect();
     devices.dispose();
-    maDevices.dispose();
     connected.dispose();
     lastCommandError.dispose();
   }
 }
+
+/// Music Assistant speakers are a web-only surface. The mobile other-devices
+/// list never includes them, even when the relay still sends that device type.
+bool includeInOtherDevices(String deviceType) =>
+    deviceType.toLowerCase() != 'music_assistant';

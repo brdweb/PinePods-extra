@@ -77,7 +77,7 @@ void main() {
     expect(plan.playback.any((s) => s.optionId == 'primary'), isTrue);
   });
 
-  test('hls cannot be saved as a file and music assistant prefers progressive audio', () {
+  test('hls cannot be saved as a file', () {
     final alternates = [alt('application/vnd.apple.mpegurl', true, ['https://cdn.example/live.m3u8'])];
     final chosen = planMedia(
       primaryUri: 'https://cdn.example/ep.mp3',
@@ -89,15 +89,6 @@ void main() {
     expect(chosen.options[1].downloadable, isFalse);
     expect(chosen.download, isEmpty);
     expect(chosen.playback.first.kind, 'hls');
-
-    final ma = planMedia(
-      primaryUri: 'https://cdn.example/ep.mp3',
-      primaryMime: 'audio/mpeg',
-      alternates: alternates,
-      musicAssistant: true,
-    );
-    expect(ma.selectedId, 'primary');
-    expect(ma.playback.first.uri, 'https://cdn.example/ep.mp3');
   });
 
   test('auto download falls back to another progressive source', () {

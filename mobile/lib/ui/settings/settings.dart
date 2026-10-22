@@ -9,7 +9,6 @@ import 'package:pinepods_mobile/entities/app_settings.dart';
 import 'package:pinepods_mobile/l10n/L.dart';
 import 'package:pinepods_mobile/ui/settings/episode_refresh.dart';
 import 'package:pinepods_mobile/ui/settings/search_provider.dart';
-import 'package:pinepods_mobile/ui/settings/music_assistant_settings.dart';
 import 'package:pinepods_mobile/ui/settings/value4value_settings.dart';
 import 'package:pinepods_mobile/ui/settings/settings_section_label.dart';
 import 'package:pinepods_mobile/ui/settings/bottom_bar_order.dart';
@@ -167,9 +166,6 @@ class _SettingsState extends State<Settings> {
                   );
                 },
               ),
-              SettingsDividerLabel(label: 'Music Assistant'),
-              const Divider(),
-              const MusicAssistantSettings(),
               SettingsDividerLabel(label: L.of(context)!.v4v_title),
               const Divider(),
               const Value4ValueSettings(),

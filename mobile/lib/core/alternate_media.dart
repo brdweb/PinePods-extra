@@ -119,8 +119,8 @@ class MediaPlan {
   }
 }
 
-/// In-memory choice for the episode currently being played, so Music Assistant
-/// and the now-playing screen can see it without another lookup.
+/// In-memory choice for the episode currently being played, so the now-playing
+/// screen and a device handoff can see it without another lookup.
 class MediaChoiceSession {
   static int? episodeId;
   static String? optionId;
@@ -168,7 +168,6 @@ MediaPlan planFromTags({
   bool isVideo = false,
   Map<String, dynamic>? tags,
   String? preferOptionId,
-  bool musicAssistant = false,
 }) {
   final raw = tags?['alternate_enclosures'];
   final alternates = raw is List ? raw.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList() : const <Map<String, dynamic>>[];
@@ -177,7 +176,6 @@ MediaPlan planFromTags({
     isVideo: isVideo,
     alternates: alternates,
     preferOptionId: preferOptionId,
-    musicAssistant: musicAssistant,
   );
 }
 
@@ -187,7 +185,6 @@ MediaPlan planMedia({
   String? primaryMime,
   required List<Map<String, dynamic>> alternates,
   String? preferOptionId,
-  bool musicAssistant = false,
 }) {
   final options = <MediaOption>[_primaryOption(primaryUri, primaryMime, isVideo)];
   for (var i = 0; i < alternates.length; i++) {
@@ -195,7 +192,7 @@ MediaPlan planMedia({
   }
   final explicit = (preferOptionId ?? '').trim();
   final known = explicit.isNotEmpty && options.any((o) => o.id == explicit) ? explicit : null;
-  final selected = _selectId(options, known, musicAssistant);
+  final selected = _selectId(options, known);
   return MediaPlan(
     options: options,
     selectedId: selected,
@@ -426,28 +423,11 @@ bool _isTorrent(String scheme, String mime, String uri) {
       path.endsWith('.torrent');
 }
 
-String _selectId(List<MediaOption> options, String? explicit, bool musicAssistant) {
+String _selectId(List<MediaOption> options, String? explicit) {
   if (explicit != null) {
     for (final option in options) {
       if (option.id == explicit && option.playable) return option.id;
     }
-  }
-  if (musicAssistant) {
-    MediaOption? bestDefault;
-    for (final option in options) {
-      if (option.id != 'primary' && option.isDefault && option.downloadable) {
-        if (bestDefault == null || _audioRank(option) > _audioRank(bestDefault)) bestDefault = option;
-      }
-    }
-    if (bestDefault != null) return bestDefault.id;
-    for (final option in options) {
-      if (option.id == 'primary' && option.downloadable) return option.id;
-    }
-    MediaOption? best;
-    for (final option in options) {
-      if (option.downloadable && (best == null || _audioRank(option) > _audioRank(best))) best = option;
-    }
-    if (best != null) return best.id;
   }
   for (final option in options) {
     if (option.id != 'primary' && option.isDefault && option.playable) return option.id;
@@ -461,16 +441,6 @@ String _selectId(List<MediaOption> options, String? explicit, bool musicAssistan
     }
   }
   return options.isEmpty ? 'primary' : options.first.id;
-}
-
-int _audioRank(MediaOption option) {
-  final kind = switch (option.kind) {
-    'audio' => 2000000000,
-    'video' => 1000000000,
-    _ => 0,
-  };
-  final bitrate = option.bitrate ?? 0;
-  return kind + (bitrate > 1000000000 ? 1000000000 : bitrate);
 }
 
 List<PlaybackStep> _playbackChain(List<MediaOption> options, String selectedId) {
