@@ -28,6 +28,10 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+// Set only by .github/workflows/android-test-apk.yml (gradle.properties in that
+// job). Normal builds leave it unset and keep the official application id.
+def forkTest = project.findProperty("pinepodsForkTest")?.toString() == "true"
+
 android {
     compileSdk 36
     ndkVersion flutter.ndkVersion
@@ -43,6 +47,11 @@ android {
 
     defaultConfig {
         applicationId "com.gooseberrydevelopment.pinepods"
+        if (forkTest) {
+            applicationIdSuffix ".fork"
+        }
+        // Launcher name. Fork builds say "PinePods Fork"; everything else stays "Pinepods".
+        resValue "string", "app_name", forkTest ? "PinePods Fork" : "Pinepods"
         minSdkVersion flutter.minSdkVersion
         targetSdkVersion 36
         versionCode flutterVersionCode.toInteger()
@@ -73,7 +82,9 @@ android {
         }
 
         release {
-            signingConfig signingConfigs.release
+            // Fork test APKs are release-mode but signed with the debug key so CI
+            // needs no upload keystore. Official release builds are unchanged.
+            signingConfig forkTest ? signingConfigs.debug : signingConfigs.release
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android.txt')
         }
