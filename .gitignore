@@ -207,3 +207,7 @@ pubspec.lock
 
 # Cargo build output for every Rust crate in the repo
 **/target/
+
+# Local agent notes (AGENTS.md and CLAUDE.md stay tracked)
+AGENTS.local.md
+CLAUDE.local.md
