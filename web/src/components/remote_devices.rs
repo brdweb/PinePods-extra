@@ -121,7 +121,6 @@ pub fn remote_devices_panel() -> Html {
     let i18n_group_volume = i18n.t("music_assistant.group_volume").to_string();
     let i18n_stop = i18n.t("music_assistant.stop").to_string();
     let i18n_seek = i18n.t("music_assistant.seek").to_string();
-    let i18n_speed = i18n.t("music_assistant.speed").to_string();
     let i18n_skip_back = i18n.t("music_assistant.skip_back").to_string();
     let i18n_skip_fwd = i18n.t("music_assistant.skip_forward").to_string();
     let ma_enabled = use_selector(|s: &MusicAssistantState| s.enabled);
@@ -253,7 +252,6 @@ pub fn remote_devices_panel() -> Html {
         let i18n_group_volume = i18n_group_volume.clone();
         let i18n_stop = i18n_stop.clone();
         let i18n_seek = i18n_seek.clone();
-        let i18n_speed = i18n_speed.clone();
         let i18n_skip_back = i18n_skip_back.clone();
         let i18n_skip_fwd = i18n_skip_fwd.clone();
         let notif_dispatch = notif_dispatch.clone();
@@ -294,7 +292,7 @@ pub fn remote_devices_panel() -> Html {
                 displayed_position(
                     device.position_sec,
                     device.playing,
-                    device.speed,
+                    1.0,
                     device.updated_at,
                     now,
                 )
@@ -356,23 +354,6 @@ pub fn remote_devices_panel() -> Html {
                 .as_ref()
                 .map(|members| !members.is_empty())
                 .unwrap_or(false);
-            let on_speed = {
-                let id = id.clone();
-                Callback::from(move |e: Event| {
-                    if let Some(input) = e.target_dyn_into::<web_sys::HtmlSelectElement>() {
-                        if let Ok(speed) = input.value().parse::<f64>() {
-                            send_command(&id, "set_speed", json!({ "speed": speed }));
-                        }
-                    }
-                })
-            };
-            let speed = if device.speed > 0.0 {
-                device.speed
-            } else {
-                1.0
-            };
-            let speeds = [0.5_f64, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-
             html! {
                 <div class="rd-row">
                     <div class="rd-row-top">
@@ -440,13 +421,6 @@ pub fn remote_devices_panel() -> Html {
                             duration={device.duration_sec}
                             label={i18n_seek.clone()}
                         />
-                    }
-                    if ma && !is_idle && device.supports("set_speed") {
-                        <select class="select ma-speed" onchange={on_speed} aria-label={i18n_speed.clone()}>
-                            { for speeds.iter().map(|rate| html! {
-                                <option value={rate.to_string()} selected={(speed - rate).abs() < 0.05}>{ format!("{rate:.2}x") }</option>
-                            }) }
-                        </select>
                     }
                     if ma {
                         if let Some(level) = device.volume_level {

@@ -38,7 +38,6 @@ pub const MA_CAPABILITIES: &[&str] = &[
     "seek",
     "skip_forward",
     "skip_back",
-    "set_speed",
     "play_episode",
     "volume_set",
     "volume_mute",
@@ -978,6 +977,12 @@ pub fn translate_action(
     action: &str,
     args: &Value,
 ) -> Result<Vec<MaCommand>, String> {
+    // Episodes go to Music Assistant as tracks. It only tempo-shifts podcast
+    // episodes and audiobooks, so a speed command errors. Ignore it: no MA
+    // call, and no error for the client to show.
+    if action == "set_speed" {
+        return Ok(Vec::new());
+    }
     let player_cmd = |name: &str, extra: Value| MaCommand {
         command: format!("players/cmd/{name}"),
         args: {
@@ -1029,20 +1034,6 @@ pub fn translate_action(
                 "skip",
                 json!({ "seconds": integer_seconds_signed(-seconds) }),
             )
-        }
-        "set_speed" => {
-            let speed = args
-                .get("speed")
-                .and_then(json_f64)
-                .ok_or_else(|| "set_speed requires speed".to_string())?;
-            if !(0.5..=4.0).contains(&speed) {
-                return Err("speed must be between 0.5 and 4".into());
-            }
-            let mut extra = json!({ "speed": speed });
-            if let Some(id) = args.get("queue_item_id").and_then(|s| s.as_str()) {
-                extra["queue_item_id"] = json!(id);
-            }
-            queue_cmd("set_playback_speed", extra)
         }
         "volume_set" => {
             let level = args
@@ -1247,36 +1238,31 @@ fn track_media(media_url: &str, display: &MaTrackDisplay) -> Option<Value> {
     Some(item)
 }
 
-/// `play_media`, then an optional speed change.
+/// `play_media` only. Local playback speed is not included.
 ///
-/// The resume offset is not in this list. Music Assistant seeks by rebuilding
-/// the stream, and a seek sent before the queue has a duration fails or plays
-/// the start and then jumps. [`resume_seek_command`] is the one seek, sent
-/// after a queue event reports a duration. Speed failures stay warnings.
+/// Episodes are sent as `media_type: track`. Music Assistant only tempo-shifts
+/// podcast episodes and audiobooks, so a speed other than 1x must not be
+/// carried onto the speaker. The resume offset is not in this list either.
+/// Music Assistant seeks by rebuilding the stream, and a seek sent before the
+/// queue has a duration fails or plays the start and then jumps.
+/// [`resume_seek_command`] is the one seek, sent after a queue event reports a
+/// duration.
 pub fn play_media_commands(
     queue_id: &str,
     media_url: &str,
-    speed: f64,
     display: Option<&MaTrackDisplay>,
 ) -> Vec<MaCommand> {
     let media = display
         .and_then(|display| track_media(media_url, display))
         .unwrap_or_else(|| json!(media_url));
-    let mut cmds = vec![MaCommand {
+    vec![MaCommand {
         command: "player_queues/play_media".into(),
         args: json!({
             "queue_id": queue_id,
             "media": media,
             "option": "replace",
         }),
-    }];
-    if speed > 0.0 && (speed - 1.0).abs() > 0.01 {
-        cmds.push(MaCommand {
-            command: "player_queues/set_playback_speed".into(),
-            args: json!({ "queue_id": queue_id, "speed": speed }),
-        });
-    }
-    cmds
+    }]
 }
 
 /// One integer `player_queues/seek` once the queue has reported a duration.
@@ -2782,12 +2768,8 @@ async fn prepare_play_episode(
             .unwrap_or(0)
     };
     let position = resume_position(explicit, saved, start_skip);
-    let speed = state
-        .db_pool
-        .get_playback_speed(user_id, is_youtube, Some(podcast_id))
-        .await
-        .unwrap_or(1.0);
-    let speed = if speed > 0.0 { speed } else { 1.0 };
+    // Do not read or forward the local playback speed. A 1.5x web session
+    // stays on this browser; the speaker starts at Music Assistant's own rate.
     let display = display_from_meta(&meta, base);
     // Remember the episode before play_media returns so a remote enclosure,
     // which never matches `/api/data/stream/`, still gets a history row.
@@ -2804,7 +2786,7 @@ async fn prepare_play_episode(
         .await;
         live.arm_resume(queue_id, position).await;
     }
-    Ok(play_media_commands(queue_id, &media, speed, Some(&display)))
+    Ok(play_media_commands(queue_id, &media, Some(&display)))
 }
 
 pub fn spawn_supervisor(state: AppState) {
@@ -3832,22 +3814,38 @@ mod tests {
         .unwrap();
         assert_eq!(members[0].command, "players/cmd/set_members");
 
-        let speed = translate_action("kitchen", "q1", "set_speed", &json!({"speed": 1.5})).unwrap();
-        assert_eq!(speed[0].command, "player_queues/set_playback_speed");
+        let ignored =
+            translate_action("kitchen", "q1", "set_speed", &json!({"speed": 1.5})).unwrap();
+        assert!(ignored.is_empty());
+        let missing = translate_action("kitchen", "q1", "set_speed", &json!({})).unwrap();
+        assert!(missing.is_empty());
         assert!(translate_action("kitchen", "q1", "nope", &json!({})).is_err());
     }
 
     #[test]
-    fn play_media_sets_speed_and_leaves_seek_until_duration() {
+    fn capabilities_do_not_advertise_speed() {
+        assert!(!MA_CAPABILITIES.contains(&"set_speed"));
+        assert!(MA_CAPABILITIES
+            .iter()
+            .all(|name| !name.to_ascii_lowercase().contains("speed")));
+        assert!(MA_CAPABILITIES.contains(&"play"));
+        assert!(MA_CAPABILITIES.contains(&"seek"));
+        assert!(MA_CAPABILITIES.contains(&"play_episode"));
+    }
+
+    #[test]
+    fn play_media_does_not_send_speed() {
         let url = "http://h/api/data/stream/1?api_key=k&user_id=2";
-        let cmds = play_media_commands("q", url, 1.25, None);
-        assert_eq!(cmds.len(), 2);
+        let cmds = play_media_commands("q", url, None);
+        assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].command, "player_queues/play_media");
         assert_eq!(cmds[0].args["media"], url);
         assert_eq!(cmds[0].args["option"], "replace");
-        assert_eq!(cmds[1].command, "player_queues/set_playback_speed");
-        assert_eq!(cmds[1].args["speed"], 1.25);
-        let plain = play_media_commands("q", "http://h/a", 1.0, None);
+        assert!(cmds[0].args.get("speed").is_none());
+        assert!(cmds
+            .iter()
+            .all(|cmd| cmd.command != "player_queues/set_playback_speed"));
+        let plain = play_media_commands("q", "http://h/a", None);
         assert_eq!(plain.len(), 1);
         assert_eq!(plain[0].args["media"], "http://h/a");
         let seek = resume_seek_command("q", 30.5, 3600.0).unwrap();
@@ -3866,7 +3864,7 @@ mod tests {
             duration_sec: 3600,
             artwork_url: Some("https://cdn.example/ep.jpg".into()),
         };
-        let cmds = play_media_commands("kitchen", url, 1.0, Some(&with_art));
+        let cmds = play_media_commands("kitchen", url, Some(&with_art));
         assert_eq!(cmds.len(), 1);
         let media = &cmds[0].args["media"];
         assert_eq!(media["media_type"], "track");
@@ -3900,7 +3898,7 @@ mod tests {
             duration_sec: 3600,
             artwork_url: None,
         };
-        let plain = play_media_commands("kitchen", url, 1.0, Some(&no_art));
+        let plain = play_media_commands("kitchen", url, Some(&no_art));
         assert_eq!(plain.len(), 1);
         assert_eq!(plain[0].args["media"], url);
         let seek = resume_seek_command("kitchen", 12.5, 3600.0).unwrap();
@@ -4269,7 +4267,7 @@ mod tests {
         leader_only.synced_to = Some("living".into());
         assert_eq!(queue_id_for(&[leader_only], "bed"), "living");
 
-        let play = play_media_commands("living-queue", "https://cdn.example/ep.mp3", 1.0, None);
+        let play = play_media_commands("living-queue", "https://cdn.example/ep.mp3", None);
         assert_eq!(play[0].args["queue_id"], "living-queue");
         let seek = translate_action(
             "bed",

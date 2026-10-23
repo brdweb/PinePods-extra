@@ -179,6 +179,19 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
     let video_container_ref = use_node_ref();
     let (state, _dispatch) = use_store::<AppState>();
     let (audio_state, _audio_dispatch) = use_store::<UIState>();
+    // Re-renders only when the set of loaded speakers changes, not on each
+    // position tick. Speed is hidden while one of those speakers is the target.
+    let ma_enabled = use_selector(|s: &crate::requests::music_assistant::MusicAssistantState| s.enabled);
+    let ma_loaded = use_selector(|np: &crate::requests::now_playing::NowPlayingState| {
+        np.ma_devices
+            .iter()
+            .filter(|d| {
+                crate::requests::music_assistant::is_music_assistant(&d.device_type)
+                    && d.episode_id != 0
+            })
+            .map(|d| d.device_id.clone())
+            .collect::<Vec<_>>()
+    });
     let show_modal = use_state(|| false);
 
     // Memoize the audio playing state to reduce re-renders
@@ -682,6 +695,15 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                     if !(target.tag_name().eq_ignore_ascii_case("input")
                         || target.tag_name().eq_ignore_ascii_case("textarea"))
                     {
+                        // `<` and `>` would change speed. They do nothing while
+                        // a Music Assistant speaker is the active target.
+                        // Space and the arrow keys stay play/pause and 15s skips.
+                        if !local_speed_changes_allowed()
+                            && matches!(event.key().as_str(), "<" | ">" | "," | "." )
+                        {
+                            event.prevent_default();
+                            return;
+                        }
                         match event.key().as_str() {
                             " " => {
                                 event.prevent_default();
@@ -1420,9 +1442,15 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
     };
     let speed_dispatch = _audio_dispatch.clone();
 
-    // Adjust the playback speed based on a slider value
+    // Adjust the playback speed based on a slider value. A Music Assistant
+    // speaker never receives this; the control is hidden, and a late event
+    // is dropped so it cannot change the local rate while that speaker is
+    // the active target.
     let update_playback_speed = {
         Callback::from(move |speed: f64| {
+            if !local_speed_changes_allowed() {
+                return;
+            }
             speed_dispatch.reduce_mut(|speed_state| {
                 speed_state.playback_speed = speed;
                 // Support both media_element and legacy audio_element
@@ -1750,6 +1778,22 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
             "{:02}:{:02}:{:02}",
             duration_hours, duration_minutes, duration_seconds
         );
+        let speed_candidates: Vec<crate::requests::music_assistant::PlaybackCandidate> = ma_loaded
+            .iter()
+            .map(|id| crate::requests::music_assistant::PlaybackCandidate {
+                device_id: id.clone(),
+                device_type: "music_assistant".to_string(),
+                episode_id: 1,
+                playing: false,
+                updated_at: 0,
+            })
+            .collect();
+        let show_speed = crate::requests::music_assistant::show_playback_speed(
+            *ma_enabled,
+            audio_state.audio_playing == Some(true),
+            &speed_candidates,
+            None,
+        );
         let on_shownotes_click = {
             let show_modal = show_modal.clone();
 
@@ -1900,12 +1944,15 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                             </div>
                         </div>
 
-                        // Footer: speed, volume, shownotes
+                        // Footer: speed, volume, shownotes. Speed stays off while
+                        // a Music Assistant speaker is the active target.
                         <div class="player-fs-footer">
-                            <PlaybackControl
-                                speed={audio_state.playback_speed}
-                                on_speed_change={update_playback_closure}
-                            />
+                            if show_speed {
+                                <PlaybackControl
+                                    speed={audio_state.playback_speed}
+                                    on_speed_change={update_playback_closure}
+                                />
+                            }
                             <VolumeControl
                                 volume={audio_state.audio_volume}
                                 on_volume_change={update_volume_closure}
@@ -2098,6 +2145,34 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
     } else {
         html! {}
     }
+}
+
+/// Local speed changes apply on this browser and on other remote devices.
+/// They do not apply while the UI is following a Music Assistant speaker.
+fn local_speed_changes_allowed() -> bool {
+    let ma = Dispatch::<crate::requests::music_assistant::MusicAssistantState>::global().get();
+    let np = Dispatch::<crate::requests::now_playing::NowPlayingState>::global().get();
+    let local_playing = Dispatch::<UIState>::global().get().audio_playing == Some(true);
+    let devices: Vec<crate::requests::music_assistant::PlaybackCandidate> = np
+        .ma_devices
+        .iter()
+        .filter(|d| {
+            crate::requests::music_assistant::is_music_assistant(&d.device_type) && d.episode_id != 0
+        })
+        .map(|d| crate::requests::music_assistant::PlaybackCandidate {
+            device_id: d.device_id.clone(),
+            device_type: d.device_type.clone(),
+            episode_id: d.episode_id,
+            playing: d.playing,
+            updated_at: d.updated_at,
+        })
+        .collect();
+    crate::requests::music_assistant::show_playback_speed(
+        ma.enabled,
+        local_playing,
+        &devices,
+        ma.focus_device_id.as_deref(),
+    )
 }
 
 pub fn on_play_pause(

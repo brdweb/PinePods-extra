@@ -103,9 +103,10 @@ pub struct MaCommandBody {
     pub user_id: i32,
     /// Music Assistant player id, or the relay device id `ma:{user_id}:{player_id}`.
     pub player_id: String,
-    /// `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, `set_speed`,
+    /// `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`,
     /// `play_episode`, `volume_set`, `volume_mute`, `group`, `group_many`,
-    /// `ungroup`, `set_members`, `group_volume`.
+    /// `ungroup`, `set_members`, `group_volume`. `set_speed` is accepted and
+    /// ignored: Music Assistant is not asked to change tempo.
     pub action: String,
     #[serde(default)]
     pub args: Value,
@@ -307,7 +308,7 @@ pub async fn list_music_assistant_players(
     request_body = MaCommandBody,
     security(("api_key" = [])),
     responses(
-        (status = 200, description = "Command accepted by Music Assistant. warnings lists follow-up steps (seek, speed) that did not apply.", body = MaCommandResponse),
+        (status = 200, description = "Command accepted by Music Assistant. warnings lists follow-up steps (seek) that did not apply. set_speed is ignored and is not a warning.", body = MaCommandResponse),
         (status = 400, description = "Unknown action, missing args, or Music Assistant rejected the command"),
         (status = 401, description = "Invalid or missing API key"),
         (status = 403, description = "Not authorized for this user"),

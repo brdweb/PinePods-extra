@@ -5887,7 +5887,7 @@
         },
         "responses": {
           "200": {
-            "description": "Command accepted by Music Assistant. warnings lists follow-up steps (seek, speed) that did not apply.",
+            "description": "Command accepted by Music Assistant. warnings lists follow-up steps (seek) that did not apply. set_speed is ignored and is not a warning.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15758,7 +15758,7 @@
           },
           "action": {
             "type": "string",
-            "description": "`play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, `set_speed`,\n`play_episode`, `volume_set`, `volume_mute`, `group`, `group_many`,\n`ungroup`, `set_members`, `group_volume`."
+            "description": "`play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`,\n`play_episode`, `volume_set`, `volume_mute`, `group`, `group_many`,\n`ungroup`, `set_members`, `group_volume`. `set_speed` is accepted and\nignored: Music Assistant is not asked to change tempo."
           },
           "args": {}
         }

@@ -6511,7 +6511,6 @@ input:checked + .notification-toggle-slider:before {
 .ma-volume-label { font-size: 11px; color: var(--text-secondary-color); min-width: 72px; }
 .ma-volume-level { font-size: 11px; font-variant-numeric: tabular-nums; width: 2ch; }
 .ma-seek { width: 100%; margin-top: 6px; }
-.ma-speed { max-width: 88px; }
 .ma-now {
   height: auto;
   min-height: 60px;

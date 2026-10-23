@@ -139,7 +139,7 @@ YouTube episodes add `&type=youtube`. The key is a podcast-scoped RSS key for th
 
 When the episode is not downloaded, Music Assistant is given a playable `http`/`https` file directly. The choice prefers a progressive audio file over a default HLS stream, and it never sends IPFS or a torrent. Optional `args.media_option_id` (`primary` or `alt-N`, the same ids as `GET /api/data/episode_media_options`) selects that version when it is a file a speaker can fetch. Feed username and password are not added to the direct URL. Download the episode in PinePods first when the host requires those credentials; Music Assistant then streams the saved file.
 
-If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as `player_queues/seek` after `play_media`. Playback speed comes from the user's speed for that podcast; a speed other than 1.0 is sent as `player_queues/set_playback_speed`. On MA 2.6–2.9 that command may be missing; the failure is a warning, not a failed play.
+If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as `player_queues/seek` after `play_media`. Playback speed is not sent. Episodes are `media_type: track`, and Music Assistant only tempo-shifts podcast episodes and audiobooks, so a local speed other than 1x stays on the browser. An incoming `set_speed` is ignored and is not shown as an error.
 
 ## Now-playing relay
 
@@ -156,7 +156,7 @@ Each **available** player and group is registered as a virtual device on the exi
 
 Unavailable players are listed by the HTTP players route and are not registered as devices. A transient MA disconnect keeps the registration so in-flight commands can queue; devices disappear when the user disables the bridge or changes the server.
 
-Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, `set_speed`, and `play_episode`. Send them the same way as for any other device:
+Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, and `play_episode`. Send them the same way as for any other device. `set_speed` is accepted and ignored; it is not in the advertised capabilities.
 
 ```json
 {
@@ -184,7 +184,7 @@ Other device types ignore these. Only send them when `capabilities` contains the
 | `set_members` | `player_ids_to_add` and/or `player_ids_to_remove`, `target_player` optional | `players/cmd/set_members` |
 | `group_volume` | `volume_level` or `volume` (0–100) | `players/cmd/group_volume` |
 
-Transport args match the existing relay: `seek` uses `position_sec` (or `position`), `skip_forward` defaults to 30 seconds, `skip_back` defaults to 15, `set_speed` requires `speed` between 0.5 and 4.
+Transport args match the existing relay: `seek` uses `position_sec` (or `position`), `skip_forward` defaults to 15 seconds, `skip_back` defaults to 15. `set_speed` does not change the speaker.
 
 ### Snapshot fields
 
@@ -245,7 +245,7 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 - No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
 - No `player_queues/get` poll. Progress comes from queue events plus the 20 second player refresh.
 - No power, source select, or MA library sync.
-- `set_playback_speed` on servers older than 2.10 is best-effort.
+- Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
 - Seek right after `play_media` can race; a failed seek is a warning.
 - Each API replica opens its own MA session. A command runs on the replica that holds the commanding client. Progress writes are absolute, so overlapping replicas do not stack time. There is no lock electing a single connection.
 - YouTube uses the same stream proxy (`type=youtube`) and is not covered by a separate test.
