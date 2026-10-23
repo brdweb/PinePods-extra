@@ -15,6 +15,13 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/android-test-apk.yml"
+  # Builds the APK on the pull request so a broken Gradle change is caught
+  # before it lands on main. Releases are still published only from main.
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-test-apk.yml"
 
 concurrency:
   group: android-fork-test-apk-${{ github.sha }}
