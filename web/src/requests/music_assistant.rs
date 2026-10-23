@@ -594,6 +594,19 @@ pub fn show_ma_now_playing(
     enabled && !local_playing && choose_playback(devices, focus_device_id).is_some()
 }
 
+/// Playback speed stays available for this browser and for other remote
+/// devices. It is hidden while the UI is following a Music Assistant speaker:
+/// those episodes are sent as tracks, and Music Assistant only tempo-shifts
+/// podcast episodes and audiobooks.
+pub fn show_playback_speed(
+    enabled: bool,
+    local_playing: bool,
+    devices: &[PlaybackCandidate],
+    focus_device_id: Option<&str>,
+) -> bool {
+    !show_ma_now_playing(enabled, local_playing, devices, focus_device_id)
+}
+
 pub fn choose_playback<'a>(
     devices: &'a [PlaybackCandidate],
     focus_device_id: Option<&str>,
@@ -1077,6 +1090,10 @@ mod tests {
         assert!(show_ma_now_playing(true, false, &devices, None));
         assert!(!show_ma_now_playing(true, true, &devices, None));
         assert!(!show_ma_now_playing(false, false, &devices, None));
+        assert!(!show_playback_speed(true, false, &devices, None));
+        assert!(show_playback_speed(true, true, &devices, None));
+        assert!(show_playback_speed(false, false, &devices, None));
+        assert!(show_playback_speed(true, false, &[], None));
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

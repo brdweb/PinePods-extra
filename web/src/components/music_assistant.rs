@@ -332,10 +332,12 @@ pub fn ma_now_playing_bar() -> Html {
         return html! {};
     };
 
+    // Speakers play at 1x. Music Assistant only tempo-shifts podcast episodes
+    // and audiobooks, and these episodes are sent as tracks.
     let shown = crate::requests::music_assistant::displayed_position(
         device.position_sec,
         device.playing,
-        device.speed,
+        1.0,
         device.updated_at,
         now_unix(),
     );
@@ -384,16 +386,6 @@ pub fn ma_now_playing_bar() -> Html {
             send_command(&id, "skip_forward", json!({ "seconds": 15 }));
         })
     };
-    let on_speed = {
-        let id = id.clone();
-        Callback::from(move |e: Event| {
-            if let Some(input) = e.target_dyn_into::<web_sys::HtmlSelectElement>() {
-                if let Ok(speed) = input.value().parse::<f64>() {
-                    send_command(&id, "set_speed", json!({ "speed": speed }));
-                }
-            }
-        })
-    };
     let open_picker = {
         let ma_dispatch = ma_dispatch.clone();
         Callback::from(move |_: MouseEvent| {
@@ -403,12 +395,6 @@ pub fn ma_now_playing_bar() -> Html {
             });
         })
     };
-    let speed = if device.speed > 0.0 {
-        device.speed
-    } else {
-        1.0
-    };
-    let speeds = [0.5_f64, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
     let members = device.group_members.clone().unwrap_or_default();
     let volume = device.volume_level.unwrap_or(0.0);
     let muted = device.volume_muted.unwrap_or(false);
@@ -451,13 +437,6 @@ pub fn ma_now_playing_bar() -> Html {
                         <button type="button" class="iconbtn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
                             <i class="ph ph-stop"></i>
                         </button>
-                    }
-                    if device.supports("set_speed") {
-                        <select class="select ma-speed" onchange={on_speed} aria-label={i18n.t("music_assistant.speed").to_string()}>
-                            { for speeds.iter().map(|rate| html! {
-                                <option value={rate.to_string()} selected={(speed - rate).abs() < 0.05}>{ format!("{rate:.2}x") }</option>
-                            }) }
-                        </select>
                     }
                     <button type="button" class="rd-play-here" onclick={open_picker}>
                         <i class="ph ph-speaker-high mr-1"></i>{ i18n.t("music_assistant.speakers") }
