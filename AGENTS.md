@@ -113,7 +113,16 @@ Use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build
 
 ## Review guidance
 
-Bugbot, Codex, and Claude should focus on Axum handlers staying in sync with `rust-api/openapi.json`, Postgres and MariaDB differences, Podcasting 2.0 on both web and mobile, and Music Assistant on the web only (no mobile UI, no playback speed while a Music Assistant speaker is the target, tokens never returned). The agent that opened the PR fixes review findings. The maintainer merges.
+Codex (`chatgpt-codex-connector`) is the only automatic PR reviewer. It should focus on Axum handlers staying in sync with `rust-api/openapi.json`, Postgres and MariaDB differences, Podcasting 2.0 on both web and mobile, and Music Assistant on the web only (no mobile UI, no playback speed while a Music Assistant speaker is the target, tokens never returned). Claude Code is optional: someone calls it in with `@claude`, where configured, for risky PRs only, and it never runs automatically. The agent that opened the PR fixes review findings. The maintainer merges.
+
+## Review and merge policy
+
+- Bots never post GitHub approvals.
+- A PR merges only after CI is green and every Codex review thread is fixed and resolved.
+- Every merge here needs the maintainer's explicit approval.
+- Bots and agents merge only work the maintainer has explicitly approved.
+- Major version bumps, auth, payments, database migrations, CI or release configuration, secrets, and large or ambiguous PRs wait for the maintainer.
+- Squash merge. Commits carry no Co-Authored-By or other AI co-author trailers.
 
 ## Learning
 
