@@ -14,6 +14,8 @@ on:
 jobs:
   build:
     name: Build iOS Release
+    # Skip fork-test-* prereleases (Android side-by-side test APKs).
+    if: ${{ !startsWith(github.ref_name, 'fork-test-') }}
     runs-on: macOS-latest
 
     steps:

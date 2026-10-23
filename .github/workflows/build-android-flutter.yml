@@ -6,6 +6,8 @@ on:
   push:
     tags:
       - "*"
+      # fork-test-* tags are debug-signed side-by-side APKs, not Play releases.
+      - "!fork-test-*"
   release:
     types: [published]
   workflow_dispatch:
@@ -17,6 +19,8 @@ on:
 jobs:
   build:
     name: Build Android Release
+    # Skip fork-test-* prereleases. workflow_dispatch on a branch still runs.
+    if: ${{ !startsWith(github.ref_name, 'fork-test-') }}
     runs-on: ubuntu-latest
 
     steps:

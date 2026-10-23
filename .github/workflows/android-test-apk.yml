@@ -1,0 +1,150 @@
+name: Android fork test APK
+
+# Release-mode APK signed with the debug key (no repo secrets). A Gradle
+# property set only in this workflow gives it a distinct applicationId so it
+# installs beside the official PinePods app. The APK is published as a
+# prerelease on main so it can be downloaded on a phone without Actions login.
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android-test-apk.yml"
+
+concurrency:
+  group: android-fork-test-apk-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Build fork test APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.5"
+          channel: "stable"
+
+      - name: Install dependencies
+        working-directory: mobile
+        run: flutter pub get
+
+      # Random debug key for this runner. Not a secret. A later build will not
+      # upgrade over this install; uninstall PinePods Fork first.
+      - name: Create debug keystore
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/.android"
+          keytool -genkeypair -v \
+            -keystore "${HOME}/.android/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Enable fork test package id
+        working-directory: mobile/android
+        run: printf '\npinepodsForkTest=true\n' >> gradle.properties
+
+      - name: Build arm64 release APK
+        working-directory: mobile
+        run: flutter build apk --release --target-platform android-arm64
+
+      - name: Check package id, label, and debug signature
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK not set}}"
+          AAPT="$(find "${SDK}/build-tools" -type f -name aapt | sort -V | tail -1)"
+          APKSIGNER="$(find "${SDK}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -n "${AAPT}"
+          test -n "${APKSIGNER}"
+          APK="mobile/build/app/outputs/flutter-apk/app-release.apk"
+          cp "${APK}" pinepods-fork-arm64.apk
+          "${AAPT}" dump badging pinepods-fork-arm64.apk | tee apk-badging.txt
+          "${APKSIGNER}" verify --print-certs pinepods-fork-arm64.apk | tee apk-certs.txt
+          python3 - <<'PY'
+          import pathlib, re, sys
+          badging = pathlib.Path("apk-badging.txt").read_text()
+          certs = pathlib.Path("apk-certs.txt").read_text()
+          package = re.search(r"^package: name='([^']+)'", badging, re.M)
+          label = re.search(r"^application-label:'([^']*)'", badging, re.M)
+          native = re.search(r"^native-code: (.+)$", badging, re.M)
+          got_package = package.group(1) if package else None
+          got_label = label.group(1) if label else None
+          got_native = native.group(1) if native else ""
+          print(f"package={got_package}")
+          print(f"label={got_label}")
+          print(f"native={got_native}")
+          ok = (
+              got_package == "com.gooseberrydevelopment.pinepods.fork"
+              and got_label == "PinePods Fork"
+              and "arm64-v8a" in got_native
+              and "CN=Android Debug" in certs
+          )
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinepods-fork-arm64
+          path: |
+            pinepods-fork-arm64.apk
+            apk-badging.txt
+            apk-certs.txt
+          if-no-files-found: error
+
+      - name: Publish prerelease
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          TAG="fork-test-${SHORT_SHA}"
+          SHA256="$(sha256sum pinepods-fork-arm64.apk | awk '{print $1}')"
+          NOTES_FILE="$(mktemp)"
+          cat > "${NOTES_FILE}" <<EOF
+          Debug-signed release APK for side-by-side testing on arm64 phones (including Pixel).
+
+          - Commit: ${GITHUB_SHA}
+          - applicationId: com.gooseberrydevelopment.pinepods.fork
+          - App name: PinePods Fork
+          - ABI: android-arm64
+          - sha256: ${SHA256}
+
+          The official PinePods app can stay installed. This build uses a new debug key each run, so uninstall an older PinePods Fork before installing a newer one. Username and password sign-in talks to the server directly. OIDC and subscribe links share the pinepods:// scheme with the official app, so Android may ask which app should open them.
+          EOF
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" pinepods-fork-arm64.apk --clobber
+          else
+            gh release create "${TAG}" pinepods-fork-arm64.apk \
+              --prerelease \
+              --latest=false \
+              --title "Fork test APK ${SHORT_SHA}" \
+              --notes-file "${NOTES_FILE}" \
+              --target "${GITHUB_SHA}"
+          fi
+          echo "Download: https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/pinepods-fork-arm64.apk" >> "${GITHUB_STEP_SUMMARY}"

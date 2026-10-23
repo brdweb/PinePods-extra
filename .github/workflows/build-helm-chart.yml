@@ -22,6 +22,8 @@ env:
 
 jobs:
   build-helm-chart:
+    # Skip fork-test-* prereleases (Android side-by-side test APKs).
+    if: ${{ !startsWith(github.ref_name, 'fork-test-') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -17,6 +17,8 @@ on:
 jobs:
   compile:
     name: Compile
+    # Skip fork-test-* prereleases (Android side-by-side test APKs).
+    if: ${{ !startsWith(github.ref_name, 'fork-test-') }}
     strategy:
       matrix:
         os:
