@@ -668,6 +668,18 @@ pub struct ProgressUpdate {
     /// `elapsed_time_last_updated`. A numeric tick leaves this empty so
     /// [`progress_from_event`] can stamp the time the bridge received it.
     pub position_updated_at: Option<i64>,
+    /// Every string inside `current_item` / `current_media`, when the payload
+    /// has one. Music Assistant echoes the media URL PinePods sent there.
+    pub item_strings: Option<Vec<String>>,
+}
+
+fn collect_strings(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|i| collect_strings(i, out)),
+        Value::Object(map) => map.values().for_each(|i| collect_strings(i, out)),
+        _ => {}
+    }
 }
 
 /// Read whatever a queue or player event tells us about PinePods playback.
@@ -688,6 +700,7 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
             media_cleared: false,
             reported_idle: false,
             position_updated_at: None,
+            item_strings: None,
         };
     }
     let queue_id = data
@@ -749,6 +762,11 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
         media_cleared,
         reported_idle,
         position_updated_at,
+        item_strings: item.filter(|i| !i.is_null()).map(|i| {
+            let mut out = Vec::new();
+            collect_strings(i, &mut out);
+            out
+        }),
     }
 }
 
@@ -1338,12 +1356,19 @@ pub struct RememberedEpisode {
     pub episode_id: i32,
     pub is_youtube: bool,
     pub duration_sec: f64,
+    /// URL sent to Music Assistant. Empty when the episode was learned from a stream URL.
+    pub media_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HistoryEpisode {
     /// Real stop. Drop the remembered episode.
     Clear,
+    /// The event is about an item other than the episode PinePods last
+    /// started: the previous item Music Assistant still reports right after
+    /// `play_media`, or media started from Music Assistant itself. Drop the
+    /// loaded episode without writing, and keep the remembered one.
+    OtherItem,
     /// Another user's stream URL. Do not write and do not replace memory.
     Foreign,
     Write(StreamRef),
@@ -1352,14 +1377,34 @@ pub enum HistoryEpisode {
 }
 
 /// Which episode a queue event should write history for.
+///
+/// `bare_tick_on_loaded` is a clock tick for a queue that already has an
+/// episode. A tick says nothing about which item plays, so it keeps that
+/// episode: after `play_episode` remembers the next one, a late tick from the
+/// previous item must not be written as the new episode's position.
+/// `item_strings` is what the event says about its item. When it does not
+/// mention the URL PinePods last sent, the event is about another item.
 pub fn history_stream(
     remembered: Option<&RememberedEpisode>,
     parsed: Option<&StreamRef>,
     media_cleared: bool,
     bridge_user: i32,
+    bare_tick_on_loaded: bool,
+    item_strings: Option<&[String]>,
 ) -> HistoryEpisode {
     if media_cleared {
         return HistoryEpisode::Clear;
+    }
+    if bare_tick_on_loaded {
+        return HistoryEpisode::None;
+    }
+    if let (Some(row), Some(strings)) = (
+        remembered.filter(|row| row.user_id == bridge_user && !row.media_url.is_empty()),
+        item_strings,
+    ) {
+        if !strings.iter().any(|s| s.contains(row.media_url.as_str())) {
+            return HistoryEpisode::OtherItem;
+        }
     }
     if let Some(parsed) = parsed {
         if parsed.user_id.is_some_and(|id| id != bridge_user) {
@@ -1394,16 +1439,15 @@ pub fn next_remembered(
     if parsed.user_id.is_some_and(|id| id != bridge_user) {
         return current;
     }
-    let duration = current
+    let same = current
         .as_ref()
-        .filter(|row| row.episode_id == parsed.episode_id && row.is_youtube == parsed.is_youtube)
-        .map(|row| row.duration_sec)
-        .unwrap_or(0.0);
+        .filter(|row| row.episode_id == parsed.episode_id && row.is_youtube == parsed.is_youtube);
     Some(RememberedEpisode {
         user_id: bridge_user,
         episode_id: parsed.episode_id,
         is_youtube: parsed.is_youtube,
-        duration_sec: duration,
+        duration_sec: same.map(|row| row.duration_sec).unwrap_or(0.0),
+        media_url: same.map(|row| row.media_url.clone()).unwrap_or_default(),
     })
 }
 
@@ -1434,6 +1478,19 @@ pub fn should_mark_complete(
         return true;
     }
     auto_complete_seconds > 0 && (duration - position) <= auto_complete_seconds as f64
+}
+
+/// Media-time now, from the last measured position.
+///
+/// Music Assistant 2.10.4 sends `queue_time_updated` only around a seek, so a
+/// playing queue can go minutes without an event. Its own frontend does the
+/// same projection from `elapsed_time` and `elapsed_time_last_updated`.
+pub fn projected_position(position: f64, updated_at: i64, playing: bool, speed: f64, now: i64) -> f64 {
+    if !playing || updated_at <= 0 {
+        return position.max(0.0);
+    }
+    let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
+    (position + (now - updated_at).max(0) as f64 * speed).max(0.0)
 }
 
 fn string_list(v: Option<&Value>) -> Vec<String> {
@@ -2781,6 +2838,7 @@ async fn prepare_play_episode(
                 episode_id,
                 is_youtube,
                 duration_sec: display.duration_sec.max(0) as f64,
+                media_url: media.clone(),
             },
         )
         .await;
@@ -2919,6 +2977,26 @@ struct QueueTrack {
     listen_marked_at: Option<Instant>,
 }
 
+impl QueueTrack {
+    fn clear_episode(&mut self) {
+        self.stream = None;
+        self.title.clear();
+        self.artwork.clear();
+        self.duration = 0.0;
+        self.position = 0.0;
+        self.updated_at = 0;
+        self.playing = false;
+        self.loaded_episode = None;
+        self.end_skip = 0;
+        self.played_counted = false;
+        self.listen_marked_at = None;
+    }
+}
+
+/// How often the bridge re-anchors a playing queue's projected position,
+/// writes it, and republishes the snapshot when Music Assistant is quiet.
+const CLOCK_ANCHOR_EVERY_SECS: i64 = 10;
+
 async fn maintain(
     state: AppState,
     user_id: i32,
@@ -3005,8 +3083,13 @@ async fn run_once(
     let mut driver =
         tokio::spawn(async move { drive_socket(socket, &token_for_drive, cmd_rx, note_tx).await });
     live.connected.store(true, Ordering::Relaxed);
+    let mut clock = tokio::time::interval(Duration::from_secs(1));
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = loop {
         tokio::select! {
+            _ = clock.tick() => {
+                tick_tracks(state, user_id, live, tracks, retained).await;
+            }
             res = &mut driver => {
                 live.connected.store(false, Ordering::Relaxed);
                 break match res {
@@ -3134,15 +3217,36 @@ async fn apply_progress(
     };
     let players = live.players.read().await.clone();
     let remembered = live.remembered(&queue_id).await;
+    let bare_tick = update.stream.is_none()
+        && update.duration_sec.is_none()
+        && update.title.is_none()
+        && update.playing.is_none()
+        && !update.media_cleared
+        && tracks.get(&queue_id).is_some_and(|t| t.stream.is_some());
     let history = history_stream(
         remembered.as_ref(),
         update.stream.as_ref(),
         update.media_cleared,
         user_id,
+        bare_tick,
+        update.item_strings.as_deref(),
     );
     match &history {
         HistoryEpisode::Clear => {
             live.forget(&queue_id).await;
+        }
+        HistoryEpisode::OtherItem => {
+            let had_episode = tracks
+                .get_mut(&queue_id)
+                .filter(|t| t.stream.is_some())
+                .map(|t| t.clear_episode())
+                .is_some();
+            if had_episode {
+                retained.retain(|_, queue| queue != &queue_id);
+                publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, true)
+                    .await;
+            }
+            return;
         }
         HistoryEpisode::Foreign => {}
         HistoryEpisode::Write(stream) => {
@@ -3190,19 +3294,13 @@ async fn apply_progress(
         != track.stream.as_ref().map(|s| (s.episode_id, s.is_youtube))
         && update.stream.is_some();
     if clear_stream {
-        track.stream = None;
-        track.title.clear();
-        track.artwork.clear();
-        track.duration = 0.0;
-        track.position = 0.0;
-        track.updated_at = 0;
-        track.playing = false;
-        track.loaded_episode = None;
-        track.end_skip = 0;
-        track.played_counted = false;
-        track.listen_marked_at = None;
+        track.clear_episode();
         retained.retain(|_, queue| queue != &queue_id);
     } else {
+        if episode_changed {
+            // The previous episode's length must not complete this one.
+            track.duration = 0.0;
+        }
         if let Some(stream) = update.stream.clone() {
             track.stream = Some(stream);
         } else if track.stream.is_none() {
@@ -3297,6 +3395,17 @@ async fn apply_progress(
             track.loaded_episode = Some((stream.episode_id, stream.is_youtube));
         }
     }
+    write_track_progress(state, user_id, track, &stream).await;
+    publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
+}
+
+/// History, played count, and listen time for one queue's loaded episode.
+async fn write_track_progress(
+    state: &AppState,
+    user_id: i32,
+    track: &mut QueueTrack,
+    stream: &StreamRef,
+) {
     let sample = ProgressSample {
         episode_id: stream.episode_id,
         position_sec: track.position,
@@ -3336,7 +3445,45 @@ async fn apply_progress(
     } else {
         track.listen_marked_at = None;
     }
-    publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
+}
+
+/// Once a second: Music Assistant 2.10.4 is silent while a queue plays, so
+/// the bridge projects the position itself. Every few seconds it re-anchors
+/// the position, writes history, and republishes the snapshot so clients do
+/// not freeze after their 30 second extrapolation window.
+async fn tick_tracks(
+    state: &AppState,
+    user_id: i32,
+    live: &Arc<SessionLive>,
+    tracks: &mut HashMap<String, QueueTrack>,
+    retained: &mut HashMap<String, String>,
+) {
+    let now = unix_secs();
+    let due: Vec<String> = tracks
+        .iter()
+        .filter(|(_, t)| {
+            t.playing
+                && t.stream.is_some()
+                && t.updated_at > 0
+                && now - t.updated_at >= CLOCK_ANCHOR_EVERY_SECS
+        })
+        .map(|(queue_id, _)| queue_id.clone())
+        .collect();
+    for queue_id in due {
+        let Some(track) = tracks.get_mut(&queue_id) else {
+            continue;
+        };
+        let Some(stream) = track.stream.clone() else {
+            continue;
+        };
+        if stream.user_id.is_some_and(|id| id != user_id) {
+            continue;
+        }
+        track.position = projected_position(track.position, track.updated_at, true, track.speed, now);
+        track.updated_at = now;
+        write_track_progress(state, user_id, track, &stream).await;
+        publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
+    }
 }
 
 async fn write_listen_progress(
@@ -4328,8 +4475,9 @@ mod tests {
             episode_id: 15,
             is_youtube: false,
             duration_sec: 1800.0,
+            media_url: String::new(),
         };
-        match history_stream(Some(&remembered), None, false, 3) {
+        match history_stream(Some(&remembered), None, false, 3, false, None) {
             HistoryEpisode::Write(stream) => {
                 assert_eq!(stream.episode_id, 15);
                 assert_eq!(stream.user_id, Some(3));
@@ -4338,7 +4486,7 @@ mod tests {
             other => panic!("expected remembered episode, got {other:?}"),
         }
         assert_eq!(
-            history_stream(Some(&remembered), None, true, 3),
+            history_stream(Some(&remembered), None, true, 3, false, None),
             HistoryEpisode::Clear
         );
         assert_eq!(
@@ -4352,7 +4500,7 @@ mod tests {
             is_youtube: false,
         };
         assert_eq!(
-            history_stream(Some(&remembered), Some(&foreign), false, 3),
+            history_stream(Some(&remembered), Some(&foreign), false, 3, false, None),
             HistoryEpisode::Foreign
         );
         assert_eq!(
@@ -4372,9 +4520,10 @@ mod tests {
                 episode_id: 44,
                 is_youtube: true,
                 duration_sec: 0.0,
+                media_url: String::new(),
             })
         );
-        match history_stream(None, Some(&other), false, 3) {
+        match history_stream(None, Some(&other), false, 3, false, None) {
             HistoryEpisode::Write(stream) => assert!(stream.is_youtube),
             other => panic!("expected youtube stream, got {other:?}"),
         }
@@ -4384,6 +4533,96 @@ mod tests {
                 .duration_sec,
             1800.0
         );
+    }
+
+    #[test]
+    fn a_late_tick_keeps_the_loaded_episode_after_the_next_is_remembered() {
+        let next = RememberedEpisode {
+            user_id: 3,
+            episode_id: 16,
+            is_youtube: false,
+            duration_sec: 0.0,
+            media_url: "https://cdn.example/16.mp3".into(),
+        };
+        // The tick from the previous item must not be credited to episode 16.
+        assert_eq!(
+            history_stream(Some(&next), None, false, 3, true, None),
+            HistoryEpisode::None
+        );
+        // With nothing loaded, the remembered episode still names a remote URL.
+        match history_stream(Some(&next), None, false, 3, false, None) {
+            HistoryEpisode::Write(stream) => assert_eq!(stream.episode_id, 16),
+            other => panic!("expected remembered episode, got {other:?}"),
+        }
+        // A real stop still clears.
+        assert_eq!(
+            history_stream(Some(&next), None, true, 3, true, None),
+            HistoryEpisode::Clear
+        );
+    }
+
+    #[test]
+    fn an_event_about_the_previous_item_is_not_credited_to_the_new_episode() {
+        // Music Assistant 2.10.4, Chromecast: right after play_media for
+        // episode 94 it re-sent the previous item (episode 33 at 308s) before
+        // the new one, and 308s was written to episode 94's history.
+        let next = RememberedEpisode {
+            user_id: 2,
+            episode_id: 94,
+            is_youtube: false,
+            duration_sec: 5186.0,
+            media_url: "https://op3.dev/e/mp3s.example/NA-1841.mp3".into(),
+        };
+        let old_item = progress_from_payload(&json!({
+            "queue_id": "rr",
+            "elapsed_time": 308.8,
+            "state": "idle",
+            "current_item": {
+                "queue_item_id": "1d4b",
+                "name": "No Agenda Show - 1902",
+                "duration": 6565,
+                "media_item": { "item_id": "https://op3.dev/e/mp3s.example/NA-1902.mp3" }
+            }
+        }));
+        assert_eq!(
+            history_stream(Some(&next), None, false, 2, false, old_item.item_strings.as_deref()),
+            HistoryEpisode::OtherItem
+        );
+        let new_item = progress_from_payload(&json!({
+            "queue_id": "rr",
+            "elapsed_time": 0.0,
+            "state": "playing",
+            "current_item": {
+                "queue_item_id": "7869",
+                "media_item": { "uri": "builtin://track/https://op3.dev/e/mp3s.example/NA-1841.mp3" }
+            }
+        }));
+        match history_stream(Some(&next), None, false, 2, false, new_item.item_strings.as_deref()) {
+            HistoryEpisode::Write(stream) => assert_eq!(stream.episode_id, 94),
+            other => panic!("expected episode 94, got {other:?}"),
+        }
+        // A numeric tick carries no item at all.
+        assert_eq!(progress_from_payload(&json!(5131.0)).item_strings, None);
+        // A remembered episode learned from a stream URL has no media URL to check.
+        let learned = RememberedEpisode { media_url: String::new(), ..next };
+        assert!(matches!(
+            history_stream(Some(&learned), None, false, 2, false, old_item.item_strings.as_deref()),
+            HistoryEpisode::Write(_)
+        ));
+    }
+
+    #[test]
+    fn a_quiet_queue_projects_past_thirty_seconds() {
+        // Music Assistant 2.10.4 on a Chromecast: last event at 5131s, then
+        // nothing for 56 seconds until the queue went idle at 5186s.
+        let measured_at = 1_792_804_314;
+        let now = measured_at + 56;
+        assert_eq!(projected_position(5131.0, measured_at, true, 1.0, now), 5187.0);
+        // Paused, unstamped, or a clock behind the measurement do not move it.
+        assert_eq!(projected_position(5131.0, measured_at, false, 1.0, now), 5131.0);
+        assert_eq!(projected_position(5131.0, 0, true, 1.0, now), 5131.0);
+        assert_eq!(projected_position(5131.0, now, true, 1.0, measured_at), 5131.0);
+        assert_eq!(projected_position(100.0, measured_at, true, f64::NAN, measured_at + 10), 110.0);
     }
 
     #[test]

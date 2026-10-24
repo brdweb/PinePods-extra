@@ -207,7 +207,11 @@ A Sonos speaker often reports `playback_state: idle` while a Music Assistant que
 
 The session listens for `player_updated`, `player_added`, `player_removed`, `queue_updated`, and `queue_time_updated`, and refreshes `players/all` every 20 seconds (inside the 45 second snapshot TTL).
 
-Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
+Music Assistant 2.10.4 does not send `queue_time_updated` every second. It sends it around a seek, or when a player corrects its clock. A Chromecast in flow mode can play for minutes without a queue event. The bridge therefore projects the position itself, the same way the Music Assistant frontend does: the last `elapsed_time`, plus the time since `elapsed_time_last_updated`, times the playback speed. A one-second clock re-anchors each playing queue every 10 seconds, writes history from that position, and republishes the snapshot, so clients (which stop extrapolating after 30 seconds) keep moving.
+
+Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. Played count and listen time follow the same samples. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
+
+Right after `play_media`, Music Assistant can still report the previous item for a moment. The bridge remembers the URL it sent. A queue event whose `current_item` does not mention that URL is about another item: it drops the loaded episode without writing history, and does not credit that item's position to the new episode. A bare `queue_time_updated` number says nothing about the item, so it keeps the episode already loaded. An episode change also drops the previous episode's duration, so the old length cannot complete the new episode.
 
 ## Versions
 
@@ -243,7 +247,7 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 ## Deferred
 
 - No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
-- No `player_queues/get` poll. Progress comes from queue events plus the 20 second player refresh.
+- No `player_queues/get` poll. Progress comes from queue events, the bridge's projection between them, and the 20 second player refresh.
 - No power, source select, or MA library sync.
 - Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
 - Seek right after `play_media` can race; a failed seek is a warning.
