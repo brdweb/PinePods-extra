@@ -630,6 +630,21 @@ pub fn choose_playback<'a>(
     matched.pop()
 }
 
+/// A `next` the bridge accepted with nothing up next. The speaker keeps playing.
+pub fn is_nothing_next(resp: &MaCommandResponse) -> bool {
+    resp.detail == "nothing_next"
+}
+
+/// Playlist a speaker should continue with: only when the episode sent is the
+/// one loaded locally, because that is the episode the playlist context belongs to.
+pub fn speaker_playlist(
+    local: (Option<i32>, Option<bool>),
+    sent: (i32, bool),
+    playlist_id: Option<i32>,
+) -> Option<i32> {
+    (local == (Some(sent.0), Some(sent.1))).then_some(playlist_id).flatten()
+}
+
 /// Advance a relay position between snapshots. Stops extrapolating once the
 /// snapshot is older than 30 seconds so a dropped socket does not run away.
 pub fn displayed_position(
@@ -901,6 +916,26 @@ pub fn refresh_music_assistant() {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn nothing_next_is_recognized_only_from_its_detail() {
+        let resp = |detail: &str| MaCommandResponse {
+            ok: true,
+            detail: detail.into(),
+            warnings: Vec::new(),
+        };
+        assert!(is_nothing_next(&resp("nothing_next")));
+        assert!(!is_nothing_next(&resp("ok")));
+    }
+
+    #[wasm_bindgen_test]
+    fn playlist_follows_only_the_locally_loaded_episode() {
+        assert_eq!(speaker_playlist((Some(4), Some(false)), (4, false), Some(9)), Some(9));
+        assert_eq!(speaker_playlist((Some(4), Some(false)), (5, false), Some(9)), None);
+        assert_eq!(speaker_playlist((Some(4), Some(true)), (4, false), Some(9)), None);
+        assert_eq!(speaker_playlist((None, None), (4, false), Some(9)), None);
+        assert_eq!(speaker_playlist((Some(4), Some(false)), (4, false), None), None);
+    }
 
     fn player(id: &str, kind: &str, members: &[&str]) -> MaPlayer {
         MaPlayer {

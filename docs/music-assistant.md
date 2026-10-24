@@ -228,6 +228,8 @@ PinePods, not Music Assistant, picks what plays next, in the same order as local
 
 `next` then starts that episode on the same leader queue with the `play_episode` rules: the saved position, raised to `start_skip`. It does not mark the current episode complete, the same as the local skip. The queue step takes the row after the current one, so a skipped episode that stays queued does not come back.
 
+The web now-playing bar shows a Next button when the device advertises `next`; the 15 second skips use rewind and fast-forward icons. Sending an episode to a speaker adds `playlist_id` only when that episode is the one loaded locally and that playback came from a playlist. When nothing is up next, the bar shows an info message instead of an error.
+
 The next item is started by the bridge, not added to Music Assistant's own queue. `play_media` has no start offset, so an enqueued item could not resume or skip its intro without a second seek, and an enqueued remote URL would not map back to its PinePods episode.
 
 ## Versions
