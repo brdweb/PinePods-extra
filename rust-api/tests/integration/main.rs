@@ -12,6 +12,7 @@ mod feeds;
 mod foreign_resources;
 mod gpodder;
 mod library;
+mod music_assistant;
 mod opml;
 mod people;
 mod playback;

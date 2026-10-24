@@ -39,6 +39,7 @@ pub const MA_CAPABILITIES: &[&str] = &[
     "skip_forward",
     "skip_back",
     "play_episode",
+    "next",
     "volume_set",
     "volume_mute",
     "group",
@@ -1356,6 +1357,8 @@ pub struct RememberedEpisode {
     pub episode_id: i32,
     pub is_youtube: bool,
     pub duration_sec: f64,
+    /// Playlist the episode was started from, so the end of it plays the next playlist item.
+    pub playlist_id: Option<i32>,
     /// URL sent to Music Assistant. Empty when the episode was learned from a stream URL.
     pub media_url: String,
 }
@@ -1447,6 +1450,7 @@ pub fn next_remembered(
         episode_id: parsed.episode_id,
         is_youtube: parsed.is_youtube,
         duration_sec: same.map(|row| row.duration_sec).unwrap_or(0.0),
+        playlist_id: same.and_then(|row| row.playlist_id),
         media_url: same.map(|row| row.media_url.clone()).unwrap_or_default(),
     })
 }
@@ -1491,6 +1495,103 @@ pub fn projected_position(position: f64, updated_at: i64, playing: bool, speed: 
     }
     let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
     (position + (now - updated_at).max(0) as f64 * speed).max(0.0)
+}
+
+/// One PinePods queue row, as far as picking the next episode cares.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueEntry {
+    pub episode_id: i32,
+    pub is_youtube: bool,
+    pub position: Option<i32>,
+    pub completed: bool,
+}
+
+/// Next queued episode after `current`.
+///
+/// When an episode finishes it is the first other unfinished row, as on local
+/// web. A manual skip takes the row after the current one when it is queued,
+/// because a skipped episode stays in the queue and would otherwise come back.
+pub fn pick_queued(
+    entries: &[QueueEntry],
+    current: (i32, bool),
+    skip: bool,
+) -> Option<(i32, bool)> {
+    let order = |e: &QueueEntry| e.position.unwrap_or(i32::MAX);
+    let after = entries
+        .iter()
+        .find(|e| skip && (e.episode_id, e.is_youtube) == current)
+        .map(order);
+    entries
+        .iter()
+        .filter(|e| (e.episode_id, e.is_youtube) != current && !e.completed)
+        .filter(|e| after.is_none_or(|p| order(e) > p))
+        .min_by_key(|e| order(e))
+        .map(|e| (e.episode_id, e.is_youtube))
+}
+
+/// Episode PinePods plays after the current one on a speaker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NextEpisode {
+    pub episode_id: i32,
+    pub is_youtube: bool,
+    pub playlist_id: Option<i32>,
+}
+
+/// Playlist next, else the podcast's auto-play-next, else the queue, in that
+/// order, the same as local web. Read this before `mark_episode_completed`
+/// takes the finished episode out of the queue.
+pub async fn next_pinepods_episode(
+    db: &DatabasePool,
+    user_id: i32,
+    current: (i32, bool),
+    playlist_id: Option<i32>,
+    skip: bool,
+) -> Option<NextEpisode> {
+    let (episode_id, is_youtube) = current;
+    if let Some(pid) = playlist_id {
+        if let Ok(Some(next)) = db.get_next_playlist_episode(episode_id, pid, user_id).await {
+            return Some(NextEpisode {
+                episode_id: next.episodeid,
+                is_youtube: next.is_youtube,
+                playlist_id: Some(pid),
+            });
+        }
+    }
+    // Auto-play-next looks the podcast up in Episodes, so a video id would hit
+    // an unrelated episode with the same number.
+    if !is_youtube {
+        if let Ok(Some(podcast_id)) = db
+            .get_podcast_id_from_episode(episode_id, user_id, false)
+            .await
+        {
+            if let Ok(Some(true)) = db.get_auto_play_next_status(podcast_id, user_id).await {
+                if let Ok(Some(next)) = db.get_next_podcast_episode(episode_id, user_id).await {
+                    return Some(NextEpisode {
+                        episode_id: next.episodeid,
+                        is_youtube: next.is_youtube,
+                        playlist_id: None,
+                    });
+                }
+            }
+        }
+    }
+    let queue: Vec<QueueEntry> = db
+        .get_queued_episodes(user_id)
+        .await
+        .ok()?
+        .into_iter()
+        .map(|e| QueueEntry {
+            episode_id: e.episodeid,
+            is_youtube: e.is_youtube,
+            position: e.queueposition,
+            completed: e.completed,
+        })
+        .collect();
+    pick_queued(&queue, current, skip).map(|(episode_id, is_youtube)| NextEpisode {
+        episode_id,
+        is_youtube,
+        playlist_id: None,
+    })
 }
 
 fn string_list(v: Option<&Value>) -> Vec<String> {
@@ -2647,21 +2748,74 @@ pub async fn dispatch(
     let args = canonicalize_args(user_id, args);
     let players = state.music_assistant.players(user_id).await;
     let queue_id = queue_id_for(&players, &player_id);
-    let commands = if action == "play_episode" {
-        prepare_play_episode(state, user_id, &queue_id, &args).await?
-    } else {
-        translate_action(&player_id, &queue_id, action, &args).map_err(AppError::bad_request)?
-    };
+    match action {
+        "play_episode" => play_on_queue(state, user_id, &queue_id, &args).await,
+        "next" => play_next(state, user_id, &queue_id).await,
+        _ => {
+            let commands = translate_action(&player_id, &queue_id, action, &args)
+                .map_err(AppError::bad_request)?;
+            state.music_assistant.send_commands(user_id, commands).await
+        }
+    }
+}
+
+async fn play_on_queue(
+    state: &AppState,
+    user_id: i32,
+    queue_id: &str,
+    args: &Value,
+) -> AppResult<ActionOutcome> {
+    let commands = prepare_play_episode(state, user_id, queue_id, args).await?;
     let mut outcome = state
         .music_assistant
         .send_commands(user_id, commands)
         .await?;
-    if action == "play_episode" {
-        if let Some(warning) = land_resume_seek(state, user_id, &queue_id).await {
-            outcome.warnings.push(warning);
-        }
+    if let Some(warning) = land_resume_seek(state, user_id, queue_id).await {
+        outcome.warnings.push(warning);
     }
     Ok(outcome)
+}
+
+fn next_args(next: &NextEpisode) -> Value {
+    let mut args = json!({ "episode_id": next.episode_id, "is_youtube": next.is_youtube });
+    if let Some(pid) = next.playlist_id {
+        args["playlist_id"] = json!(pid);
+    }
+    args
+}
+
+/// `detail` of a `next` that found nothing to play. The speaker keeps playing,
+/// so it is not an error.
+pub const NOTHING_NEXT: &str = "nothing_next";
+
+/// Manual skip to the next PinePods item. The current episode is not marked
+/// complete, the same as the local web skip.
+async fn play_next(state: &AppState, user_id: i32, queue_id: &str) -> AppResult<ActionOutcome> {
+    let live = state
+        .music_assistant
+        .session_live(user_id)
+        .await
+        .ok_or_else(|| AppError::service_unavailable("Music Assistant is not connected"))?;
+    let current = live
+        .remembered(queue_id)
+        .await
+        .filter(|row| row.user_id == user_id)
+        .ok_or_else(|| AppError::bad_request("No PinePods episode is playing on this speaker"))?;
+    let Some(next) = next_pinepods_episode(
+        &state.db_pool,
+        user_id,
+        (current.episode_id, current.is_youtube),
+        current.playlist_id,
+        true,
+    )
+    .await
+    else {
+        return Ok(ActionOutcome {
+            detail: NOTHING_NEXT.into(),
+            warnings: Vec::new(),
+        });
+    };
+    play_on_queue(state, user_id, queue_id, &next_args(&next)).await
 }
 
 /// One seek to the leader queue after it reports a duration.
@@ -2825,6 +2979,11 @@ async fn prepare_play_episode(
             .unwrap_or(0)
     };
     let position = resume_position(explicit, saved, start_skip);
+    let playlist_id = args
+        .get("playlist_id")
+        .and_then(json_i64)
+        .filter(|id| *id > 0 && *id <= i32::MAX as i64)
+        .map(|id| id as i32);
     // Do not read or forward the local playback speed. A 1.5x web session
     // stays on this browser; the speaker starts at Music Assistant's own rate.
     let display = display_from_meta(&meta, base);
@@ -2838,6 +2997,7 @@ async fn prepare_play_episode(
                 episode_id,
                 is_youtube,
                 duration_sec: display.duration_sec.max(0) as f64,
+                playlist_id,
                 media_url: media.clone(),
             },
         )
@@ -4475,6 +4635,7 @@ mod tests {
             episode_id: 15,
             is_youtube: false,
             duration_sec: 1800.0,
+            playlist_id: Some(7),
             media_url: String::new(),
         };
         match history_stream(Some(&remembered), None, false, 3, false, None) {
@@ -4520,6 +4681,7 @@ mod tests {
                 episode_id: 44,
                 is_youtube: true,
                 duration_sec: 0.0,
+                playlist_id: None,
                 media_url: String::new(),
             })
         );
@@ -4542,6 +4704,7 @@ mod tests {
             episode_id: 16,
             is_youtube: false,
             duration_sec: 0.0,
+            playlist_id: None,
             media_url: "https://cdn.example/16.mp3".into(),
         };
         // The tick from the previous item must not be credited to episode 16.
@@ -4562,6 +4725,31 @@ mod tests {
     }
 
     #[test]
+    fn same_episode_keeps_its_playlist_and_another_drops_it() {
+        let remembered = RememberedEpisode {
+            user_id: 3,
+            episode_id: 15,
+            is_youtube: false,
+            duration_sec: 1800.0,
+            playlist_id: Some(7),
+            media_url: String::new(),
+        };
+        let same = StreamRef {
+            episode_id: 15,
+            user_id: Some(3),
+            is_youtube: false,
+        };
+        let kept = next_remembered(Some(remembered.clone()), Some(&same), false, 3).unwrap();
+        assert_eq!(kept.playlist_id, Some(7));
+        let other = StreamRef {
+            episode_id: 16,
+            ..same
+        };
+        let replaced = next_remembered(Some(remembered), Some(&other), false, 3).unwrap();
+        assert_eq!(replaced.playlist_id, None);
+    }
+
+    #[test]
     fn an_event_about_the_previous_item_is_not_credited_to_the_new_episode() {
         // Music Assistant 2.10.4, Chromecast: right after play_media for
         // episode 94 it re-sent the previous item (episode 33 at 308s) before
@@ -4571,6 +4759,7 @@ mod tests {
             episode_id: 94,
             is_youtube: false,
             duration_sec: 5186.0,
+            playlist_id: None,
             media_url: "https://op3.dev/e/mp3s.example/NA-1841.mp3".into(),
         };
         let old_item = progress_from_payload(&json!({
@@ -4623,6 +4812,65 @@ mod tests {
         assert_eq!(projected_position(5131.0, 0, true, 1.0, now), 5131.0);
         assert_eq!(projected_position(5131.0, now, true, 1.0, measured_at), 5131.0);
         assert_eq!(projected_position(100.0, measured_at, true, f64::NAN, measured_at + 10), 110.0);
+    }
+
+    fn entry(episode_id: i32, position: i32, completed: bool) -> QueueEntry {
+        QueueEntry {
+            episode_id,
+            is_youtube: false,
+            position: Some(position),
+            completed,
+        }
+    }
+
+    #[test]
+    fn queue_next_skips_the_current_and_finished_rows() {
+        let queue = vec![
+            entry(5, 3, false),
+            entry(9, 1, false),
+            entry(4, 2, true),
+            entry(6, 4, false),
+        ];
+        // Finished: first other unfinished row, wherever the current one sat.
+        assert_eq!(pick_queued(&queue, (9, false), false), Some((5, false)));
+        assert_eq!(pick_queued(&queue, (5, false), false), Some((9, false)));
+        assert_eq!(pick_queued(&queue, (77, false), false), Some((9, false)));
+        // Skip: the row after the current one, so a skipped row does not come back.
+        assert_eq!(pick_queued(&queue, (5, false), true), Some((6, false)));
+        assert_eq!(pick_queued(&queue, (6, false), true), None);
+        assert_eq!(pick_queued(&queue, (77, false), true), Some((9, false)));
+        // A video with the same number is a different row.
+        let mixed = vec![
+            QueueEntry {
+                is_youtube: true,
+                ..entry(9, 1, false)
+            },
+            entry(9, 2, false),
+        ];
+        assert_eq!(pick_queued(&mixed, (9, false), false), Some((9, true)));
+        assert_eq!(pick_queued(&[], (9, false), false), None);
+    }
+
+    #[test]
+    fn next_is_advertised_and_carries_the_playlist() {
+        assert!(MA_CAPABILITIES.contains(&"next"));
+        let args = next_args(&NextEpisode {
+            episode_id: 12,
+            is_youtube: false,
+            playlist_id: Some(3),
+        });
+        assert_eq!(
+            args,
+            json!({ "episode_id": 12, "is_youtube": false, "playlist_id": 3 })
+        );
+        let plain = next_args(&NextEpisode {
+            episode_id: 12,
+            is_youtube: true,
+            playlist_id: None,
+        });
+        assert!(plain.get("playlist_id").is_none());
+        // The web app matches this to show an info toast instead of an error.
+        assert_eq!(NOTHING_NEXT, "nothing_next");
     }
 
     #[test]
