@@ -120,10 +120,12 @@ Success:
 
 | Status | When |
 | --- | --- |
-| 400 | Unknown action, missing arguments, MA rejected the command, or the episode does not exist |
+| 400 | Unknown action, missing arguments, MA rejected the command, the episode does not exist, or `next` has no PinePods episode loaded |
 | 503 | This process has no session for the user |
 
 The first MA command must succeed. Follow-up seek and speed changes after `play_episode` are best-effort and show up in `warnings`.
+
+A `next` with nothing up next succeeds with `"detail": "nothing_next"` and sends no command; the speaker keeps playing. A `next` on a speaker with no PinePods episode loaded is a 400.
 
 ## Playback
 
@@ -138,6 +140,8 @@ When the episode is already downloaded on PinePods, or it is a YouTube video, th
 YouTube episodes add `&type=youtube`. The key is a podcast-scoped RSS key for that episode's podcast (created if one does not already exist). It is not the user's full API key.
 
 When the episode is not downloaded, Music Assistant is given a playable `http`/`https` file directly. The choice prefers a progressive audio file over a default HLS stream, and it never sends IPFS or a torrent. Optional `args.media_option_id` (`primary` or `alt-N`, the same ids as `GET /api/data/episode_media_options`) selects that version when it is a file a speaker can fetch. Feed username and password are not added to the direct URL. Download the episode in PinePods first when the host requires those credentials; Music Assistant then streams the saved file.
+
+Optional `args.playlist_id` is the playlist the episode was started from. The bridge keeps it with the episode, so `next` plays the next item of that playlist.
 
 If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as `player_queues/seek` after `play_media`. Playback speed is not sent. Episodes are `media_type: track`, and Music Assistant only tempo-shifts podcast episodes and audiobooks, so a local speed other than 1x stays on the browser. An incoming `set_speed` is ignored and is not shown as an error.
 
@@ -156,7 +160,7 @@ Each **available** player and group is registered as a virtual device on the exi
 
 Unavailable players are listed by the HTTP players route and are not registered as devices. A transient MA disconnect keeps the registration so in-flight commands can queue; devices disappear when the user disables the bridge or changes the server.
 
-Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, and `play_episode`. Send them the same way as for any other device. `set_speed` is accepted and ignored; it is not in the advertised capabilities.
+Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, and `play_episode`. Music Assistant devices also advertise `next`. Send them the same way as for any other device. `set_speed` is accepted and ignored; it is not in the advertised capabilities.
 
 ```json
 {
@@ -183,6 +187,7 @@ Other device types ignore these. Only send them when `capabilities` contains the
 | `ungroup` | none | `players/cmd/ungroup` |
 | `set_members` | `player_ids_to_add` and/or `player_ids_to_remove`, `target_player` optional | `players/cmd/set_members` |
 | `group_volume` | `volume_level` or `volume` (0–100) | `players/cmd/group_volume` |
+| `next` | none | `play_episode` of the next PinePods item (see Next episode) |
 
 Transport args match the existing relay: `seek` uses `position_sec` (or `position`), `skip_forward` defaults to 15 seconds, `skip_back` defaults to 15. `set_speed` does not change the speaker.
 
@@ -212,6 +217,18 @@ Music Assistant 2.10.4 does not send `queue_time_updated` every second. It sends
 Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. Played count and listen time follow the same samples. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
 
 Right after `play_media`, Music Assistant can still report the previous item for a moment. The bridge remembers the URL it sent. A queue event whose `current_item` does not mention that URL is about another item: it drops the loaded episode without writing history, and does not credit that item's position to the new episode. A bare `queue_time_updated` number says nothing about the item, so it keeps the episode already loaded. An episode change also drops the previous episode's duration, so the old length cannot complete the new episode.
+
+## Next episode
+
+PinePods, not Music Assistant, picks what plays next, in the same order as local web:
+
+1. The next playlist episode, when the episode was started with `playlist_id`. The playlist context carries on to that episode.
+2. The next episode of the same podcast, when that podcast has auto-play-next. YouTube videos skip this step.
+3. The next unfinished episode in the PinePods queue, after the current one.
+
+`next` then starts that episode on the same leader queue with the `play_episode` rules: the saved position, raised to `start_skip`. It does not mark the current episode complete, the same as the local skip. The queue step takes the row after the current one, so a skipped episode that stays queued does not come back.
+
+The next item is started by the bridge, not added to Music Assistant's own queue. `play_media` has no start offset, so an enqueued item could not resume or skip its intro without a second seek, and an enqueued remote URL would not map back to its PinePods episode.
 
 ## Versions
 
