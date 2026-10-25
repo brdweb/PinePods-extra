@@ -1484,6 +1484,9 @@ pub fn should_mark_complete(
     auto_complete_seconds > 0 && (duration - position) <= auto_complete_seconds as f64
 }
 
+/// Seconds before the end that still count as finishing when the queue stops.
+const NATURAL_END_GRACE_SEC: f64 = 5.0;
+
 /// Media-time now, from the last measured position.
 ///
 /// Music Assistant 2.10.4 sends `queue_time_updated` only around a seek, so a
@@ -1495,6 +1498,48 @@ pub fn projected_position(position: f64, updated_at: i64, playing: bool, speed: 
     }
     let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
     (position + (now - updated_at).max(0) as f64 * speed).max(0.0)
+}
+
+/// Whether the loaded episode is finished and PinePods should play the next one.
+///
+/// While playing, the podcast outro (`end_skip`) finishes it, as on local web.
+/// Otherwise playing → stopped near the end does. `position` is the reported
+/// position, or the projected one when Music Assistant reports 0 at the end.
+pub fn advance_due(
+    position: f64,
+    was_playing: bool,
+    playing: bool,
+    duration: f64,
+    end_skip: i32,
+) -> bool {
+    if !duration.is_finite() || duration <= 0.0 || !position.is_finite() {
+        return false;
+    }
+    let end_skip = end_skip.max(0) as f64;
+    if playing {
+        return end_skip > 0.0 && position >= duration - end_skip;
+    }
+    was_playing && position >= duration - end_skip.max(NATURAL_END_GRACE_SEC)
+}
+
+/// Whether a queue event ends the loaded episode.
+///
+/// `reported` is the event's position and `projected` the bridge's position
+/// just before it. At a natural end Music Assistant 2.10.4 on a Chromecast
+/// sends `queue_time_updated` 0 while still playing, then idle with 0, so a
+/// jump to the start from the finish line counts as stopping there.
+pub fn episode_finished(
+    reported: Option<f64>,
+    projected: f64,
+    was_playing: bool,
+    playing: bool,
+    duration: f64,
+    end_skip: i32,
+) -> bool {
+    let restarted = was_playing && reported.is_some_and(|p| p < 1.0);
+    let position = reported.filter(|p| *p >= 1.0).unwrap_or(projected);
+    let playing = playing && !restarted;
+    advance_due(position, was_playing, playing, duration, end_skip)
 }
 
 /// One PinePods queue row, as far as picking the next episode cares.
@@ -2818,6 +2863,53 @@ async fn play_next(state: &AppState, user_id: i32, queue_id: &str) -> AppResult<
     play_on_queue(state, user_id, queue_id, &next_args(&next)).await
 }
 
+/// The episode on `queue_id` finished. Pick the next item first, because
+/// completion removes the finished one from the PinePods queue, then mark it
+/// complete and play the next one. With nothing next, an outro pauses like
+/// local web does. Runs off the session loop, which must keep forwarding the
+/// commands this sends.
+async fn advance_queue(
+    state: AppState,
+    user_id: i32,
+    queue_id: String,
+    finished: StreamRef,
+    playlist_id: Option<i32>,
+    still_playing: bool,
+) {
+    let current = (finished.episode_id, finished.is_youtube);
+    let next = next_pinepods_episode(&state.db_pool, user_id, current, playlist_id, false).await;
+    if let Err(e) = state
+        .db_pool
+        .mark_episode_completed(finished.episode_id, user_id, finished.is_youtube)
+        .await
+    {
+        tracing::warn!(
+            "music assistant completion for episode {}: {e}",
+            finished.episode_id
+        );
+    }
+    let result = match next {
+        Some(next) => play_on_queue(&state, user_id, &queue_id, &next_args(&next))
+            .await
+            .map(|_| ()),
+        None if still_playing => {
+            let pause = MaCommand {
+                command: "player_queues/pause".into(),
+                args: json!({ "queue_id": queue_id }),
+            };
+            state
+                .music_assistant
+                .send_commands(user_id, vec![pause])
+                .await
+                .map(|_| ())
+        }
+        None => Ok(()),
+    };
+    if let Err(e) = result {
+        tracing::warn!("music assistant advance on {queue_id}: {e}");
+    }
+}
+
 /// One seek to the leader queue after it reports a duration.
 ///
 /// Retries a couple of times when the queue is not active yet or still has no
@@ -3135,6 +3227,8 @@ struct QueueTrack {
     end_skip: i32,
     played_counted: bool,
     listen_marked_at: Option<Instant>,
+    /// The episode finished and the advance ran. No more history writes for it.
+    advanced: bool,
 }
 
 impl QueueTrack {
@@ -3150,6 +3244,7 @@ impl QueueTrack {
         self.end_skip = 0;
         self.played_counted = false;
         self.listen_marked_at = None;
+        self.advanced = false;
     }
 }
 
@@ -3377,6 +3472,9 @@ async fn apply_progress(
     };
     let players = live.players.read().await.clone();
     let remembered = live.remembered(&queue_id).await;
+    let remembered_playlist = remembered
+        .as_ref()
+        .map(|row| ((row.episode_id, row.is_youtube), row.playlist_id));
     let bare_tick = update.stream.is_none()
         && update.duration_sec.is_none()
         && update.title.is_none()
@@ -3442,6 +3540,7 @@ async fn apply_progress(
             end_skip: 0,
             played_counted: false,
             listen_marked_at: None,
+            advanced: false,
         });
     let (playing, clear_stream) = next_playback(
         track.playing,
@@ -3453,13 +3552,53 @@ async fn apply_progress(
     let episode_changed = update.stream.as_ref().map(|s| (s.episode_id, s.is_youtube))
         != track.stream.as_ref().map(|s| (s.episode_id, s.is_youtube))
         && update.stream.is_some();
+    let finished = track
+        .stream
+        .clone()
+        .filter(|s| !track.advanced && !episode_changed && s.user_id.is_none_or(|id| id == user_id))
+        .filter(|_| {
+            let projected = projected_position(
+                track.position,
+                track.updated_at,
+                track.playing,
+                track.speed,
+                unix_secs(),
+            );
+            let duration = update
+                .duration_sec
+                .filter(|d| *d > 0.0)
+                .unwrap_or(track.duration);
+            episode_finished(
+                update.position_sec,
+                projected,
+                track.playing,
+                playing,
+                duration,
+                track.end_skip,
+            )
+        });
+    if let Some(stream) = finished {
+        track.advanced = true;
+        let playlist_id = remembered_playlist
+            .filter(|(id, _)| *id == (stream.episode_id, stream.is_youtube))
+            .and_then(|(_, pid)| pid);
+        tokio::spawn(advance_queue(
+            state.clone(),
+            user_id,
+            queue_id.clone(),
+            stream,
+            playlist_id,
+            playing,
+        ));
+    }
     if clear_stream {
         track.clear_episode();
         retained.retain(|_, queue| queue != &queue_id);
     } else {
         if episode_changed {
-            // The previous episode's length must not complete this one.
+            // The previous episode's length must not finish this one.
             track.duration = 0.0;
+            track.advanced = false;
         }
         if let Some(stream) = update.stream.clone() {
             track.stream = Some(stream);
@@ -3575,7 +3714,13 @@ async fn write_track_progress(
         .last_write
         .map(|t| t.elapsed())
         .unwrap_or(PROGRESS_WRITE_EVERY);
-    if should_write_progress(track.sample.as_ref(), &sample, since) {
+    let finish_line =
+        track.duration - (track.end_skip.max(0) as f64).max(NATURAL_END_GRACE_SEC) - 1.0;
+    if track.advanced && track.playing && track.position < finish_line {
+        // Played again from earlier in the episode.
+        track.advanced = false;
+    }
+    if !track.advanced && should_write_progress(track.sample.as_ref(), &sample, since) {
         write_listen_progress(
             state,
             user_id,
@@ -3608,9 +3753,9 @@ async fn write_track_progress(
 }
 
 /// Once a second: Music Assistant 2.10.4 is silent while a queue plays, so
-/// the bridge projects the position itself. Every few seconds it re-anchors
-/// the position, writes history, and republishes the snapshot so clients do
-/// not freeze after their 30 second extrapolation window.
+/// the bridge projects the position itself. It fires the outro advance on
+/// time, and every few seconds re-anchors the position, writes history, and
+/// republishes the snapshot so clients do not freeze after 30 seconds.
 async fn tick_tracks(
     state: &AppState,
     user_id: i32,
@@ -3619,17 +3764,12 @@ async fn tick_tracks(
     retained: &mut HashMap<String, String>,
 ) {
     let now = unix_secs();
-    let due: Vec<String> = tracks
+    let playing: Vec<String> = tracks
         .iter()
-        .filter(|(_, t)| {
-            t.playing
-                && t.stream.is_some()
-                && t.updated_at > 0
-                && now - t.updated_at >= CLOCK_ANCHOR_EVERY_SECS
-        })
+        .filter(|(_, t)| t.playing && t.stream.is_some() && t.updated_at > 0)
         .map(|(queue_id, _)| queue_id.clone())
         .collect();
-    for queue_id in due {
+    for queue_id in playing {
         let Some(track) = tracks.get_mut(&queue_id) else {
             continue;
         };
@@ -3639,7 +3779,30 @@ async fn tick_tracks(
         if stream.user_id.is_some_and(|id| id != user_id) {
             continue;
         }
-        track.position = projected_position(track.position, track.updated_at, true, track.speed, now);
+        let projected =
+            projected_position(track.position, track.updated_at, true, track.speed, now);
+        if !track.advanced && advance_due(projected, true, true, track.duration, track.end_skip) {
+            track.advanced = true;
+            let playlist_id = live
+                .remembered(&queue_id)
+                .await
+                .filter(|row| {
+                    (row.episode_id, row.is_youtube) == (stream.episode_id, stream.is_youtube)
+                })
+                .and_then(|row| row.playlist_id);
+            tokio::spawn(advance_queue(
+                state.clone(),
+                user_id,
+                queue_id.clone(),
+                stream.clone(),
+                playlist_id,
+                true,
+            ));
+        }
+        if now - track.updated_at < CLOCK_ANCHOR_EVERY_SECS {
+            continue;
+        }
+        track.position = projected;
         track.updated_at = now;
         write_track_progress(state, user_id, track, &stream).await;
         publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
@@ -4807,11 +4970,59 @@ mod tests {
         let measured_at = 1_792_804_314;
         let now = measured_at + 56;
         assert_eq!(projected_position(5131.0, measured_at, true, 1.0, now), 5187.0);
+        // That reaches the end; the old 30 second cap stopped at 5161 and missed it.
+        assert!(advance_due(5187.0, true, false, 5186.0, 0));
+        assert!(!advance_due(5161.0, true, false, 5186.0, 0));
         // Paused, unstamped, or a clock behind the measurement do not move it.
         assert_eq!(projected_position(5131.0, measured_at, false, 1.0, now), 5131.0);
         assert_eq!(projected_position(5131.0, 0, true, 1.0, now), 5131.0);
         assert_eq!(projected_position(5131.0, now, true, 1.0, measured_at), 5131.0);
         assert_eq!(projected_position(100.0, measured_at, true, f64::NAN, measured_at + 10), 110.0);
+    }
+
+    #[test]
+    fn advance_fires_at_the_outro_or_the_natural_end_but_not_on_pause() {
+        // Outro while playing, as local web does.
+        assert!(advance_due(1771.0, true, true, 1800.0, 30));
+        assert!(!advance_due(1769.0, true, true, 1800.0, 30));
+        // No outro: playing never advances; the queue stopping at the end does.
+        assert!(!advance_due(1800.0, true, true, 1800.0, 0));
+        assert!(advance_due(1797.0, true, false, 1800.0, 0));
+        // A pause, including a Sonos pause reported as idle, mid-episode.
+        assert!(!advance_due(900.0, true, false, 1800.0, 0));
+        assert!(!advance_due(1790.0, true, false, 1800.0, 0));
+        // Already stopped, or no duration yet.
+        assert!(!advance_due(1799.0, false, false, 1800.0, 0));
+        assert!(!advance_due(10.0, true, false, 0.0, 0));
+    }
+
+    #[test]
+    fn a_jump_to_zero_at_the_end_finishes_but_a_seek_to_zero_does_not() {
+        // (reported, projected, was playing, playing, duration, end_skip, finished)
+        let cases = [
+            // Music Assistant 2.10.4, Chromecast, episode 22: the bridge had
+            // projected 10647 when queue_time_updated 0 arrived while the queue
+            // still said playing. Idle with 0 followed a second later.
+            (Some(0.0), 10647.0, true, true, 10647.0, 0, true),
+            (Some(0.0), 10646.0, true, false, 10646.0, 0, true),
+            // Idle with the final position, as an earlier run reported.
+            (Some(5186.1), 5180.0, true, false, 5186.0, 0, true),
+            // A seek to the start mid-episode, or a stop after one.
+            (Some(0.0), 900.0, true, true, 1800.0, 0, false),
+            (Some(0.0), 900.0, true, false, 1800.0, 0, false),
+            // Before the episode was playing, 0 is just the start.
+            (Some(0.0), 10647.0, false, true, 10647.0, 0, false),
+            // A plain playing event keeps the outro rule.
+            (Some(1790.0), 1790.0, true, true, 1800.0, 0, false),
+            (Some(1771.0), 1771.0, true, true, 1800.0, 30, true),
+        ];
+        for (reported, projected, was, now, duration, end_skip, want) in cases {
+            assert_eq!(
+                episode_finished(reported, projected, was, now, duration, end_skip),
+                want,
+                "{reported:?} after {projected}, playing {was} -> {now}"
+            );
+        }
     }
 
     fn entry(episode_id: i32, position: i32, completed: bool) -> QueueEntry {

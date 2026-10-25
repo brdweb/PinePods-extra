@@ -230,6 +230,17 @@ PinePods, not Music Assistant, picks what plays next, in the same order as local
 
 The web now-playing bar shows a Next button when the device advertises `next`; the 15 second skips use rewind and fast-forward icons. Sending an episode to a speaker adds `playlist_id` only when that episode is the one loaded locally and that playback came from a playlist. When nothing is up next, the bar shows an info message instead of an error.
 
+## Queue advance
+
+When an episode finishes on a speaker, the bridge plays the next one, so a speaker keeps going after the browser tab closes. An episode finishes when either:
+
+- it is playing and passes `duration - end_skip` (the podcast outro), as on local web; or
+- the queue goes from playing to stopped within 5 seconds of the end (or of the outro), or its position jumps from there back to 0 while it still reports playing. Music Assistant 2.10.4 on a Chromecast sends that 0 about a second before the idle state, so the position projected just before the jump decides. A pause earlier in the episode never counts, including a Sonos pause reported as idle.
+
+The next item is read first, in the order above, because `mark_episode_completed` takes the finished episode out of the PinePods queue. Then the finished episode is marked complete, once, and the next one starts the same way as `next`. With nothing next, an outro pauses the speaker and a natural end leaves it stopped. History is not written for the finished episode after that, so the 0 Music Assistant reports at the end does not overwrite completion. Playing it again from earlier in the episode resumes history writes.
+
+`end_skip` is read when the episode starts. Playing the same episode again on the same speaker keeps the value read then.
+
 The next item is started by the bridge, not added to Music Assistant's own queue. `play_media` has no start offset, so an enqueued item could not resume or skip its intro without a second seek, and an enqueued remote URL would not map back to its PinePods episode.
 
 ## Versions
@@ -270,5 +281,6 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 - No power, source select, or MA library sync.
 - Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
 - Seek right after `play_media` can race; a failed seek is a warning.
+- Queue advance has a short gap between episodes while the next stream loads. It is not gapless.
 - Each API replica opens its own MA session. A command runs on the replica that holds the commanding client. Progress writes are absolute, so overlapping replicas do not stack time. There is no lock electing a single connection.
 - YouTube uses the same stream proxy (`type=youtube`) and is not covered by a separate test.
