@@ -697,12 +697,17 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                     {
                         // `<` and `>` would change speed. They do nothing while
                         // a Music Assistant speaker is the active target.
-                        // Space and the arrow keys stay play/pause and 15s skips.
-                        if !local_speed_changes_allowed()
-                            && matches!(event.key().as_str(), "<" | ">" | "," | "." )
-                        {
-                            event.prevent_default();
-                            return;
+                        // Space and the arrow keys go to the speaker bar then,
+                        // so they must not play the local media element.
+                        if !local_speed_changes_allowed() {
+                            match event.key().as_str() {
+                                "<" | ">" | "," | "." => {
+                                    event.prevent_default();
+                                    return;
+                                }
+                                " " | "ArrowLeft" | "ArrowRight" => return,
+                                _ => {}
+                            }
                         }
                         match event.key().as_str() {
                             " " => {

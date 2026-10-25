@@ -635,6 +635,25 @@ pub fn is_nothing_next(resp: &MaCommandResponse) -> bool {
     resp.detail == "nothing_next"
 }
 
+/// Keyboard shortcut for the speaker in the now-playing bar, the same keys as
+/// local web: Space plays or pauses, the arrow keys skip 15 seconds. A key held
+/// with Alt, Ctrl or Meta is left to the browser.
+pub fn speaker_key_command(
+    key: &str,
+    playing: bool,
+    modified: bool,
+) -> Option<(&'static str, Value)> {
+    if modified {
+        return None;
+    }
+    match key {
+        " " => Some((if playing { "pause" } else { "play" }, json!({}))),
+        "ArrowRight" => Some(("skip_forward", json!({ "seconds": 15 }))),
+        "ArrowLeft" => Some(("skip_back", json!({ "seconds": 15 }))),
+        _ => None,
+    }
+}
+
 /// Playlist a speaker should continue with: only when the episode sent is the
 /// one loaded locally, because that is the episode the playlist context belongs to.
 pub fn speaker_playlist(
@@ -916,6 +935,24 @@ pub fn refresh_music_assistant() {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn speaker_keys_match_local_web() {
+        assert_eq!(speaker_key_command(" ", true, false), Some(("pause", json!({}))));
+        assert_eq!(speaker_key_command(" ", false, false), Some(("play", json!({}))));
+        assert_eq!(
+            speaker_key_command("ArrowRight", true, false),
+            Some(("skip_forward", json!({ "seconds": 15 })))
+        );
+        assert_eq!(
+            speaker_key_command("ArrowLeft", false, false),
+            Some(("skip_back", json!({ "seconds": 15 })))
+        );
+        assert_eq!(speaker_key_command("ArrowLeft", true, true), None);
+        assert_eq!(speaker_key_command(" ", true, true), None);
+        assert_eq!(speaker_key_command("ArrowUp", true, false), None);
+        assert_eq!(speaker_key_command(">", true, false), None);
+    }
 
     #[wasm_bindgen_test]
     fn nothing_next_is_recognized_only_from_its_detail() {

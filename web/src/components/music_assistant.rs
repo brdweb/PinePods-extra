@@ -3,10 +3,12 @@
 
 use std::collections::HashSet;
 
+use gloo_events::EventListener;
 use gloo_timers::callback::Interval;
 use serde_json::{json, Value};
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlElement, HtmlInputElement, KeyboardEvent};
 use yew::prelude::*;
 use yewdux::prelude::*;
 
@@ -16,7 +18,7 @@ use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
     note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    speaker_playlist, speaker_start, transport_is_recent, transport_shown, unix_now,
+    speaker_key_command, speaker_playlist, speaker_start, transport_is_recent, transport_shown, unix_now,
     GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
 };
@@ -304,6 +306,52 @@ pub fn ma_now_playing_bar() -> Html {
     } else {
         None
     };
+
+    {
+        // Space and the arrow keys control the speaker while this bar is shown,
+        // as they do the local player. The listener goes when the bar does.
+        let keys = device.as_ref().map(|d| {
+            let supported: Vec<&'static str> = ["play", "pause", "skip_forward", "skip_back"]
+                .into_iter()
+                .filter(|a| d.supports(a))
+                .collect();
+            (d.device_id.clone(), d.playing, supported)
+        });
+        use_effect_with(keys, move |keys| {
+            let listener = keys.clone().and_then(|(id, playing, supported)| {
+                let win = web_sys::window()?;
+                Some(EventListener::new(&win, "keydown", move |event| {
+                    let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
+                        return;
+                    };
+                    let typing = event
+                        .target()
+                        .and_then(|t| t.dyn_into::<HtmlElement>().ok())
+                        .is_some_and(|el| {
+                            el.is_content_editable()
+                                || matches!(
+                                    el.tag_name().to_ascii_lowercase().as_str(),
+                                    "input" | "textarea" | "select"
+                                )
+                        });
+                    if typing {
+                        return;
+                    }
+                    let modified = event.alt_key() || event.ctrl_key() || event.meta_key();
+                    let Some((action, args)) =
+                        speaker_key_command(&event.key(), playing, modified)
+                    else {
+                        return;
+                    };
+                    if supported.contains(&action) {
+                        event.prevent_default();
+                        send_command(&id, action, args);
+                    }
+                }))
+            });
+            move || drop(listener)
+        });
+    }
 
     let playing = device.as_ref().map(|d| d.playing).unwrap_or(false);
     {
