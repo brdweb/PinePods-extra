@@ -6511,24 +6511,15 @@ input:checked + .notification-toggle-slider:before {
 .ma-volume-label { font-size: 11px; color: var(--text-secondary-color); min-width: 72px; }
 .ma-volume-level { font-size: 11px; font-variant-numeric: tabular-nums; width: 2ch; }
 .ma-seek { width: 100%; margin-top: 6px; }
-.ma-now {
-  height: auto;
-  min-height: 60px;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 8px 16px 12px;
-  gap: 4px;
-}
-.ma-now-top { display: flex; align-items: center; gap: 12px; width: 100%; }
-.ma-now-meta { flex: 1; min-width: 0; }
-.ma-now-kicker { font-size: 11px; color: var(--text-secondary-color); }
-.ma-now-title {
-  font-size: 14px; font-weight: 600; color: var(--text-color);
+/* The speaker bar uses the local player's .player-bar / .player-fs layout. */
+.ma-now-kicker {
+  font-size: 11px; color: var(--text-secondary-color);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ma-now-progress { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-secondary-color); }
-.ma-now-transport { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.ma-art { width: 42px; height: 42px; border-radius: 6px; object-fit: cover; }
+.ma-now .player-fs-footer.ma-fs-footer {
+  flex-direction: column; align-items: stretch; gap: 4px;
+  width: 100%; max-width: 480px; margin: 0 auto;
+}
 .ma-members { display: flex; flex-direction: column; gap: 2px; }
 .ma-member-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .ma-chip {
