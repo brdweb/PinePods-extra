@@ -14,13 +14,18 @@ use yew::prelude::*;
 use yewdux::prelude::*;
 
 use crate::components::chapter_list::ChapterList;
-use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
+use crate::components::gen_components::EpisodeModal;
+use crate::components::people::{PeopleLayout, PeopleStrip};
+use crate::components::context::{
+    current_playing_anchor, AppState, EpisodeDetailState, EpisodeNavigationState, NotificationState,
+    UIState,
+};
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
     note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    progress_percent, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
+    for_episode, progress_percent, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
     transport_shown, unix_now,
     GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
@@ -31,8 +36,11 @@ use crate::requests::pod_req::{
     call_fetch_podcasting_2_data, call_get_episode_metadata, call_get_play_episode_details,
     Chapter, EpisodeRequest, FetchPodcasting2DataRequest,
 };
+use crate::requests::episode::Episode;
+use crate::requests::people_req::CreditedPerson;
 use crate::requests::podcasting2::{chapter_image_at, http_link};
 use i18nrs::yew::use_translation;
+use yew_router::history::{BrowserHistory, History};
 
 fn session() -> Option<(String, String, i32)> {
     let app = Dispatch::<AppState>::global().get();
@@ -294,10 +302,13 @@ pub fn ma_now_playing_bar() -> Html {
     // Collapsed again whenever the bar goes away, so a later local player or
     // speaker never opens fullscreen on its own.
     let expanded = use_state(|| false);
-    // Chapters of the speaker's episode, tagged with that episode so a late
-    // response for the previous one is never shown.
+    // Chapters and people of the speaker's episode, tagged with that episode so
+    // a late response for the previous one is never shown.
     let chapters = use_state(|| (0, Rc::new(Vec::<Chapter>::new())));
+    let people = use_state(|| (0, Rc::new(Vec::<CreditedPerson>::new())));
     let chapters_open = use_state(|| false);
+    // Show notes are fetched when asked for, for the episode then playing.
+    let notes = use_state(|| None::<Episode>);
 
     let candidates: Vec<PlaybackCandidate> = np
         .ma_devices
@@ -369,6 +380,7 @@ pub fn ma_now_playing_bar() -> Html {
 
     {
         let chapters = chapters.clone();
+        let people = people.clone();
         let episode = device
             .as_ref()
             .filter(|d| d.episode_id > 0 && !d.is_youtube)
@@ -381,6 +393,7 @@ pub fn ma_now_playing_bar() -> Html {
                         call_fetch_podcasting_2_data(&server, &Some(api_key), &request).await
                     {
                         chapters.set((episode_id, Rc::new(data.chapters)));
+                        people.set((episode_id, Rc::new(data.people)));
                     }
                 });
             }
@@ -438,11 +451,7 @@ pub fn ma_now_playing_bar() -> Html {
         let expanded = expanded.clone();
         Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
     };
-    let episode_chapters = if chapters.0 == device.episode_id {
-        chapters.1.clone()
-    } else {
-        Rc::new(Vec::new())
-    };
+    let episode_chapters = for_episode(&chapters, device.episode_id);
     let cover = chapter_image_at(&episode_chapters, shown)
         .and_then(http_link)
         .map(str::to_string)
@@ -469,6 +478,72 @@ pub fn ma_now_playing_bar() -> Html {
             />
         }
     });
+    let episode_people = for_episode(&people, device.episode_id);
+    let open_notes = {
+        let notes = notes.clone();
+        let (episode_id, is_youtube) = (device.episode_id, device.is_youtube);
+        let failure = i18n.t("music_assistant.command_failed").to_string();
+        Callback::from(move |_: MouseEvent| {
+            let Some((server, api_key, user_id)) = session() else {
+                return;
+            };
+            let (notes, failure) = (notes.clone(), failure.clone());
+            spawn_local(async move {
+                let request = EpisodeRequest {
+                    episode_id,
+                    user_id,
+                    person_episode: false,
+                    is_youtube,
+                };
+                match call_get_episode_metadata(&server, Some(api_key), &request).await {
+                    Ok(episode) => notes.set(Some(episode)),
+                    Err(err) => toast_failure(&failure, &err),
+                }
+            });
+        })
+    };
+    let notes_modal = (*notes)
+        .clone()
+        .filter(|episode| episode.episodeid == device.episode_id)
+        .map(|episode| {
+            let close = {
+                let notes = notes.clone();
+                Callback::from(move |_: MouseEvent| notes.set(None))
+            };
+            let to_episode_page = {
+                let notes = notes.clone();
+                let expanded = expanded.clone();
+                let (episode_id, is_youtube) = (episode.episodeid, episode.is_youtube);
+                Callback::from(move |_: MouseEvent| {
+                    notes.set(None);
+                    expanded.set(false);
+                    Dispatch::<EpisodeNavigationState>::global()
+                        .reduce_mut(|s| s.selected_episode_id = Some(episode_id));
+                    Dispatch::<EpisodeDetailState>::global().reduce_mut(|s| {
+                        s.person_episode = Some(false);
+                        s.fetched_episode = None;
+                    });
+                    let youtube = if is_youtube { "&youtube=true" } else { "" };
+                    BrowserHistory::new().push(format!("/episode?episode_id={episode_id}{youtube}"));
+                })
+            };
+            html! {
+                <EpisodeModal
+                    episode_id={episode.episodeid}
+                    episode_url={episode.episodeurl.clone()}
+                    episode_artwork={episode.episodeartwork.clone()}
+                    episode_title={episode.episodetitle.clone()}
+                    description={episode.episodedescription.clone()}
+                    format_release={episode.episodepubdate.clone()}
+                    duration={duration as i32}
+                    on_close={close}
+                    on_show_notes={to_episode_page}
+                    listen_duration_percentage={progress_percent(shown, duration) as i32}
+                    is_youtube={episode.is_youtube}
+                    is_video={false}
+                />
+            }
+        });
     let open_chapters = {
         let chapters_open = chapters_open.clone();
         Callback::from(move |_: MouseEvent| chapters_open.set(true))
@@ -642,6 +717,17 @@ pub fn ma_now_playing_bar() -> Html {
                     </div>
                     <div class="player-fs-meta">
                         <div class="player-fs-title">{ title.clone() }</div>
+                        if !episode_people.is_empty() {
+                            <PeopleStrip
+                                people={episode_people.clone()}
+                                layout={PeopleLayout::Chips}
+                                class={classes!("player-fs-people")}
+                                on_open={{
+                                    let expanded = expanded.clone();
+                                    Callback::from(move |_: ()| expanded.set(false))
+                                }}
+                            />
+                        }
                     </div>
                     <div class="player-fs-scrub-area">{ scrub("player-range") }</div>
                     <div class="player-fs-controls">
@@ -675,11 +761,16 @@ pub fn ma_now_playing_bar() -> Html {
                             }
                         </div>
                     </div>
-                    if !episode_chapters.is_empty() && device.supports("seek") {
+                    if device.episode_id > 0 {
                         <div class="player-fs-footer">
-                            <button type="button" class="player-btn" title={i18n.t("audio.chapters").to_string()} onclick={open_chapters}>
-                                <i class="ph ph-list-numbers"></i>
+                            <button type="button" class="player-btn" title={i18n.t("audio.shownotes").to_string()} onclick={open_notes}>
+                                <i class="ph ph-article"></i>
                             </button>
+                            if !episode_chapters.is_empty() && device.supports("seek") {
+                                <button type="button" class="player-btn" title={i18n.t("audio.chapters").to_string()} onclick={open_chapters}>
+                                    <i class="ph ph-list-numbers"></i>
+                                </button>
+                            }
                         </div>
                     }
                     <div class="player-fs-footer ma-fs-footer">{ volume_controls }</div>
@@ -740,6 +831,8 @@ pub fn ma_now_playing_bar() -> Html {
                 </div>
             </div>
         </div>
+        // After the bar, as on the local player: both sit at z-index 50.
+        { for notes_modal }
         </>
     }
 }
