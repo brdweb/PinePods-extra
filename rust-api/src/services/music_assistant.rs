@@ -672,6 +672,8 @@ pub struct ProgressUpdate {
     /// Every string inside `current_item` / `current_media`, when the payload
     /// has one. Music Assistant echoes the media URL PinePods sent there.
     pub item_strings: Option<Vec<String>>,
+    /// `resume_pos` from a full queue object. See [`paused_position`].
+    pub resume_pos: Option<f64>,
 }
 
 fn collect_strings(v: &Value, out: &mut Vec<String>) {
@@ -702,6 +704,7 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
             reported_idle: false,
             position_updated_at: None,
             item_strings: None,
+            resume_pos: None,
         };
     }
     let queue_id = data
@@ -768,6 +771,7 @@ pub fn progress_from_payload(data: &Value) -> ProgressUpdate {
             collect_strings(i, &mut out);
             out
         }),
+        resume_pos: data.get("resume_pos").and_then(json_f64),
     }
 }
 
@@ -1540,6 +1544,20 @@ pub fn episode_finished(
     let position = reported.filter(|p| *p >= 1.0).unwrap_or(projected);
     let playing = playing && !restarted;
     advance_due(position, was_playing, playing, duration, end_skip)
+}
+
+/// Position a queue that is not playing should show and save, if Music
+/// Assistant knows better than its elapsed time.
+///
+/// Music Assistant sets `resume_pos` when a playing queue pauses or stops and
+/// resets it to 0 when playback starts. A Sonos pause is a stop, and its
+/// elapsed time falls back to where the stream started, so `resume_pos` wins
+/// and is held until the queue plays again.
+pub fn paused_position(held: Option<f64>, resume_pos: Option<f64>, playing: bool) -> Option<f64> {
+    if playing {
+        return None;
+    }
+    resume_pos.filter(|p| p.is_finite() && *p > 0.0).or(held)
 }
 
 /// One PinePods queue row, as far as picking the next episode cares.
@@ -3229,10 +3247,13 @@ struct QueueTrack {
     listen_marked_at: Option<Instant>,
     /// The episode finished and the advance ran. No more history writes for it.
     advanced: bool,
+    /// Where Music Assistant will resume this paused queue. See [`paused_position`].
+    paused_at: Option<f64>,
 }
 
 impl QueueTrack {
     fn clear_episode(&mut self) {
+        self.paused_at = None;
         self.stream = None;
         self.title.clear();
         self.artwork.clear();
@@ -3541,6 +3562,7 @@ async fn apply_progress(
             played_counted: false,
             listen_marked_at: None,
             advanced: false,
+            paused_at: None,
         });
     let (playing, clear_stream) = next_playback(
         track.playing,
@@ -3625,6 +3647,11 @@ async fn apply_progress(
             if let Some(at) = update.position_updated_at {
                 track.updated_at = at;
             }
+        }
+        let held = track.paused_at.filter(|_| !episode_changed);
+        track.paused_at = paused_position(held, update.resume_pos, playing);
+        if let Some(p) = track.paused_at {
+            track.position = p;
         }
         if let Some(d) = update.duration_sec {
             if d > 0.0 {
@@ -4994,6 +5021,33 @@ mod tests {
         // Already stopped, or no duration yet.
         assert!(!advance_due(1799.0, false, false, 1800.0, 0));
         assert!(!advance_due(10.0, true, false, 0.0, 0));
+    }
+
+    #[test]
+    fn a_sonos_pause_holds_the_resume_point_until_it_plays_again() {
+        // Sonos Move, Music Assistant 2.10.4: played from 5592, paused about
+        // 23s later. Elapsed fell back to 5592; resume_pos was the pause point.
+        let paused = progress_from_payload(&json!({
+            "queue_id": "RINCON_1",
+            "state": "idle",
+            "elapsed_time": 5592.0,
+            "resume_pos": 5615
+        }));
+        assert_eq!(paused.playing, Some(false));
+        assert_eq!(paused.position_sec, Some(5592.0));
+        assert_eq!(paused.resume_pos, Some(5615.0));
+        assert!(progress_from_payload(&json!(5592.0)).resume_pos.is_none());
+
+        let held = paused_position(None, paused.resume_pos, false);
+        assert_eq!(held, Some(5615.0));
+        // A later report without resume_pos, or with the 0 play_index sets
+        // before the queue reports playing, keeps the pause point.
+        assert_eq!(paused_position(held, None, false), Some(5615.0));
+        assert_eq!(paused_position(held, Some(0.0), false), Some(5615.0));
+        // Playing again releases it, and a queue that never paused has none.
+        assert_eq!(paused_position(held, Some(5615.0), true), None);
+        assert_eq!(paused_position(None, Some(0.0), false), None);
+        assert_eq!(paused_position(None, None, false), None);
     }
 
     #[test]
