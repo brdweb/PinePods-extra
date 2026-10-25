@@ -1,5 +1,6 @@
 // In components/mod.rs
 pub(crate) mod audio_player_bar;
+pub(crate) mod chapter_list;
 pub(crate) mod app_drawer;
 pub(crate) mod context_menu_button;
 pub(crate) mod collection_picker_modal;

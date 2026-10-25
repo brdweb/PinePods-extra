@@ -2,6 +2,7 @@
 // Rendered only while the per-user bridge is enabled.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use gloo_events::EventListener;
 use gloo_timers::callback::Interval;
@@ -12,6 +13,7 @@ use web_sys::{HtmlElement, HtmlInputElement, KeyboardEvent};
 use yew::prelude::*;
 use yewdux::prelude::*;
 
+use crate::components::chapter_list::ChapterList;
 use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
@@ -26,8 +28,10 @@ use crate::requests::music_assistant::{
 use crate::requests::notify::{toast_error, toast_info};
 use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
 use crate::requests::pod_req::{
-    call_get_episode_metadata, call_get_play_episode_details, EpisodeRequest,
+    call_fetch_podcasting_2_data, call_get_episode_metadata, call_get_play_episode_details,
+    Chapter, EpisodeRequest, FetchPodcasting2DataRequest,
 };
+use crate::requests::podcasting2::{chapter_image_at, http_link};
 use i18nrs::yew::use_translation;
 
 fn session() -> Option<(String, String, i32)> {
@@ -290,6 +294,10 @@ pub fn ma_now_playing_bar() -> Html {
     // Collapsed again whenever the bar goes away, so a later local player or
     // speaker never opens fullscreen on its own.
     let expanded = use_state(|| false);
+    // Chapters of the speaker's episode, tagged with that episode so a late
+    // response for the previous one is never shown.
+    let chapters = use_state(|| (0, Rc::new(Vec::<Chapter>::new())));
+    let chapters_open = use_state(|| false);
 
     let candidates: Vec<PlaybackCandidate> = np
         .ma_devices
@@ -359,6 +367,27 @@ pub fn ma_now_playing_bar() -> Html {
         });
     }
 
+    {
+        let chapters = chapters.clone();
+        let episode = device
+            .as_ref()
+            .filter(|d| d.episode_id > 0 && !d.is_youtube)
+            .map(|d| d.episode_id);
+        use_effect_with(episode, move |episode| {
+            if let (Some(episode_id), Some((server, api_key, user_id))) = (*episode, session()) {
+                spawn_local(async move {
+                    let request = FetchPodcasting2DataRequest { episode_id, user_id };
+                    if let Ok(data) =
+                        call_fetch_podcasting_2_data(&server, &Some(api_key), &request).await
+                    {
+                        chapters.set((episode_id, Rc::new(data.chapters)));
+                    }
+                });
+            }
+            || ()
+        });
+    }
+
     let playing = device.as_ref().map(|d| d.playing).unwrap_or(false);
     {
         let tick = tick.clone();
@@ -408,6 +437,41 @@ pub fn ma_now_playing_bar() -> Html {
     let toggle_expanded = {
         let expanded = expanded.clone();
         Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
+    };
+    let episode_chapters = if chapters.0 == device.episode_id {
+        chapters.1.clone()
+    } else {
+        Rc::new(Vec::new())
+    };
+    let cover = chapter_image_at(&episode_chapters, shown)
+        .and_then(http_link)
+        .map(str::to_string)
+        .unwrap_or_else(|| device.artwork_url.clone());
+    let chapter_list = (*chapters_open && !episode_chapters.is_empty()).then(|| {
+        let seek_id = device.device_id.clone();
+        let toggle_id = device.device_id.clone();
+        let is_playing = device.playing;
+        let chapters_open = chapters_open.clone();
+        html! {
+            <ChapterList
+                chapters={episode_chapters.clone()}
+                position={shown}
+                duration={duration}
+                playing={is_playing}
+                server_name={session().map(|(server, _, _)| server)}
+                on_seek={Callback::from(move |start: f64| {
+                    send_command(&seek_id, "seek", json!({ "position_sec": integer_position(start) }));
+                })}
+                on_toggle={Callback::from(move |_: ()| {
+                    send_command(&toggle_id, if is_playing { "pause" } else { "play" }, json!({}));
+                })}
+                on_close={Callback::from(move |_: ()| chapters_open.set(false))}
+            />
+        }
+    });
+    let open_chapters = {
+        let chapters_open = chapters_open.clone();
+        Callback::from(move |_: MouseEvent| chapters_open.set(true))
     };
     let kicker = i18n
         .t("music_assistant.playing_on_ma")
@@ -546,6 +610,8 @@ pub fn ma_now_playing_bar() -> Html {
     // Same bar family as the local player: the collapsed `.player-bar` and the
     // fullscreen `.player-fs`, switched by `.expanded`.
     html! {
+        <>
+        { for chapter_list }
         <div class={classes!("audio-player", "ma-now", (*expanded).then_some("expanded"))}>
             <div class="player-fs-backdrop"
                 style={format!("background-image: url('{}');", device.artwork_url)}
@@ -570,8 +636,8 @@ pub fn ma_now_playing_bar() -> Html {
                 </div>
                 <div class="player-fs-main">
                     <div class="player-fs-cover-slot">
-                        if !device.artwork_url.is_empty() {
-                            <img class="player-fs-art" src={device.artwork_url.clone()} alt="" />
+                        if !cover.is_empty() {
+                            <img class="player-fs-art" src={cover} alt="" />
                         }
                     </div>
                     <div class="player-fs-meta">
@@ -609,6 +675,13 @@ pub fn ma_now_playing_bar() -> Html {
                             }
                         </div>
                     </div>
+                    if !episode_chapters.is_empty() && device.supports("seek") {
+                        <div class="player-fs-footer">
+                            <button type="button" class="player-btn" title={i18n.t("audio.chapters").to_string()} onclick={open_chapters}>
+                                <i class="ph ph-list-numbers"></i>
+                            </button>
+                        </div>
+                    }
                     <div class="player-fs-footer ma-fs-footer">{ volume_controls }</div>
                 </div>
             </div>
@@ -667,6 +740,7 @@ pub fn ma_now_playing_bar() -> Html {
                 </div>
             </div>
         </div>
+        </>
     }
 }
 
