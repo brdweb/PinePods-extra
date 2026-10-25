@@ -18,7 +18,8 @@ use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
     note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    speaker_key_command, speaker_playlist, speaker_start, transport_is_recent, transport_shown, unix_now,
+    progress_percent, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
+    transport_shown, unix_now,
     GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
 };
@@ -167,6 +168,8 @@ pub(crate) struct SeekSliderProps {
     pub(crate) shown: f64,
     pub(crate) duration: f64,
     pub(crate) label: String,
+    #[prop_or(classes!("ma-seek"))]
+    pub(crate) class: Classes,
 }
 
 /// Range that keeps the thumb where the drag left it, then seeks on release.
@@ -213,7 +216,7 @@ pub(crate) fn seek_slider(props: &SeekSliderProps) -> Html {
     };
     html! {
         <input
-            class="ma-seek"
+            class={props.class.clone()}
             type="range"
             min="0"
             max={props.duration.to_string()}
@@ -284,6 +287,9 @@ pub fn ma_now_playing_bar() -> Html {
     let (ma, ma_dispatch) = use_store::<MusicAssistantState>();
     let (np, _) = use_store::<NowPlayingState>();
     let tick = use_state(|| 0u32);
+    // Collapsed again whenever the bar goes away, so a later local player or
+    // speaker never opens fullscreen on its own.
+    let expanded = use_state(|| false);
 
     let candidates: Vec<PlaybackCandidate> = np
         .ma_devices
@@ -396,15 +402,17 @@ pub fn ma_now_playing_bar() -> Html {
     } else {
         0.0
     };
-    let progress = if duration > 0.0 {
-        format!(
-            "{} / {}",
-            format_clock(shown.min(duration)),
-            format_clock(duration)
-        )
-    } else {
-        format_clock(shown)
+    let elapsed = format_clock(if duration > 0.0 { shown.min(duration) } else { shown });
+    let total = format_clock(duration);
+    let percent = progress_percent(shown, duration);
+    let toggle_expanded = {
+        let expanded = expanded.clone();
+        Callback::from(move |_: MouseEvent| expanded.set(!*expanded))
     };
+    let kicker = i18n
+        .t("music_assistant.playing_on_ma")
+        .to_string()
+        .replace("{name}", &device.device_name);
     let title = if device.title.is_empty() {
         i18n.t("music_assistant.now_playing").to_string()
     } else {
@@ -474,58 +482,33 @@ pub fn ma_now_playing_bar() -> Html {
         i18n.t("music_assistant.group_volume").to_string()
     };
 
-    html! {
-        <div class="audio-player ma-now">
-            <div class="ma-now-top">
-                if !device.artwork_url.is_empty() {
-                    <img class="ma-art" src={device.artwork_url.clone()} alt="" />
+    let can_seek = duration > 0.0 && device.supports("seek");
+    let play_title = if is_playing {
+        i18n.t("music_assistant.pause").to_string()
+    } else {
+        i18n.t("music_assistant.play").to_string()
+    };
+    let scrub = |class: &'static str| {
+        html! {
+            <>
+                <span class="player-time">{ elapsed.clone() }</span>
+                if can_seek {
+                    <SeekSlider
+                        device_id={id.clone()}
+                        shown={shown}
+                        duration={duration}
+                        label={i18n.t("music_assistant.seek").to_string()}
+                        class={classes!(class)}
+                    />
+                } else {
+                    <span class="player-range" />
                 }
-                <div class="ma-now-meta">
-                    <div class="ma-now-kicker">
-                        { i18n.t("music_assistant.playing_on_ma").to_string().replace("{name}", &device.device_name) }
-                    </div>
-                    <div class="ma-now-title">{ title }</div>
-                    <div class="ma-now-progress">{ progress }</div>
-                </div>
-                <div class="ma-now-transport">
-                    if device.supports("skip_back") {
-                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.skip_back").to_string()} onclick={on_back}>
-                            <i class="ph ph-rewind"></i>
-                        </button>
-                    }
-                    if device.supports(if is_playing { "pause" } else { "play" }) {
-                        <button type="button" class="iconbtn" title={ if is_playing { i18n.t("music_assistant.pause").to_string() } else { i18n.t("music_assistant.play").to_string() } } onclick={on_play_pause}>
-                            <i class={ if is_playing { "ph ph-pause" } else { "ph ph-play" } }></i>
-                        </button>
-                    }
-                    if device.supports("skip_forward") {
-                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.skip_forward").to_string()} onclick={on_fwd}>
-                            <i class="ph ph-fast-forward"></i>
-                        </button>
-                    }
-                    if device.supports("next") {
-                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.next").to_string()} onclick={on_next}>
-                            <i class="ph ph-skip-forward"></i>
-                        </button>
-                    }
-                    if device.supports("stop") {
-                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
-                            <i class="ph ph-stop"></i>
-                        </button>
-                    }
-                    <button type="button" class="rd-play-here" onclick={open_picker}>
-                        <i class="ph ph-speaker-high mr-1"></i>{ i18n.t("music_assistant.speakers") }
-                    </button>
-                </div>
-            </div>
-            if duration > 0.0 && device.supports("seek") {
-                <SeekSlider
-                    device_id={id.clone()}
-                    shown={shown}
-                    duration={duration}
-                    label={i18n.t("music_assistant.seek").to_string()}
-                />
-            }
+                <span class="player-time">{ total.clone() }</span>
+            </>
+        }
+    };
+    let volume_controls = html! {
+        <>
             if device.supports(if members.is_empty() { "volume_set" } else { "group_volume" }) {
                 <VolumeControl
                     device_id={id.clone()}
@@ -557,6 +540,132 @@ pub fn ma_now_playing_bar() -> Html {
                     }) }
                 </div>
             }
+        </>
+    };
+
+    // Same bar family as the local player: the collapsed `.player-bar` and the
+    // fullscreen `.player-fs`, switched by `.expanded`.
+    html! {
+        <div class={classes!("audio-player", "ma-now", (*expanded).then_some("expanded"))}>
+            <div class="player-fs-backdrop"
+                style={format!("background-image: url('{}');", device.artwork_url)}
+            />
+            <div class="player-fs-overlay" />
+            <div class="player-fs">
+                <div class="player-fs-topbar">
+                    <button type="button" class="player-btn" title={i18n.t("music_assistant.collapse").to_string()} onclick={toggle_expanded.clone()}>
+                        <i class="ph ph-caret-down" style="font-size:24px;"></i>
+                    </button>
+                    <span class="player-fs-eyebrow">{ kicker.clone() }</span>
+                    <div class="player-fs-topbar-right">
+                        <button type="button" class="player-btn" title={i18n.t("music_assistant.speakers").to_string()} onclick={open_picker.clone()}>
+                            <i class="ph ph-speaker-high" style="font-size:22px;"></i>
+                        </button>
+                        <button type="button" class="player-btn" title={i18n.t("queue_panel.up_next").to_string()} onclick={Callback::from(|_: MouseEvent| {
+                            Dispatch::<UIState>::global().reduce_mut(|s| s.queue_panel_open = !s.queue_panel_open);
+                        })}>
+                            <i class="ph ph-queue" style="font-size:22px;"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="player-fs-main">
+                    <div class="player-fs-cover-slot">
+                        if !device.artwork_url.is_empty() {
+                            <img class="player-fs-art" src={device.artwork_url.clone()} alt="" />
+                        }
+                    </div>
+                    <div class="player-fs-meta">
+                        <div class="player-fs-title">{ title.clone() }</div>
+                    </div>
+                    <div class="player-fs-scrub-area">{ scrub("player-range") }</div>
+                    <div class="player-fs-controls">
+                        <div class="player-fs-side-btns player-fs-side-btns--left">
+                            if device.supports("skip_back") {
+                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.skip_back").to_string()} onclick={on_back.clone()}>
+                                    <i class="ph ph-rewind"></i>
+                                </button>
+                            }
+                        </div>
+                        if device.supports(if is_playing { "pause" } else { "play" }) {
+                            <button type="button" class="player-fs-ctrl player-fs-ctrl-big" title={play_title.clone()} onclick={on_play_pause.clone()}>
+                                <i class={ if is_playing { "ph ph-pause-circle" } else { "ph ph-play-circle" } }></i>
+                            </button>
+                        }
+                        <div class="player-fs-side-btns">
+                            if device.supports("skip_forward") {
+                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.skip_forward").to_string()} onclick={on_fwd.clone()}>
+                                    <i class="ph ph-fast-forward"></i>
+                                </button>
+                            }
+                            if device.supports("next") {
+                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.next").to_string()} onclick={on_next.clone()}>
+                                    <i class="ph ph-skip-forward"></i>
+                                </button>
+                            }
+                            if device.supports("stop") {
+                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop.clone()}>
+                                    <i class="ph ph-stop"></i>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                    <div class="player-fs-footer ma-fs-footer">{ volume_controls }</div>
+                </div>
+            </div>
+            <div class="player-bar">
+                <div class="mobile-progress-container">
+                    <div class="mobile-progress-bar" style={format!("width: {}%", percent)} />
+                </div>
+                <div class="player-left" onclick={toggle_expanded.clone()}>
+                    <div class="artwork-container">
+                        if !device.artwork_url.is_empty() {
+                            <img class={classes!("artwork", is_playing.then_some("playing"))} src={device.artwork_url.clone()} alt="" />
+                        }
+                    </div>
+                    <div class="player-info">
+                        <div class="ma-now-kicker">{ kicker }</div>
+                        <div class="player-title">{ title }</div>
+                    </div>
+                </div>
+                <div class="player-center">
+                    <div class="player-buttons">
+                        if device.supports("skip_back") {
+                            <button type="button" class="player-btn" title={i18n.t("music_assistant.skip_back").to_string()} onclick={on_back}>
+                                <i class="ph ph-rewind"></i>
+                            </button>
+                        }
+                        if device.supports(if is_playing { "pause" } else { "play" }) {
+                            <button type="button" class="player-btn play" title={play_title} onclick={on_play_pause}>
+                                <i class={ if is_playing { "ph ph-pause" } else { "ph ph-play" } }></i>
+                            </button>
+                        }
+                        if device.supports("skip_forward") {
+                            <button type="button" class="player-btn" title={i18n.t("music_assistant.skip_forward").to_string()} onclick={on_fwd}>
+                                <i class="ph ph-fast-forward"></i>
+                            </button>
+                        }
+                        if device.supports("next") {
+                            <button type="button" class="player-btn" title={i18n.t("music_assistant.next").to_string()} onclick={on_next}>
+                                <i class="ph ph-skip-forward"></i>
+                            </button>
+                        }
+                        if device.supports("stop") {
+                            <button type="button" class="player-btn" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop}>
+                                <i class="ph ph-stop"></i>
+                            </button>
+                        }
+                    </div>
+                    <div class="player-scrub">{ scrub("player-range") }</div>
+                </div>
+                <div class="player-right">
+                    <button type="button" class="player-btn" title={i18n.t("music_assistant.speakers").to_string()} onclick={open_picker}>
+                        <i class="ph ph-speaker-high"></i>
+                    </button>
+                    <button type="button" class="player-btn" title={i18n.t("music_assistant.expand").to_string()} onclick={toggle_expanded}>
+                        <i class="ph ph-arrows-out"></i>
+                    </button>
+                </div>
+            </div>
         </div>
     }
 }

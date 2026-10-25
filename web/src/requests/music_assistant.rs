@@ -635,6 +635,15 @@ pub fn is_nothing_next(resp: &MaCommandResponse) -> bool {
     resp.detail == "nothing_next"
 }
 
+/// Width of the bar's thin progress line, in percent. An unknown duration
+/// shows no progress rather than a full bar.
+pub fn progress_percent(shown: f64, duration: f64) -> f64 {
+    if !(duration.is_finite() && duration > 0.0 && shown.is_finite()) {
+        return 0.0;
+    }
+    (shown / duration * 100.0).clamp(0.0, 100.0)
+}
+
 /// Keyboard shortcut for the speaker in the now-playing bar, the same keys as
 /// local web: Space plays or pauses, the arrow keys skip 15 seconds. A key held
 /// with Alt, Ctrl or Meta is left to the browser.
@@ -935,6 +944,16 @@ pub fn refresh_music_assistant() {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn progress_line_is_clamped_and_empty_without_a_duration() {
+        assert_eq!(progress_percent(30.0, 120.0), 25.0);
+        assert_eq!(progress_percent(200.0, 120.0), 100.0);
+        assert_eq!(progress_percent(-5.0, 120.0), 0.0);
+        assert_eq!(progress_percent(30.0, 0.0), 0.0);
+        assert_eq!(progress_percent(f64::NAN, 120.0), 0.0);
+        assert_eq!(progress_percent(30.0, f64::INFINITY), 0.0);
+    }
 
     #[wasm_bindgen_test]
     fn speaker_keys_match_local_web() {
