@@ -1866,6 +1866,8 @@
     "pause": "Pause",
     "skip_back": "Skip back 15s",
     "skip_forward": "Skip forward 15s",
+    "next": "Next episode",
+    "nothing_next": "Nothing is up next",
     "resume_at": "Resume at {time}",
     "start_over": "Start over",
     "now_playing": "Now playing",

@@ -13,9 +13,11 @@ use yewdux::prelude::*;
 use crate::components::context::{current_playing_anchor, AppState, NotificationState, UIState};
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
-    choose_playback, explain_test, format_clock, is_music_assistant, note_relay_transport,
+    choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
+    note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    speaker_start, transport_is_recent, transport_shown, unix_now, GroupPlanError, MaPlayer,
+    speaker_playlist, speaker_start, transport_is_recent, transport_shown, unix_now,
+    GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
 };
 use crate::requests::notify::{toast_error, toast_info};
@@ -386,6 +388,26 @@ pub fn ma_now_playing_bar() -> Html {
             send_command(&id, "skip_forward", json!({ "seconds": 15 }));
         })
     };
+    let on_next = {
+        let id = id.clone();
+        let failure = i18n.t("music_assistant.command_failed").to_string();
+        let nothing_next = i18n.t("music_assistant.nothing_next").to_string();
+        Callback::from(move |_: MouseEvent| {
+            let Some((server, api_key, user_id)) = session() else {
+                return;
+            };
+            let (id, failure, nothing_next) = (id.clone(), failure.clone(), nothing_next.clone());
+            spawn_local(async move {
+                match send_player_command(&server, &api_key, user_id, &id, "next", json!({})).await {
+                    Ok(resp) if is_nothing_next(&resp) => {
+                        toast_info(&Dispatch::<NotificationState>::global(), nothing_next);
+                    }
+                    Ok(_) => refresh_music_assistant(),
+                    Err(err) => toast_failure(&failure, &err),
+                }
+            });
+        })
+    };
     let open_picker = {
         let ma_dispatch = ma_dispatch.clone();
         Callback::from(move |_: MouseEvent| {
@@ -420,7 +442,7 @@ pub fn ma_now_playing_bar() -> Html {
                 <div class="ma-now-transport">
                     if device.supports("skip_back") {
                         <button type="button" class="iconbtn" title={i18n.t("music_assistant.skip_back").to_string()} onclick={on_back}>
-                            <i class="ph ph-skip-back"></i>
+                            <i class="ph ph-rewind"></i>
                         </button>
                     }
                     if device.supports(if is_playing { "pause" } else { "play" }) {
@@ -430,6 +452,11 @@ pub fn ma_now_playing_bar() -> Html {
                     }
                     if device.supports("skip_forward") {
                         <button type="button" class="iconbtn" title={i18n.t("music_assistant.skip_forward").to_string()} onclick={on_fwd}>
+                            <i class="ph ph-fast-forward"></i>
+                        </button>
+                    }
+                    if device.supports("next") {
+                        <button type="button" class="iconbtn" title={i18n.t("music_assistant.next").to_string()} onclick={on_next}>
                             <i class="ph ph-skip-forward"></i>
                         </button>
                     }
@@ -561,6 +588,10 @@ fn send_episode(
         if let Some(option_id) = preferred_media_option(episode_id) {
             args["media_option_id"] = json!(option_id);
         }
+    }
+    let playlist_id = Dispatch::<UIState>::global().get().current_playlist_id;
+    if let Some(pid) = speaker_playlist(current_playing_anchor(), (episode_id, is_youtube), playlist_id) {
+        args["playlist_id"] = json!(pid);
     }
     Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
         s.focus_device_id = Some(device_id);
