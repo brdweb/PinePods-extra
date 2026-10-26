@@ -16579,6 +16579,17 @@
               "type": "string"
             },
             "description": "Other player ids grouped with this one, when the device is a Music Assistant group or sync leader."
+          },
+          "sleep_timer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SleepTimer",
+                "description": "Sleep timer running on this Music Assistant speaker's queue."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -18728,6 +18739,67 @@
             "format": "int32"
           }
         }
+      },
+      "SleepTimer": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Pause at this Unix time (seconds).",
+            "required": [
+              "ends_at",
+              "mode"
+            ],
+            "properties": {
+              "ends_at": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "minutes"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Pause when the current episode finishes, without starting the next.",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "end_of_episode"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Pause when this many more episodes have finished, the current one included.",
+            "required": [
+              "left",
+              "mode"
+            ],
+            "properties": {
+              "left": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "episodes"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "When a Music Assistant speaker pauses by itself, as on mobile."
       },
       "SocialInteract": {
         "type": "object",

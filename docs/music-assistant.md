@@ -160,7 +160,7 @@ Each **available** player and group is registered as a virtual device on the exi
 
 Unavailable players are listed by the HTTP players route and are not registered as devices. A transient MA disconnect keeps the registration so in-flight commands can queue; devices disappear when the user disables the bridge or changes the server.
 
-Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, and `play_episode`. Music Assistant devices also advertise `next`. Send them the same way as for any other device. `set_speed` is accepted and ignored; it is not in the advertised capabilities.
+Existing clients can already send `play`, `pause`, `stop`, `seek`, `skip_forward`, `skip_back`, and `play_episode`. Music Assistant devices also advertise `next` and `sleep_timer`. Send them the same way as for any other device. `set_speed` is accepted and ignored; it is not in the advertised capabilities.
 
 ```json
 {
@@ -188,6 +188,7 @@ Other device types ignore these. Only send them when `capabilities` contains the
 | `set_members` | `player_ids_to_add` and/or `player_ids_to_remove`, `target_player` optional | `players/cmd/set_members` |
 | `group_volume` | `volume_level` or `volume` (0–100) | `players/cmd/group_volume` |
 | `next` | none | `play_episode` of the next PinePods item (see Next episode) |
+| `sleep_timer` | `mode`: `off`, `minutes` (with `minutes`, 1–720), `end_of_episode`, or `episodes` (with `episodes`, 1–10) | none until it fires (see Sleep timer) |
 
 Transport args match the existing relay: `seek` uses `position_sec` (or `position`), `skip_forward` defaults to 15 seconds, `skip_back` defaults to 15. `set_speed` does not change the speaker.
 
@@ -201,6 +202,7 @@ Transport args match the existing relay: `seek` uses `position_sec` (or `positio
 | `volume_muted` | bool |
 | `ma_player_id` | raw MA player id |
 | `group_members` | member player ids (empty array when the player is not a group or sync leader) |
+| `sleep_timer` | the running timer: `{"mode":"minutes","ends_at":<unix seconds>}`, `{"mode":"end_of_episode"}`, or `{"mode":"episodes","left":<n>}`; omitted when off |
 
 `episode_id` is `0` until the queue is playing a PinePods stream URL. Title, artwork, and duration are filled from episode metadata once that URL is seen. `playing` is true for MA states `playing` and `buffering`.
 
@@ -244,6 +246,16 @@ The next item is read first, in the order above, because `mark_episode_completed
 `end_skip` is read when the episode starts. Playing the same episode again on the same speaker keeps the value read then.
 
 The next item is started by the bridge, not added to Music Assistant's own queue. `play_media` has no start offset, so an enqueued item could not resume or skip its intro without a second seek, and an enqueued remote URL would not map back to its PinePods episode.
+
+## Sleep timer
+
+The bridge runs the sleep timer, so it works with the browser closed. The modes match mobile:
+
+- `minutes`: at `ends_at` the bridge writes the projected position to history and pauses the leader queue. If the speaker is already paused then, the timer just ends.
+- `end_of_episode`: when the episode finishes (see Queue advance) it is marked complete and the next one does not start. An outro pauses the speaker; a natural end leaves it stopped.
+- `episodes`: each finished episode counts down `left`; the last one behaves like `end_of_episode`. One episode is sent back as `end_of_episode`.
+
+The timer is kept per leader queue in memory. It is cleared by `off`, when it fires, and on a real stop. An API restart drops it. Setting it updates the speaker's snapshot right away.
 
 ## Versions
 

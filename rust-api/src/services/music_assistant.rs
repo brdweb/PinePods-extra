@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::database::DatabasePool;
 use crate::error::{AppError, AppResult};
 use crate::handlers::nowplaying::notify_devices_changed;
-use crate::models::NowPlayingSnapshot;
+use crate::models::{NowPlayingSnapshot, SleepTimer};
 use crate::AppState;
 
 /// Actions a Music Assistant virtual device announces on the now-playing relay.
@@ -40,6 +40,7 @@ pub const MA_CAPABILITIES: &[&str] = &[
     "skip_back",
     "play_episode",
     "next",
+    "sleep_timer",
     "volume_set",
     "volume_mute",
     "group",
@@ -1560,6 +1561,52 @@ pub fn paused_position(held: Option<f64>, resume_pos: Option<f64>, playing: bool
     resume_pos.filter(|p| p.is_finite() && *p > 0.0).or(held)
 }
 
+/// Longest sleep timer, in minutes, and most episodes, as on mobile.
+pub const SLEEP_MAX_MINUTES: i64 = 12 * 60;
+pub const SLEEP_MAX_EPISODES: i64 = 10;
+
+/// Sleep timer a `sleep_timer` command asks for. `Ok(None)` turns it off.
+///
+/// `mode` is `off`, `minutes` (with `minutes`), `end_of_episode`, or
+/// `episodes` (with `episodes`). One episode is the end of this one.
+pub fn sleep_timer_from_args(args: &Value, now: i64) -> Result<Option<SleepTimer>, String> {
+    let count = |key: &str, max: i64| {
+        args.get(key)
+            .and_then(json_i64)
+            .filter(|n| (1..=max).contains(n))
+            .ok_or_else(|| format!("sleep_timer needs {key} from 1 to {max}"))
+    };
+    match args.get("mode").and_then(Value::as_str).unwrap_or("") {
+        "off" => Ok(None),
+        "minutes" => Ok(Some(SleepTimer::Minutes {
+            ends_at: now + count("minutes", SLEEP_MAX_MINUTES)? * 60,
+        })),
+        "end_of_episode" => Ok(Some(SleepTimer::EndOfEpisode)),
+        "episodes" => Ok(Some(match count("episodes", SLEEP_MAX_EPISODES)? {
+            1 => SleepTimer::EndOfEpisode,
+            n => SleepTimer::Episodes { left: n as u32 },
+        })),
+        other => Err(format!("unknown sleep_timer mode {other:?}")),
+    }
+}
+
+/// An episode finished: whether the speaker stops here instead of playing the
+/// next one, and the timer left afterwards.
+pub fn sleep_after_episode(timer: Option<SleepTimer>) -> (bool, Option<SleepTimer>) {
+    match timer {
+        Some(SleepTimer::EndOfEpisode) | Some(SleepTimer::Episodes { left: 0..=1 }) => (true, None),
+        Some(SleepTimer::Episodes { left }) => {
+            (false, Some(SleepTimer::Episodes { left: left - 1 }))
+        }
+        other => (false, other),
+    }
+}
+
+/// A minutes timer whose time has come.
+pub fn sleep_due(timer: Option<SleepTimer>, now: i64) -> bool {
+    matches!(timer, Some(SleepTimer::Minutes { ends_at }) if ends_at <= now)
+}
+
 /// One PinePods queue row, as far as picking the next episode cares.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueEntry {
@@ -2613,6 +2660,8 @@ struct SessionLive {
     queue_duration: RwLock<HashMap<String, f64>>,
     /// Offset to seek once that queue reports a duration.
     pending_resume: RwLock<HashMap<String, f64>>,
+    /// Sleep timer per queue. In memory: a restart drops it.
+    sleep: RwLock<HashMap<String, SleepTimer>>,
 }
 
 impl SessionLive {
@@ -2627,7 +2676,34 @@ impl SessionLive {
             episodes: RwLock::new(HashMap::new()),
             queue_duration: RwLock::new(HashMap::new()),
             pending_resume: RwLock::new(HashMap::new()),
+            sleep: RwLock::new(HashMap::new()),
         }
+    }
+
+    async fn sleep_timer(&self, queue_id: &str) -> Option<SleepTimer> {
+        self.sleep.read().await.get(queue_id).copied()
+    }
+
+    async fn set_sleep_timer(&self, queue_id: &str, timer: Option<SleepTimer>) {
+        let mut sleep = self.sleep.write().await;
+        match timer {
+            Some(timer) => sleep.insert(queue_id.to_string(), timer),
+            None => sleep.remove(queue_id),
+        };
+    }
+
+    /// Minutes timers that are due, removed so each fires once.
+    async fn take_due_sleep(&self, now: i64) -> Vec<String> {
+        let mut sleep = self.sleep.write().await;
+        let due: Vec<String> = sleep
+            .iter()
+            .filter(|(_, timer)| sleep_due(Some(**timer), now))
+            .map(|(queue_id, _)| queue_id.clone())
+            .collect();
+        for queue_id in &due {
+            sleep.remove(queue_id);
+        }
+        due
     }
 
     async fn remember(&self, queue_id: &str, episode: RememberedEpisode) {
@@ -2645,6 +2721,7 @@ impl SessionLive {
         self.episodes.write().await.remove(queue_id);
         self.queue_duration.write().await.remove(queue_id);
         self.pending_resume.write().await.remove(queue_id);
+        self.sleep.write().await.remove(queue_id);
     }
 
     async fn note_queue_duration(&self, queue_id: &str, duration: f64) {
@@ -2814,6 +2891,7 @@ pub async fn dispatch(
     match action {
         "play_episode" => play_on_queue(state, user_id, &queue_id, &args).await,
         "next" => play_next(state, user_id, &queue_id).await,
+        "sleep_timer" => set_sleep_timer(state, user_id, &queue_id, &args).await,
         _ => {
             let commands = translate_action(&player_id, &queue_id, action, &args)
                 .map_err(AppError::bad_request)?;
@@ -2837,6 +2915,52 @@ async fn play_on_queue(
         outcome.warnings.push(warning);
     }
     Ok(outcome)
+}
+
+/// Set or clear the sleep timer on the leader queue, then show it on the
+/// speaker rows right away instead of at the next Music Assistant event.
+async fn set_sleep_timer(
+    state: &AppState,
+    user_id: i32,
+    queue_id: &str,
+    args: &Value,
+) -> AppResult<ActionOutcome> {
+    let timer = sleep_timer_from_args(args, unix_secs()).map_err(AppError::bad_request)?;
+    let live = state
+        .music_assistant
+        .session_live(user_id)
+        .await
+        .ok_or_else(|| AppError::service_unavailable("Music Assistant is not connected"))?;
+    live.set_sleep_timer(queue_id, timer).await;
+    let players = live.players.read().await.clone();
+    let rows = state.redis_client.get_now_playing_devices(user_id).await?;
+    let mut wrote = false;
+    for mut row in rows {
+        let related = row.ma_player_id.as_deref().is_some_and(|id| {
+            id == queue_id
+                || players
+                    .iter()
+                    .any(|p| p.player_id == id && player_related(p, queue_id))
+        });
+        if related {
+            row.sleep_timer = timer;
+            if state
+                .redis_client
+                .upsert_now_playing(user_id, row)
+                .await
+                .is_ok()
+            {
+                wrote = true;
+            }
+        }
+    }
+    if wrote {
+        notify_devices_changed(state, user_id, "").await;
+    }
+    Ok(ActionOutcome {
+        detail: "ok".into(),
+        warnings: Vec::new(),
+    })
 }
 
 fn next_args(next: &NextEpisode) -> Value {
@@ -2895,7 +3019,20 @@ async fn advance_queue(
     still_playing: bool,
 ) {
     let current = (finished.episode_id, finished.is_youtube);
-    let next = next_pinepods_episode(&state.db_pool, user_id, current, playlist_id, false).await;
+    let live = state.music_assistant.session_live(user_id).await;
+    let timer = match &live {
+        Some(live) => live.sleep_timer(&queue_id).await,
+        None => None,
+    };
+    let (sleep_here, timer_left) = sleep_after_episode(timer);
+    if let (Some(live), Some(_)) = (&live, timer) {
+        live.set_sleep_timer(&queue_id, timer_left).await;
+    }
+    let next = if sleep_here {
+        None
+    } else {
+        next_pinepods_episode(&state.db_pool, user_id, current, playlist_id, false).await
+    };
     if let Err(e) = state
         .db_pool
         .mark_episode_completed(finished.episode_id, user_id, finished.is_youtube)
@@ -3791,6 +3928,44 @@ async fn tick_tracks(
     retained: &mut HashMap<String, String>,
 ) {
     let now = unix_secs();
+    for queue_id in live.take_due_sleep(now).await {
+        let Some(track) = tracks.get(&queue_id) else {
+            continue;
+        };
+        // A paused speaker has nothing to stop; the timer just ends.
+        if track.playing {
+            if let Some(stream) = track.stream.clone() {
+                let position =
+                    projected_position(track.position, track.updated_at, true, track.speed, now);
+                write_listen_progress(
+                    state,
+                    user_id,
+                    stream.episode_id,
+                    stream.is_youtube,
+                    position,
+                    track.duration,
+                    track.end_skip,
+                )
+                .await;
+            }
+            let pause = MaCommand {
+                command: "player_queues/pause".into(),
+                args: json!({ "queue_id": queue_id }),
+            };
+            let state = state.clone();
+            // The session loop has to keep forwarding while this is sent.
+            tokio::spawn(async move {
+                if let Err(e) = state
+                    .music_assistant
+                    .send_commands(user_id, vec![pause])
+                    .await
+                {
+                    tracing::warn!("music assistant sleep timer pause: {e}");
+                }
+            });
+        }
+        publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
+    }
     let playing: Vec<String> = tracks
         .iter()
         .filter(|(_, t)| t.playing && t.stream.is_some() && t.updated_at > 0)
@@ -3910,7 +4085,8 @@ async fn publish_track_snapshot(
         if episode == 0 && !cleared && retained.contains_key(&player.player_id) {
             continue;
         }
-        let snap = snapshot_for(user_id, player, chosen);
+        let mut snap = snapshot_for(user_id, player, chosen);
+        snap.sleep_timer = live.sleep_timer(&key).await;
         if state
             .redis_client
             .upsert_now_playing(user_id, snap)
@@ -3995,6 +4171,7 @@ async fn sync_virtuals(
     retained: &mut HashMap<String, String>,
 ) -> AppResult<()> {
     let loaded = loaded_queue_ids(tracks);
+    let live = state.music_assistant.session_live(user_id).await;
     let mut keep = HashSet::new();
     for player in players {
         let queue_key = snapshot_queue_id(
@@ -4044,7 +4221,10 @@ async fn sync_virtuals(
         if !has_episode && retained.contains_key(&player.player_id) {
             continue;
         }
-        let snap = snapshot_for(user_id, player, track);
+        let mut snap = snapshot_for(user_id, player, track);
+        if let Some(live) = &live {
+            snap.sleep_timer = live.sleep_timer(&queue_key).await;
+        }
         state.redis_client.upsert_now_playing(user_id, snap).await?;
         if has_episode {
             retained.insert(player.player_id.clone(), queue_key);
@@ -4138,6 +4318,7 @@ fn snapshot_for(user_id: i32, player: &MaPlayer, track: Option<&QueueTrack>) -> 
         volume_muted: Some(player.volume_muted),
         ma_player_id: Some(player.player_id.clone()),
         group_members: Some(player.group_members.clone()),
+        sleep_timer: None,
     }
 }
 
@@ -5021,6 +5202,64 @@ mod tests {
         // Already stopped, or no duration yet.
         assert!(!advance_due(1799.0, false, false, 1800.0, 0));
         assert!(!advance_due(10.0, true, false, 0.0, 0));
+    }
+
+    #[test]
+    fn sleep_timer_modes_parse_like_mobile() {
+        let now = 1_000;
+        let parse = |args: Value| sleep_timer_from_args(&args, now);
+        assert_eq!(parse(json!({"mode": "off"})), Ok(None));
+        assert_eq!(
+            parse(json!({"mode": "minutes", "minutes": 30})),
+            Ok(Some(SleepTimer::Minutes { ends_at: 2_800 }))
+        );
+        assert_eq!(
+            parse(json!({"mode": "end_of_episode"})),
+            Ok(Some(SleepTimer::EndOfEpisode))
+        );
+        assert_eq!(
+            parse(json!({"mode": "episodes", "episodes": 3})),
+            Ok(Some(SleepTimer::Episodes { left: 3 }))
+        );
+        // One episode is the end of this one.
+        assert_eq!(
+            parse(json!({"mode": "episodes", "episodes": 1})),
+            Ok(Some(SleepTimer::EndOfEpisode))
+        );
+        for bad in [
+            json!({"mode": "minutes"}),
+            json!({"mode": "minutes", "minutes": 0}),
+            json!({"mode": "minutes", "minutes": 721}),
+            json!({"mode": "episodes", "episodes": 11}),
+            json!({"mode": "later"}),
+            json!({}),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn sleep_timer_stops_after_the_last_counted_episode_or_on_time() {
+        assert_eq!(sleep_after_episode(None), (false, None));
+        assert_eq!(
+            sleep_after_episode(Some(SleepTimer::EndOfEpisode)),
+            (true, None)
+        );
+        assert_eq!(
+            sleep_after_episode(Some(SleepTimer::Episodes { left: 3 })),
+            (false, Some(SleepTimer::Episodes { left: 2 }))
+        );
+        assert_eq!(
+            sleep_after_episode(Some(SleepTimer::Episodes { left: 1 })),
+            (true, None)
+        );
+        // A minutes timer does not care about episode ends.
+        let minutes = Some(SleepTimer::Minutes { ends_at: 50 });
+        assert_eq!(sleep_after_episode(minutes), (false, minutes));
+        assert!(!sleep_due(minutes, 49));
+        assert!(sleep_due(minutes, 50));
+        assert!(!sleep_due(Some(SleepTimer::EndOfEpisode), i64::MAX));
+        assert!(!sleep_due(None, 100));
     }
 
     #[test]

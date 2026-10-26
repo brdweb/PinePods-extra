@@ -278,6 +278,21 @@ pub struct NowPlayingSnapshot {
     /// Other player ids grouped with this one, when the device is a Music Assistant group or sync leader.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_members: Option<Vec<String>>,
+    /// Sleep timer running on this Music Assistant speaker's queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleep_timer: Option<SleepTimer>,
+}
+
+/// When a Music Assistant speaker pauses by itself, as on mobile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SleepTimer {
+    /// Pause at this Unix time (seconds).
+    Minutes { ends_at: i64 },
+    /// Pause when the current episode finishes, without starting the next.
+    EndOfEpisode,
+    /// Pause when this many more episodes have finished, the current one included.
+    Episodes { left: u32 },
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
