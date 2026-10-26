@@ -1886,6 +1886,8 @@
     "reconnecting": "Reconnecting",
     "open_speakers": "MA-Speakers",
     "synced_to": "Synced to",
+    "in_group": "In the {group} group",
+    "offline_here": "Offline playback stays on this device",
     "add_member": "Add speaker",
     "remove_member": "Remove"
   },

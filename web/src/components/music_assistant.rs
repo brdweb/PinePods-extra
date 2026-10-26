@@ -25,7 +25,8 @@ use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
     note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    for_episode, progress_percent, sleep_args, sleep_remaining, SleepChoice, SLEEP_CHOICES, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
+    for_episode, member_of, progress_percent, send_to_speaker_allowed, sleep_args, sleep_remaining,
+    SleepChoice, SLEEP_CHOICES, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
     transport_shown, unix_now,
     GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
@@ -1121,6 +1122,7 @@ fn speaker_picker() -> Html {
 
     let failure = i18n.t("music_assistant.command_failed").to_string();
     let nothing = i18n.t("music_assistant.nothing_to_play").to_string();
+    let offline_here = i18n.t("music_assistant.offline_here").to_string();
     let need_two = i18n.t("music_assistant.group_need_two").to_string();
     let multi = i18n.t("music_assistant.group_one_existing").to_string();
     let unchanged = i18n.t("music_assistant.group_unchanged").to_string();
@@ -1148,7 +1150,12 @@ fn speaker_picker() -> Html {
         let ui = ui.clone();
         let prompt = prompt.clone();
         let fetching = fetching.clone();
+        let offline_here = offline_here.clone();
         Callback::from(move |player: MaPlayer| {
+            if pending.is_none() && !send_to_speaker_allowed(true, ui.offline == Some(true)) {
+                toast_info(&Dispatch::<NotificationState>::global(), offline_here.clone());
+                return;
+            }
             let Some((episode_id, is_youtube, position)) = play_target(&pending, &ui) else {
                 toast_info(&Dispatch::<NotificationState>::global(), nothing.clone());
                 return;
@@ -1355,8 +1362,13 @@ fn speaker_picker() -> Html {
                             i18n.t("music_assistant.player").to_string()
                         };
                         let playback_state = playback_state_for(player, &ma.players);
-                        let synced = player.synced_to.as_ref().map(|id| {
-                            player_name(&ma.players, id).to_string()
+                        // A sync member plays with its leader. Playing on it alone
+                        // would split the group, so its row offers no Play.
+                        let member_of_group = member_of(player, &ma.players).map(|leader| {
+                            i18n.t("music_assistant.in_group").to_string().replace(
+                                "{group}",
+                                if leader.name.is_empty() { &leader.player_id } else { &leader.name },
+                            )
                         });
                         let ungroup = {
                             let failure = failure.clone();
@@ -1484,8 +1496,8 @@ fn speaker_picker() -> Html {
                                         }
                                     </span>
                                 </div>
-                                if let Some(leader) = synced {
-                                    <span class="rd-track">{ format!("{} {leader}", i18n.t("music_assistant.synced_to")) }</span>
+                                if let Some(label) = member_of_group.clone() {
+                                    <span class="rd-track">{ label }</span>
                                 }
                                 if show_group_tools {
                                     <div class="ma-member-list">
@@ -1546,9 +1558,11 @@ fn speaker_picker() -> Html {
                                             <i class="ph ph-stop"></i>
                                         </button>
                                     }
-                                    <button type="button" class="rd-play-here" disabled={!player.available} onclick={play}>
-                                        <i class="ph ph-play mr-1"></i>{ play_label.clone() }
-                                    </button>
+                                    if member_of_group.is_none() {
+                                        <button type="button" class="rd-play-here" disabled={!player.available} onclick={play}>
+                                            <i class="ph ph-play mr-1"></i>{ play_label.clone() }
+                                        </button>
+                                    }
                                     if show_group_tools {
                                         <button type="button" class="rd-play-here" onclick={ungroup}>
                                             { i18n.t("music_assistant.ungroup") }
