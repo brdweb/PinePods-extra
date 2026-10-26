@@ -34,8 +34,9 @@ use crate::requests::notify::{toast_error, toast_info};
 use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
 use crate::requests::pod_req::{
     call_fetch_podcasting_2_data, call_get_episode_metadata, call_get_play_episode_details,
-    Chapter, EpisodeRequest, FetchPodcasting2DataRequest,
+    Chapter, EpisodeRequest, FetchPodcasting2DataRequest, Transcript,
 };
+use crate::pages::episode::TranscriptInline;
 use crate::requests::episode::Episode;
 use crate::requests::people_req::CreditedPerson;
 use crate::requests::podcasting2::{chapter_image_at, http_link};
@@ -306,7 +307,9 @@ pub fn ma_now_playing_bar() -> Html {
     // a late response for the previous one is never shown.
     let chapters = use_state(|| (0, Rc::new(Vec::<Chapter>::new())));
     let people = use_state(|| (0, Rc::new(Vec::<CreditedPerson>::new())));
+    let transcripts = use_state(|| (0, Rc::new(Vec::<Transcript>::new())));
     let chapters_open = use_state(|| false);
+    let transcript_open = use_state(|| false);
     // Show notes are fetched when asked for, for the episode then playing.
     let notes = use_state(|| None::<Episode>);
 
@@ -381,6 +384,7 @@ pub fn ma_now_playing_bar() -> Html {
     {
         let chapters = chapters.clone();
         let people = people.clone();
+        let transcripts = transcripts.clone();
         let episode = device
             .as_ref()
             .filter(|d| d.episode_id > 0 && !d.is_youtube)
@@ -394,6 +398,7 @@ pub fn ma_now_playing_bar() -> Html {
                     {
                         chapters.set((episode_id, Rc::new(data.chapters)));
                         people.set((episode_id, Rc::new(data.people)));
+                        transcripts.set((episode_id, Rc::new(data.transcripts)));
                     }
                 });
             }
@@ -479,6 +484,47 @@ pub fn ma_now_playing_bar() -> Html {
         }
     });
     let episode_people = for_episode(&people, device.episode_id);
+    let episode_transcripts = for_episode(&transcripts, device.episode_id);
+    let transcript_panel = (*transcript_open && !episode_transcripts.is_empty())
+        .then(session)
+        .flatten()
+        .map(|(server, api_key, _)| {
+            let close = {
+                let transcript_open = transcript_open.clone();
+                Callback::from(move |_: MouseEvent| transcript_open.set(false))
+            };
+            let seek_id = device.device_id.clone();
+            let can_seek = device.supports("seek");
+            html! {
+                <div class="chapter-select-modal fixed top-0 right-0 left-0 flex justify-center items-center w-full h-[calc(100%-1rem)] max-h-full bg-black bg-opacity-25"
+                    onclick={close.clone()}>
+                    <div class="modal-container relative p-4 w-full max-w-2xl max-h-full rounded-lg shadow"
+                        onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                        <div class="flex items-center justify-between p-4 border-b rounded-t">
+                            <h3 class="text-xl font-semibold">{ i18n.t("episode.transcript") }</h3>
+                            <button type="button" class="player-btn" title={i18n.t("common.close_modal").to_string()} onclick={close}>
+                                <i class="ph ph-x"></i>
+                            </button>
+                        </div>
+                        <div class="p-4 max-h-[70vh] overflow-y-auto">
+                            <TranscriptInline
+                                transcripts={(*episode_transcripts).clone()}
+                                server_name={server}
+                                api_key={api_key}
+                                position={Some(shown)}
+                                on_seek={can_seek.then(|| Callback::from(move |t: f64| {
+                                    send_command(&seek_id, "seek", json!({ "position_sec": integer_position(t) }));
+                                }))}
+                            />
+                        </div>
+                    </div>
+                </div>
+            }
+        });
+    let open_transcript = {
+        let transcript_open = transcript_open.clone();
+        Callback::from(move |_: MouseEvent| transcript_open.set(true))
+    };
     let open_notes = {
         let notes = notes.clone();
         let (episode_id, is_youtube) = (device.episode_id, device.is_youtube);
@@ -687,6 +733,7 @@ pub fn ma_now_playing_bar() -> Html {
     html! {
         <>
         { for chapter_list }
+        { for transcript_panel }
         <div class={classes!("audio-player", "ma-now", (*expanded).then_some("expanded"))}>
             <div class="player-fs-backdrop"
                 style={format!("background-image: url('{}');", device.artwork_url)}
@@ -769,6 +816,11 @@ pub fn ma_now_playing_bar() -> Html {
                             if !episode_chapters.is_empty() && device.supports("seek") {
                                 <button type="button" class="player-btn" title={i18n.t("audio.chapters").to_string()} onclick={open_chapters}>
                                     <i class="ph ph-list-numbers"></i>
+                                </button>
+                            }
+                            if !episode_transcripts.is_empty() {
+                                <button type="button" class="player-btn" title={i18n.t("episode.transcript").to_string()} onclick={open_transcript}>
+                                    <i class="ph ph-closed-captioning"></i>
                                 </button>
                             }
                         </div>
