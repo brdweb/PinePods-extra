@@ -787,6 +787,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     if (season != 0) return season;
     return aKey.$3.compareTo(bKey.$3);
   }
+
   Future<void> _loadShowTags(int podcastId) async {
     final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
     if (userId == null) return;
@@ -798,6 +799,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       debugPrint('Error loading show tags: $e');
     }
   }
+
   String get _coverUrl => artworkChoice(_showTags?.image ?? const [], _showTags?.images, _podcast.artwork).src;
 
   Future<void> _playTrailer(Trailer trailer) async {
@@ -821,27 +823,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     episode.streaming = true;
     await audioPlayerService.playEpisode(episode: episode, resume: false);
   }
-  Future<void> _playTrailer(Trailer trailer) async {
-    final url = httpLink(trailer.url) ?? safeLink(trailer.url);
-    if (url == null) return;
-    if (trailer.isVideo) {
-      final uri = Uri.tryParse(url);
-      if (uri != null) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-      return;
-    }
-    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
-    final episode = Episode(
-      guid: 'p2-trailer-${url.hashCode}',
-      podcast: _podcast.title,
-      title: trailer.title.trim().isEmpty ? 'Trailer' : trailer.title,
-      contentUrl: url,
-      imageUrl: _podcast.artwork,
-    );
-    episode.streaming = true;
-    await audioPlayerService.playEpisode(episode: episode, resume: false);
-  }
+
   Future<void> _playLive(LiveItem item) async {
     final url = item.playableUrl;
     if (url == null) return;
@@ -859,6 +841,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     episode.streaming = true;
     await audioPlayerService.playEpisode(episode: episode, resume: false);
   }
+
   Future<void> _loadPodcasting2Extras(int podcastId) async {
     try {
       final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
@@ -874,6 +857,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       debugPrint('Error loading podcasting 2.0 extras: $e');
     }
   }
+
   Future<bool> _subscribePodroll(ResolvedPodroll show) async {
     final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
     final userId = settings.pinepodsUserId;
