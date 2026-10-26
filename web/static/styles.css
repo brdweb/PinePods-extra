@@ -10067,6 +10067,15 @@ body.search-takeover-open .drawer-icon { display: none; }
     background: color-mix(in srgb, var(--warning-color, #e0a800) 14%, transparent);
     border-left: 3px solid var(--warning-color, #e0a800);
 }
+/* Scoped past Tailwind's `[type="button"]` reset, which loads later. */
+.ep-transcript-content .ep-transcript-follow {
+    position: sticky; top: 0; z-index: 1;
+    display: flex; align-items: center; gap: 6px;
+    width: fit-content; margin: 0 auto 6px; padding: 4px 12px;
+    border-radius: 999px; font-size: 12px;
+    background: var(--button-color); color: var(--button-text-color);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+}
 .ep-transcript-cue.is-current {
     background: color-mix(in srgb, var(--accent-color) 18%, transparent);
 }

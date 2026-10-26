@@ -701,6 +701,24 @@ pub fn current_cue(cues: &[TranscriptCue], position: f64) -> Option<usize> {
     cues.iter().rposition(|cue| cue.start <= position)
 }
 
+/// Something that changes whether a following transcript keeps the current
+/// cue in view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptFollow {
+    /// The listener scrolled the transcript themselves.
+    UserScrolled,
+    /// The listener tapped a cue's timestamp.
+    Seeked,
+    /// The listener pressed Follow playback.
+    Resumed,
+}
+
+/// Whether the transcript follows playback after `event`. Scrolling to read
+/// stops it; jumping to a cue or pressing Follow starts it again.
+pub fn follows_after(event: TranscriptFollow) -> bool {
+    !matches!(event, TranscriptFollow::UserScrolled)
+}
+
 pub fn artwork_choice(images: &[PodcastImage], set: Option<&ImageSet>, fallback: &str) -> ArtworkChoice {
     let preferred = images.iter().find(|img| {
         img.purpose
@@ -1046,6 +1064,13 @@ mod tests {
             url: None,
             img: img.map(|s| s.to_string()),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn scrolling_the_transcript_stops_following_until_a_jump_or_resume() {
+        assert!(!follows_after(TranscriptFollow::UserScrolled));
+        assert!(follows_after(TranscriptFollow::Seeked));
+        assert!(follows_after(TranscriptFollow::Resumed));
     }
 
     #[wasm_bindgen_test]

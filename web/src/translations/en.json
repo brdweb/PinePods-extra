@@ -383,6 +383,7 @@
     "something_went_wrong_description": "Something seems to have gone wrong. A straightup server disconnect maybe? Did you browse here directly? That's not how this app works. It needs the context to browse around. I honestly don't have anything else for you as this shouldn't happen. This is embarrasing.",
     "this_item_contains_no_media": "This item contains no media file",
     "transcript": "Transcript",
+    "follow_transcript": "Follow playback",
     "unable_to_display_episode": "Unable to display episode",
     "unable_to_retrieve_url": "Unable to retrieve URL",
     "unsave": "Unsave",

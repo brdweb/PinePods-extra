@@ -14,7 +14,9 @@ use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
 use crate::components::podcasting2::{cover_art, cover_html, EpisodeTagsPanel};
 use crate::components::safehtml::SafeHtml;
 use crate::requests::people_req::{call_get_episode_people, CreditedPerson};
-use crate::requests::podcasting2::{current_cue, parse_transcript_cues};
+use crate::requests::podcasting2::{
+    current_cue, follows_after, parse_transcript_cues, TranscriptFollow,
+};
 use crate::requests::pod_req;
 use crate::requests::pod_req::{
     call_check_podcast, call_create_share_link, call_download_episode, call_download_episode_file,
@@ -254,6 +256,7 @@ pub struct TranscriptInlineProps {
 /// can be shown inline inside the episode page's Transcript tab.
 #[function_component(TranscriptInline)]
 pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
+    let (i18n, _) = use_translation();
     let transcript_content = use_state(|| None::<String>);
     let loading = use_state(|| true);
     let error = use_state(|| None::<String>);
@@ -390,11 +393,34 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
         .unwrap_or_default();
     let current = props.position.and_then(|p| current_cue(&cues, p));
     let cues_ref = use_node_ref();
+    // Only a transcript given a position follows. Scrolling it pauses that so
+    // the listener can read; a timestamp jump or Follow playback resumes it.
+    let following = use_state(|| true);
+    let follow = {
+        let following = following.clone();
+        Callback::from(move |event: TranscriptFollow| following.set(follows_after(event)))
+    };
+    let seek = {
+        let follow = follow.clone();
+        seek.reform(move |t: f64| {
+            follow.emit(TranscriptFollow::Seeked);
+            t
+        })
+    };
+    let on_user_scroll = props.position.is_some().then(|| {
+        let follow = follow.clone();
+        let following = following.clone();
+        Callback::from(move |_: ()| {
+            if *following {
+                follow.emit(TranscriptFollow::UserScrolled);
+            }
+        })
+    });
     {
-        // Keep the current cue in view when it changes.
+        // Keep the current cue in view when it changes or following resumes.
         let cues_ref = cues_ref.clone();
-        use_effect_with(current, move |current| {
-            if current.is_some() {
+        use_effect_with((current, *following), move |(current, following)| {
+            if current.is_some() && *following {
                 let el = cues_ref
                     .cast::<web_sys::Element>()
                     .and_then(|list| list.query_selector(".ep-transcript-cue.is-current").ok().flatten());
@@ -414,7 +440,16 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
     }
 
     html! {
-        <div class="ep-transcript-content space-y-4 item_container-text prose dark:prose-invert max-w-none">
+        <div class="ep-transcript-content space-y-4 item_container-text prose dark:prose-invert max-w-none"
+            onwheel={on_user_scroll.clone().map(|cb| cb.reform(|_: WheelEvent| ()))}
+            ontouchmove={on_user_scroll.map(|cb| cb.reform(|_: TouchEvent| ()))}>
+            if props.position.is_some() && !*following && current.is_some() {
+                <button type="button" class="ep-transcript-follow"
+                    onclick={follow.reform(|_: MouseEvent| TranscriptFollow::Resumed)}>
+                    <i class="ph ph-arrow-line-down"></i>
+                    { i18n.t("episode.follow_transcript") }
+                </button>
+            }
             if *loading {
                 <div class="flex justify-center items-center h-32">
                     <div class="animate-spin rounded-full h-12 w-12 border-4 border-current border-t-transparent"></div>
