@@ -64,6 +64,20 @@ pub struct NowPlayingDevice {
     /// Other player ids grouped with this one.
     #[serde(default)]
     pub group_members: Option<Vec<String>>,
+    /// Sleep timer running on this Music Assistant speaker.
+    #[serde(default)]
+    pub sleep_timer: Option<SleepTimer>,
+}
+
+/// Mirror of the server's `SleepTimer`.
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SleepTimer {
+    /// Pauses at this Unix time (seconds).
+    Minutes { ends_at: i64 },
+    EndOfEpisode,
+    /// Episodes still to finish, the current one included.
+    Episodes { left: u32 },
 }
 
 /// What every client applied before devices could list their actions.

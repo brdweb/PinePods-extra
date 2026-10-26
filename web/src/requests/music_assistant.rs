@@ -645,6 +645,51 @@ pub fn for_episode<T>(tagged: &(i32, std::rc::Rc<Vec<T>>), episode_id: i32) -> s
     }
 }
 
+/// One entry of the speaker's sleep timer menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepChoice {
+    Off,
+    Minutes(u32),
+    EndOfEpisode,
+    Episodes(u32),
+}
+
+/// The sleep timer menu, the same choices as mobile.
+pub const SLEEP_CHOICES: &[SleepChoice] = &[
+    SleepChoice::Off,
+    SleepChoice::Minutes(15),
+    SleepChoice::Minutes(30),
+    SleepChoice::Minutes(45),
+    SleepChoice::Minutes(60),
+    SleepChoice::Minutes(90),
+    SleepChoice::EndOfEpisode,
+    SleepChoice::Episodes(2),
+    SleepChoice::Episodes(3),
+];
+
+/// Arguments of the `sleep_timer` command for a menu choice.
+pub fn sleep_args(choice: SleepChoice) -> Value {
+    match choice {
+        SleepChoice::Off => json!({ "mode": "off" }),
+        SleepChoice::Minutes(minutes) => json!({ "mode": "minutes", "minutes": minutes }),
+        SleepChoice::EndOfEpisode => json!({ "mode": "end_of_episode" }),
+        SleepChoice::Episodes(episodes) => json!({ "mode": "episodes", "episodes": episodes }),
+    }
+}
+
+/// Seconds left on a minutes timer, never below 0. Episode timers have none.
+pub fn sleep_remaining(
+    timer: Option<crate::requests::now_playing::SleepTimer>,
+    now: i64,
+) -> Option<i64> {
+    match timer {
+        Some(crate::requests::now_playing::SleepTimer::Minutes { ends_at }) => {
+            Some((ends_at - now).max(0))
+        }
+        _ => None,
+    }
+}
+
 /// Width of the bar's thin progress line, in percent. An unknown duration
 /// shows no progress rather than a full bar.
 pub fn progress_percent(shown: f64, duration: f64) -> f64 {
@@ -954,6 +999,40 @@ pub fn refresh_music_assistant() {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn sleep_menu_sends_the_server_modes_and_reads_its_snapshot() {
+        use crate::requests::now_playing::{NowPlayingDevice, SleepTimer};
+        assert_eq!(sleep_args(SleepChoice::Off), json!({ "mode": "off" }));
+        assert_eq!(
+            sleep_args(SleepChoice::Minutes(30)),
+            json!({ "mode": "minutes", "minutes": 30 })
+        );
+        assert_eq!(
+            sleep_args(SleepChoice::EndOfEpisode),
+            json!({ "mode": "end_of_episode" })
+        );
+        assert_eq!(
+            sleep_args(SleepChoice::Episodes(2)),
+            json!({ "mode": "episodes", "episodes": 2 })
+        );
+        assert_eq!(SLEEP_CHOICES.first(), Some(&SleepChoice::Off));
+
+        let device: NowPlayingDevice = serde_json::from_value(json!({
+            "device_id": "ma:2:x",
+            "sleep_timer": { "mode": "minutes", "ends_at": 1_000 }
+        }))
+        .unwrap();
+        assert_eq!(device.sleep_timer, Some(SleepTimer::Minutes { ends_at: 1_000 }));
+        assert_eq!(sleep_remaining(device.sleep_timer, 900), Some(100));
+        assert_eq!(sleep_remaining(device.sleep_timer, 1_200), Some(0));
+        let episodes: NowPlayingDevice =
+            serde_json::from_value(json!({ "sleep_timer": { "mode": "episodes", "left": 2 } })).unwrap();
+        assert_eq!(episodes.sleep_timer, Some(SleepTimer::Episodes { left: 2 }));
+        assert_eq!(sleep_remaining(episodes.sleep_timer, 0), None);
+        let none: NowPlayingDevice = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(none.sleep_timer, None);
+    }
 
     #[wasm_bindgen_test]
     fn speaker_extras_show_only_for_the_episode_they_were_fetched_for() {
