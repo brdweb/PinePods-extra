@@ -94,6 +94,18 @@ abstract class SettingsService {
   bool get mirrorServerDownloads;
   set mirrorServerDownloads(bool value);
 
+  /// Remove device downloads older than this many days. 0 disables it.
+  int get deleteDownloadsAfterDays;
+  set deleteDownloadsAfterDays(int value);
+
+  /// Episode card play button style: ring, outline, bare or tinted.
+  String get playButtonStyle;
+  set playButtonStyle(String value);
+
+  /// Tint episode cards with a colour pulled from the podcast artwork.
+  bool get artworkAccentColors;
+  set artworkAccentColors(bool value);
+
   Stream<String> get settingsListener;
 
   String? get pinepodsServer;

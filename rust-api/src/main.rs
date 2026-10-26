@@ -88,6 +88,7 @@ async fn main() -> AppResult<()> {
         notification_manager,
         restore_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         ai_available: services::ai_client::AiAvailability::new(),
+        merged_episodes: Default::default(),
     };
 
     // Start the AI sidecar health monitor (no-op if PINEPODS_AI_URL is unset).
@@ -103,6 +104,12 @@ async fn main() -> AppResult<()> {
     // pub/sub. Same best-effort pattern: re-injects remote events into the local
     // broadcast so sockets on this replica see tasks/messages raised elsewhere.
     handlers::websocket::spawn_task_bridge(app_state.clone());
+
+    // Push local changes to users' external sync servers shortly after they happen.
+    services::sync::push::init(&app_state.task_spawner, services::sync::push::PushDelays::from_env());
+
+    // Refresh feeds Podping announces, when an admin turned it on.
+    services::podping::init(app_state.clone());
 
     // Build the application with routes
     let app = create_app(app_state.clone());
@@ -135,6 +142,9 @@ async fn main() -> AppResult<()> {
     // Start the server
     let listener = tokio::net::TcpListener::bind(addr).await?;
     debug!("✅ PinePods Rust API server started successfully!");
+
+    // The startup refresh runs in the background once requests are accepted.
+    tokio::spawn(BackgroundScheduler::run_startup_refresh(scheduler_state.clone()));
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

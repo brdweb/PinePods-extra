@@ -8,6 +8,7 @@ use crate::components::gen_funcs::{
     format_error_message, get_default_sort_direction, get_filter_preference, set_filter_preference,
 };
 use crate::components::loading::Loading;
+use crate::components::youtube_video_filter::YouTubeVideoFilterSettings;
 use crate::components::episode_list_view::EpisodeListView;
 use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
 use crate::components::podcasting2::{cover_art, cover_html, Podcasting2Extras, ShowTagsPanel};
@@ -18,6 +19,7 @@ use crate::requests::pod_req::{
     call_get_silence_trim, SilenceTrimRequest,
     call_adjust_auto_transcribe, call_get_ai_status, call_get_auto_transcribe, AutoTranscribeRequest,
     call_get_auto_ad_detect, call_adjust_auto_ad_detect, AutoAdDetectRequest,
+    call_get_auto_delete_on_complete, call_set_podcast_auto_delete_on_complete,
     call_get_ad_skip_auto_activate, call_adjust_ad_skip_auto_activate,
     call_bulk_download_episodes,
     call_bulk_mark_episodes_completed, call_bulk_queue_episodes, call_bulk_save_episodes,
@@ -31,7 +33,8 @@ use crate::requests::pod_req::{
     call_get_rss_key, call_merge_podcasts, call_remove_category, call_remove_podcasts_name,
     call_remove_youtube_channel, call_set_playback_speed, call_toggle_podcast_favorite,
     call_toggle_podcast_notifications,
-    call_unmerge_podcast, call_update_feed_cutoff_days, call_update_podcast_info,
+    call_refresh_podcast_details, call_unmerge_podcast, call_update_feed_cutoff_days,
+    call_update_podcast_info,
     call_get_podcast_auto_delete_days, call_set_podcast_auto_delete_days,
     call_clear_podcast_auto_delete_days,
     AddCategoryRequest, AutoDownloadRequest, BulkEpisodeActionRequest, ClearPlaybackSpeedRequest,
@@ -908,6 +911,9 @@ pub fn episode_layout() -> Html {
     let auto_play_next_status = use_state(|| false);
     let auto_queue_status = use_state(|| false);
     let podcast_id = use_state(|| 0);
+    // Bumped after the podcast's details are read from its feed again, to reload its episodes.
+    let details_reload = use_state(|| 0u32);
+    let refreshing_details = use_state(|| false);
     let start_skip = use_state(|| 0);
     let end_skip = use_state(|| 0);
     // Silence-trim (#727) per-podcast settings
@@ -1680,6 +1686,64 @@ pub fn episode_layout() -> Html {
         let page_state = page_state.clone();
         Callback::from(move |_: MouseEvent| {
             page_state.set(PageState::EditPodcast);
+        })
+    };
+
+    // Read the podcast's feed again and show its current details; `true` also drops the user's
+    // own edits to them.
+    let refresh_from_feed = {
+        let api_key = api_key.clone();
+        let server_name = server_name.clone();
+        let user_id = user_id.clone();
+        let podcast_id = podcast_id.clone();
+        let page_state = page_state.clone();
+        let details_reload = details_reload.clone();
+        let refreshing_details = refreshing_details.clone();
+        let i18n_done = i18n.t("episodes_layout.details_refreshed").to_string();
+        let i18n_failed = i18n.t("episodes_layout.details_refresh_failed").to_string();
+        Callback::from(move |reset_edits: bool| {
+            let (Some(Some(api_key)), Some(server_name), Some(user_id)) =
+                (api_key.clone(), server_name.clone(), user_id)
+            else {
+                return;
+            };
+            let pid = *podcast_id;
+            if pid == 0 || *refreshing_details {
+                return;
+            }
+            refreshing_details.set(true);
+            let page_state = page_state.clone();
+            let details_reload = details_reload.clone();
+            let refreshing_details = refreshing_details.clone();
+            let i18n_done = i18n_done.clone();
+            let i18n_failed = i18n_failed.clone();
+            spawn_local(async move {
+                match call_refresh_podcast_details(&server_name, &api_key, pid, reset_edits).await {
+                    Ok(()) => {
+                        if let Ok(d) = call_get_podcast_details(&server_name, &api_key, user_id, pid).await {
+                            Dispatch::<PodcastFeedState>::global().reduce_mut(move |state| {
+                                if let Some(info) = state.clicked_podcast_info.as_mut() {
+                                    info.podcastname = d.podcastname;
+                                    info.artworkurl = d.artworkurl;
+                                    info.author = d.author;
+                                    info.description = d.description;
+                                    info.websiteurl = d.websiteurl;
+                                    info.episodecount = d.episodecount;
+                                }
+                            });
+                        }
+                        details_reload.set(*details_reload + 1);
+                        page_state.set(PageState::Hidden);
+                        Dispatch::<NotificationState>::global()
+                            .reduce_mut(|state| state.info_message = Some(i18n_done));
+                    }
+                    Err(e) => {
+                        Dispatch::<NotificationState>::global()
+                            .reduce_mut(|state| state.error_message = Some(format!("{i18n_failed}: {e}")));
+                    }
+                }
+                refreshing_details.set(false);
+            });
         })
     };
 
@@ -2549,6 +2613,79 @@ pub fn episode_layout() -> Html {
             });
         })
     };
+    // Ad times only fit the copy they were found on, and dynamically inserted ads differ between
+    // fetches, so auto ad-detect is only reliable when episodes are downloaded to the server.
+    let enable_auto_download_for_ads = toggle_download.clone();
+
+    // Delete server downloads once an episode is finished: this podcast's override, or the
+    // user's default when not customized.
+    let delete_on_complete = use_state(|| false);
+    let delete_on_complete_customized = use_state(|| false);
+    let delete_on_complete_default = use_state(|| false);
+    {
+        let delete_on_complete = delete_on_complete.clone();
+        let delete_on_complete_customized = delete_on_complete_customized.clone();
+        let delete_on_complete_default = delete_on_complete_default.clone();
+        let api_key = api_key.clone();
+        let server_name = server_name.clone();
+        let user_id = user_id.clone();
+        use_effect_with(*podcast_id, move |pid| {
+            let pid = *pid;
+            if let (true, Some(api_key), Some(server_name), Some(user_id)) =
+                (pid != 0, api_key.clone(), server_name.clone(), user_id.clone())
+            {
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok((enabled, _)) = call_get_auto_delete_on_complete(&server_name, &api_key, user_id, None).await {
+                        delete_on_complete_default.set(enabled);
+                    }
+                    if let Ok((enabled, customized)) = call_get_auto_delete_on_complete(&server_name, &api_key, user_id, Some(pid)).await {
+                        delete_on_complete.set(enabled);
+                        delete_on_complete_customized.set(customized);
+                    }
+                });
+            }
+            || ()
+        });
+    }
+    let on_delete_on_complete_change = {
+        let delete_on_complete = delete_on_complete.clone();
+        let delete_on_complete_customized = delete_on_complete_customized.clone();
+        let delete_on_complete_default = delete_on_complete_default.clone();
+        let api_key = api_key.clone();
+        let server_name = server_name.clone();
+        let user_id = user_id.clone();
+        let podcast_id = podcast_id.clone();
+        Callback::from(move |e: Event| {
+            let value = e.target_unchecked_into::<web_sys::HtmlSelectElement>().value();
+            let choice = match value.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
+            };
+            delete_on_complete.set(choice.unwrap_or(*delete_on_complete_default));
+            delete_on_complete_customized.set(choice.is_some());
+            let (api_key, server_name, user_id, pid) = (api_key.clone(), server_name.clone(), user_id.clone(), *podcast_id);
+            wasm_bindgen_futures::spawn_local(async move {
+                if let (Some(api_key), Some(server_name), Some(user_id)) = (api_key, server_name, user_id) {
+                    if let Err(e) = call_set_podcast_auto_delete_on_complete(&server_name, &api_key, user_id, pid, choice).await {
+                        web_sys::console::log_1(&format!("Error updating delete-when-finished: {}", e).into());
+                    }
+                }
+            });
+        })
+    };
+    let delete_on_complete_value = if !*delete_on_complete_customized {
+        "default"
+    } else if *delete_on_complete {
+        "on"
+    } else {
+        "off"
+    };
+    let delete_on_complete_default_label = if *delete_on_complete_default {
+        i18n.t("episodes_layout.delete_on_complete_default_on").to_string()
+    } else {
+        i18n.t("episodes_layout.delete_on_complete_default_off").to_string()
+    };
 
     // let onclick_cat = new_category
     let app_dispatch_add = _search_dispatch.clone();
@@ -2932,6 +3069,20 @@ pub fn episode_layout() -> Html {
                             </div>
 
                             <div class="mt-4">
+                                <label for="delete-on-complete" class="block mb-2 text-sm font-medium">{ &i18n.t("episodes_layout.delete_on_complete_label") }</label>
+                                <select
+                                    id="delete-on-complete"
+                                    class="email-input border text-sm rounded-lg p-2.5"
+                                    onchange={on_delete_on_complete_change}
+                                >
+                                    <option value="default" selected={delete_on_complete_value == "default"}>{ &delete_on_complete_default_label }</option>
+                                    <option value="on" selected={delete_on_complete_value == "on"}>{ &i18n.t("episodes_layout.delete_on_complete_on") }</option>
+                                    <option value="off" selected={delete_on_complete_value == "off"}>{ &i18n.t("episodes_layout.delete_on_complete_off") }</option>
+                                </select>
+                                <p class="text-xs text-gray-500 mt-1">{ &i18n.t("episodes_layout.delete_on_complete_description") }</p>
+                            </div>
+
+                            <div class="mt-4">
                                 <label class="block mb-2 text-sm font-medium">{ &i18n_use_podcast_covers }</label>
                                 <div class="flex items-center space-x-2">
                                     <label class="relative inline-flex items-center cursor-pointer">
@@ -3066,6 +3217,34 @@ pub fn episode_layout() -> Html {
                                                 <span class="ms-3 text-sm">{ &i18n.t("episodes_layout.auto_ad_detect_desc") }</span>
                                             </label>
                                             {
+                                                if auto_ad_detect_checked && !*download_status {
+                                                    html! {
+                                                        <div class="ep-ad-notice">
+                                                            <i class="ph ph-warning"></i>
+                                                            <div class="ep-ad-notice-body">
+                                                                <span>{ &i18n.t("episodes_layout.auto_ad_detect_needs_download") }</span>
+                                                                <div class="ep-ad-notice-actions">
+                                                                    <button class="ep-ai-transcript-btn" onclick={enable_auto_download_for_ads}>
+                                                                        <i class="ph ph-cloud-arrow-down"></i>{ &i18n.t("episodes_layout.auto_ad_detect_enable_download") }
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                } else if auto_ad_detect_checked {
+                                                    html! {
+                                                        <div class="ep-ad-notice is-ok">
+                                                            <i class="ph ph-check-circle"></i>
+                                                            <div class="ep-ad-notice-body">
+                                                                <span>{ &i18n.t("episodes_layout.auto_ad_detect_download_ok") }</span>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                } else {
+                                                    html! {}
+                                                }
+                                            }
+                                            {
                                                 // Skip-immediately vs. confirm-first — only when auto-detect is on.
                                                 if auto_transcribe_checked && auto_ad_detect_checked {
                                                     html! {
@@ -3116,6 +3295,7 @@ pub fn episode_layout() -> Html {
                                                     </button>
                                                 </div>
                                                 <p class="text-xs text-gray-500 mt-1">{&i18n_youtube_limit_description}</p>
+                                                <YouTubeVideoFilterSettings podcast_id={*podcast_id} />
                                             </div>
                                         }
                                     } else {
@@ -3195,14 +3375,25 @@ pub fn episode_layout() -> Html {
                                 </div>
                             </div>
 
-                            // Edit podcast info button
-                            <div class="mt-4">
+                            // Edit podcast info / read its details from the feed again
+                            <div class="mt-4 flex flex-wrap gap-2">
                                 <button
                                     type="button"
                                     class="download-button font-bold py-2 px-4 rounded"
                                     onclick={toggle_edit_podcast}
                                 >
                                     {&i18n.t("episodes_layout.modify_podcast_info")}
+                                </button>
+                                <button
+                                    type="button"
+                                    class="download-button font-bold py-2 px-4 rounded"
+                                    disabled={*refreshing_details}
+                                    onclick={{
+                                        let refresh_from_feed = refresh_from_feed.clone();
+                                        Callback::from(move |_: MouseEvent| refresh_from_feed.emit(false))
+                                    }}
+                                >
+                                    {&i18n.t("episodes_layout.refresh_from_feed")}
                                 </button>
                             </div>
                         </form>
@@ -3680,7 +3871,7 @@ pub fn episode_layout() -> Html {
                                     }
                                 </div>
 
-                                <div class="flex justify-between space-x-4">
+                                <div class="flex flex-wrap justify-between gap-2">
                                     <button
                                         type="button"
                                         class="save-button font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
@@ -3842,6 +4033,18 @@ pub fn episode_layout() -> Html {
                                         }}
                                     >
                                         {&i18n.t("episodes_layout.save_changes")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="download-button font-bold py-2 px-4 rounded"
+                                        title={i18n.t("episodes_layout.reset_to_feed_hint").to_string()}
+                                        disabled={*refreshing_details}
+                                        onclick={{
+                                            let refresh_from_feed = refresh_from_feed.clone();
+                                            Callback::from(move |_: MouseEvent| refresh_from_feed.emit(true))
+                                        }}
+                                    >
+                                        {&i18n.t("episodes_layout.reset_to_feed")}
                                     </button>
                                     <button
                                         type="button"
@@ -4154,6 +4357,7 @@ pub fn episode_layout() -> Html {
         let show_in_progress_dep = *show_in_progress;
         let search_dep = (*debounced_search_term).clone();
         let prefs_loaded_dep = *prefs_loaded_for_podcast;
+        let reload_dep = *details_reload;
         let synced_episode_count_eff = synced_episode_count.clone();
 
         use_effect_with(
@@ -4167,8 +4371,9 @@ pub fn episode_layout() -> Html {
                 show_in_progress_dep,
                 search_dep,
                 prefs_loaded_dep,
+                reload_dep,
             ),
-            move |(api_key, user_id, server_name, pid, sort, completed, show_ip, search, prefs_loaded)| {
+            move |(api_key, user_id, server_name, pid, sort, completed, show_ip, search, prefs_loaded, _reload)| {
                 if *pid <= 0 || Some(*pid) != *prefs_loaded {
                     return Box::new(|| ()) as Box<dyn FnOnce()>;
                 }
@@ -4814,7 +5019,12 @@ pub fn episode_layout() -> Html {
                                             }
                                         };
 
-                                        layout
+                                        html! {
+                                            <>
+                                                { layout }
+                                                <crate::components::setting_components::feed_problems::FeedProblemBanner podcast_id={*podcast_id} />
+                                            </>
+                                        }
                                     } else {
                                         html! {}
                                     }

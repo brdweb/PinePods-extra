@@ -61,6 +61,7 @@ impl TestApp {
 
     /// Build an app after letting the test tweak the server config (e.g. OIDC settings).
     pub async fn with_config(tweak: impl FnOnce(&mut Config)) -> TestApp {
+        init_logging();
         let env = env::env();
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
@@ -127,6 +128,7 @@ impl TestApp {
             api: ApiConfig {
                 search_api_url: fixtures.url("search-api/api/search"),
                 people_api_url: fixtures.url("people-api"),
+                youtube_feed_url: fixtures.url("youtube/{channel_id}.xml"),
             },
         };
         tweak(&mut config);
@@ -158,8 +160,18 @@ impl TestApp {
             notification_manager: Arc::new(pinepods_api::redis_manager::NotificationManager::new()),
             restore_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             ai_available: pinepods_api::services::ai_client::AiAvailability::new(),
+            merged_episodes: Default::default(),
         };
-        let router = pinepods_api::create_app(state.clone());
+        // Building the router and its OpenAPI document takes more stack in a debug build than a
+        // 2 MB test thread has once a test's own future is large. The server builds it on its
+        // 8 MB main thread; do the same here.
+        let router_state = state.clone();
+        let router = std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || pinepods_api::create_app(router_state))
+            .expect("spawn router builder")
+            .join()
+            .expect("build router");
 
         TestApp { env, state, router, db_name, tag, fixtures, admin: tokio::sync::OnceCell::new() }
     }
@@ -387,4 +399,18 @@ async fn clone_template(env: &TestEnv, db_name: &str, id_base: i64) {
             c.execute("SET FOREIGN_KEY_CHECKS = 1").await.unwrap();
         }
     }
+}
+
+/// `PINEPODS_TEST_LOG=<filter>` (e.g. `warn` or `pinepods_api=debug`) prints the server's logs,
+/// for finding out why a request failed. Run with `-- --nocapture`.
+fn init_logging() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Ok(filter) = std::env::var("PINEPODS_TEST_LOG") {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+                .with_test_writer()
+                .try_init();
+        }
+    });
 }

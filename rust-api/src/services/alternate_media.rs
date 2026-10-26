@@ -169,8 +169,9 @@ async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppRe
             let row = sqlx::query(
                 r#"SELECT e.episodeurl AS episodeurl, COALESCE(e.is_video, FALSE) AS is_video
                    FROM "Episodes" e
-                   JOIN "Podcasts" p ON e.podcastid = p.podcastid
-                   WHERE e.episodeid = $1 AND p.userid = $2"#,
+                   JOIN "Podcasts" p ON p.feedid = e.feedid
+                   WHERE e.episodeid = $1 AND p.userid = $2
+                   LIMIT 1"#,
             )
             .bind(episode_id)
             .bind(user_id)
@@ -185,8 +186,9 @@ async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppRe
             let row = sqlx::query(
                 "SELECT e.EpisodeURL AS episodeurl, COALESCE(e.IsVideo, 0) AS is_video
                  FROM Episodes e
-                 JOIN Podcasts p ON e.PodcastID = p.PodcastID
-                 WHERE e.EpisodeID = ? AND p.UserID = ?",
+                 JOIN Podcasts p ON p.FeedID = e.FeedID
+                 WHERE e.EpisodeID = ? AND p.UserID = ?
+                 LIMIT 1",
             )
             .bind(episode_id)
             .bind(user_id)

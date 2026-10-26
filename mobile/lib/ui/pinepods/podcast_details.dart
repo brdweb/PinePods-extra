@@ -1,21 +1,24 @@
 // lib/ui/pinepods/podcast_details.dart
 
+import 'package:pinepods_mobile/entities/podcasting2.dart';
+import 'package:pinepods_mobile/entities/podcasting2_tags.dart' hide ValueBlock, ValueRecipient;
+import 'package:pinepods_mobile/ui/widgets/podcasting2_panel.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:pinepods_mobile/ui/pinepods/podcasting2_section.dart';
+import 'package:pinepods_mobile/services/podcast/podroll_lookup.dart';
+import 'package:pinepods_mobile/l10n/app_localizations.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
+import 'package:pinepods_mobile/core/download_cleanup.dart';
+import 'package:pinepods_mobile/services/auto_download/download_cleanup_service.dart';
 import 'package:pinepods_mobile/entities/pinepods_episode.dart';
 import 'package:pinepods_mobile/entities/pinepods_search.dart';
 import 'package:pinepods_mobile/entities/podcast.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/entities/people.dart';
-import 'package:pinepods_mobile/entities/podcasting2.dart';
-import 'package:pinepods_mobile/entities/podcasting2_tags.dart' hide ValueBlock, ValueRecipient;
-import 'package:pinepods_mobile/l10n/L.dart';
-import 'package:pinepods_mobile/l10n/app_localizations.dart';
-import 'package:pinepods_mobile/ui/widgets/podcasting2_panel.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
 import 'package:pinepods_mobile/services/podcast/podcast_service.dart';
 import 'package:pinepods_mobile/services/global_services.dart';
@@ -25,17 +28,17 @@ import 'package:pinepods_mobile/ui/widgets/episode_context_menu.dart';
 import 'package:pinepods_mobile/ui/pinepods/episode_details.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/add_people_sheet.dart';
 import 'package:pinepods_mobile/ui/pinepods/people/people_widgets.dart';
-import 'package:pinepods_mobile/ui/pinepods/podcasting2_section.dart';
-import 'package:pinepods_mobile/services/podcast/podroll_lookup.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/bloc/podcast/audio_bloc.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
-import 'package:pinepods_mobile/ui/podcast/mini_player.dart';
 import 'package:pinepods_mobile/ui/utils/player_utils.dart';
+import 'package:pinepods_mobile/ui/utils/artwork_colors.dart';
 import 'package:pinepods_mobile/ui/utils/local_download_utils.dart';
+import 'package:pinepods_mobile/ui/widgets/lazy_network_image.dart';
+import 'package:pinepods_mobile/ui/widgets/soft_ui.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:sliver_tools/sliver_tools.dart';
+import 'package:pinepods_mobile/ui/icons/phosphor_icons.dart';
 
 // Sort direction for episodes within a podcast
 enum EpisodeSortDirection {
@@ -73,14 +76,25 @@ class PinepodsPodcastDetails extends StatefulWidget {
 
 class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   final PinepodsService _pinepodsService = PinepodsService();
+  // The podcast as shown; replaced when its details are read from the feed again.
+  late UnifiedPinepodsPodcast _podcast = widget.podcast;
+  bool _isRefreshingDetails = false;
   bool _isLoading = false;
   bool _isFollowing = false;
   bool _isFollowButtonLoading = false;
   bool _isFavorite = false;
+
+  /// Drives the app bar title only, so scrolling never rebuilds the page.
+  final ValueNotifier<bool> _collapsed = ValueNotifier<bool>(false);
+  Color? _artColor;
+  Timer? _searchDebounce;
   bool _isFavoriteLoading = false;
   String? _errorMessage;
   List<PinepodsEpisode> _episodes = [];
   List<PinepodsEpisode> _filteredEpisodes = [];
+  // Index into [_episodes] for each filtered entry, for the context menu.
+  List<int> _filteredIndexes = [];
+  final Expando<_EpisodeKeys> _episodeKeys = Expando<_EpisodeKeys>();
   int? _contextMenuEpisodeIndex;
   // Use global audio service instead of creating local instance
   final TextEditingController _searchController = TextEditingController();
@@ -89,6 +103,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   // server that supports adding people.
   PodcastCredits _credits = const PodcastCredits();
   int? _peoplePodcastId;
+  // Podcasting 2.0 show data: tags (art, trailers, live), podroll, value.
   ChannelTags? _showTags;
   List<PodrollItem> _podroll = const [];
   List<ValueBlock> _valueBlocks = const [];
@@ -106,6 +121,10 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   bool _autoTranscribe = false;
   bool _autoAdDetect = false;
   bool _adSkipAutoActivate = true; // server default is true
+  // Server-side downloads for this podcast (separate from on-device
+  // auto-download): ad times only fit the copy they were found on, so the
+  // server copy is what makes ad skipping reliable.
+  bool _serverAutoDownload = false;
 
   // Tracks episode being loaded for ghost mini player
   PinepodsEpisode? _pendingEpisode;
@@ -122,12 +141,15 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     _checkFollowStatus();
     _checkFavoriteStatus();
     _searchController.addListener(_onSearchChanged);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _resolveArtColor();
+    });
   }
 
   Future<void> _loadSortPreference() async {
     final prefs = await SharedPreferences.getInstance();
     // Use podcast URL as key for per-podcast sort preference
-    final key = 'episode_sort_${widget.podcast.url.hashCode}';
+    final key = 'episode_sort_${_podcast.url.hashCode}';
     final savedSort = prefs.getString(key);
     if (savedSort != null && mounted) {
       setState(() {
@@ -160,7 +182,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   }
 
   Future<void> _loadAutoDownloadPreference() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
@@ -171,7 +193,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   }
 
   Future<void> _toggleAutoDownload() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
     final prefs = await SharedPreferences.getInstance();
     final newValue = !_isAutoDownloadEnabled;
@@ -196,7 +218,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   }
 
   Future<void> _loadAutoPlayNextPreference() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
 
     try {
@@ -216,8 +238,54 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     }
   }
 
+  // Read the feed again so a rebrand (new name, artwork, hosts) shows now.
+  Future<void> _refreshDetails() async {
+    final podcastId = _podcast.id;
+    if (podcastId <= 0) return;
+    final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    final userId = settings.pinepodsUserId;
+    if (settings.pinepodsServer == null || settings.pinepodsApiKey == null || userId == null) return;
+    setState(() => _isRefreshingDetails = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      _pinepodsService.setCredentials(settings.pinepodsServer!, settings.pinepodsApiKey!);
+      await _pinepodsService.refreshPodcastDetails(podcastId);
+      final d = await _pinepodsService.getPodcastDetailsById(podcastId, userId);
+      if (!mounted) return;
+      if (d != null) {
+        final p = _podcast;
+        setState(() {
+          _podcast = UnifiedPinepodsPodcast(
+            id: p.id,
+            indexId: p.indexId,
+            title: d['podcastname'] as String? ?? p.title,
+            url: p.url,
+            originalUrl: p.originalUrl,
+            link: d['websiteurl'] as String? ?? p.link,
+            description: d['description'] as String? ?? p.description,
+            author: d['author'] as String? ?? p.author,
+            ownerName: p.ownerName,
+            image: d['artworkurl'] as String? ?? p.image,
+            artwork: d['artworkurl'] as String? ?? p.artwork,
+            lastUpdateTime: p.lastUpdateTime,
+            categories: p.categories,
+            explicit: p.explicit,
+            episodeCount: d['episodecount'] as int? ?? p.episodeCount,
+          );
+        });
+        _resolveArtColor();
+      }
+      await _loadPodcastFeed();
+      messenger.showSnackBar(const SnackBar(content: Text('Podcast details refreshed from the feed')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't refresh from the feed: $e")));
+    } finally {
+      if (mounted) setState(() => _isRefreshingDetails = false);
+    }
+  }
+
   Future<void> _toggleAutoPlayNext() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
 
     final newValue = !_isAutoPlayNextEnabled;
@@ -261,7 +329,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
 
   // Load AI availability + the three per-podcast AI toggles (#726/#790).
   Future<void> _loadAiPreferences() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
     try {
       final settings =
@@ -285,6 +353,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         _pinepodsService.getAutoTranscribe(userId, podcastId),
         _pinepodsService.getAutoAdDetect(userId, podcastId),
         _pinepodsService.getAdSkipAutoActivate(userId, podcastId),
+        _pinepodsService.getServerAutoDownload(userId, podcastId),
       ]);
       if (mounted) {
         setState(() {
@@ -292,6 +361,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           _autoTranscribe = results[0];
           _autoAdDetect = results[1];
           _adSkipAutoActivate = results[2];
+          _serverAutoDownload = results[3];
         });
       }
     } catch (e) {
@@ -302,7 +372,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   // Persist one AI toggle; returns whether it succeeded. Updates widget state
   // so the bottom sheet and header reflect the new value after it closes.
   Future<bool> _setAiToggle(String which, bool value) async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return false;
     try {
       final settings =
@@ -329,6 +399,10 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         case 'ad_skip_auto':
           ok = await _pinepodsService.adjustAdSkipAutoActivate(userId, podcastId, value);
           if (ok) _adSkipAutoActivate = value;
+          break;
+        case 'server_download':
+          ok = await _pinepodsService.setServerAutoDownload(userId, podcastId, value);
+          if (ok) _serverAutoDownload = value;
           break;
         default:
           ok = false;
@@ -393,6 +467,15 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
                       value: _adSkipAutoActivate,
                       onChanged: (v) => toggle('ad_skip_auto', v),
                     ),
+                  if (_autoAdDetect)
+                    _AdDownloadNotice(
+                      serverAutoDownload: _serverAutoDownload,
+                      onEnable: () => toggle('server_download', true),
+                      onServerDownloads: () {
+                        Navigator.pop(sheetContext);
+                        _showServerDownloadsSheet();
+                      },
+                    ),
                   const SizedBox(height: 8),
                 ],
               ),
@@ -403,9 +486,251 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     );
   }
 
+  /// The server's download settings for this podcast: auto-download to the
+  /// server, delete when finished, and delete after a number of days.
+  Future<void> _showServerDownloadsSheet() async {
+    final podcastId = _podcast.id;
+    final settings =
+        Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    final userId = settings.pinepodsUserId;
+    if (podcastId <= 0 || userId == null) return;
+    _pinepodsService.setCredentials(
+        settings.pinepodsServer!, settings.pinepodsApiKey!);
+
+    final results = await Future.wait<Object>([
+      _pinepodsService.getServerAutoDownload(userId, podcastId),
+      _pinepodsService.getAutoDeleteOnComplete(userId),
+      _pinepodsService.getAutoDeleteOnComplete(userId, podcastId: podcastId),
+      _pinepodsService.getAutoDeleteDays(userId),
+      _pinepodsService.getAutoDeleteDays(userId, podcastId: podcastId),
+    ]);
+    if (!mounted) return;
+    var autoDownload = results[0] as bool;
+    _serverAutoDownload = autoDownload;
+    final deleteDefault = (results[1] as ({bool enabled, bool customized})).enabled;
+    final finished = results[2] as ({bool enabled, bool customized});
+    // 'default' | 'on' | 'off'
+    var whenFinished =
+        !finished.customized ? 'default' : (finished.enabled ? 'on' : 'off');
+    final daysDefault = (results[3] as ({int days, bool customized})).days;
+    final days = results[4] as ({int days, bool customized});
+    // null = use the default
+    int? afterDays = days.customized ? days.days : null;
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final theme = Theme.of(context);
+          return SafeArea(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Text('Server downloads',
+                        style: theme.textTheme.titleLarge!
+                            .copyWith(fontWeight: FontWeight.bold)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Downloads kept on your Pinepods server (separate from '
+                      'downloads on this device).',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  SwitchListTile(
+                    title: const Text('Auto-download to server'),
+                    subtitle: const Text(
+                        'Download new episodes to the server as they arrive.'),
+                    value: autoDownload,
+                    onChanged: (v) async {
+                      if (await _pinepodsService.setServerAutoDownload(
+                          userId, podcastId, v)) {
+                        autoDownload = v;
+                        _serverAutoDownload = v;
+                        setSheetState(() {});
+                        if (mounted) setState(() {});
+                      }
+                    },
+                  ),
+                  ListTile(
+                    title: const Text('Delete when finished'),
+                    subtitle: const Text(
+                        'Remove the server download about an hour after you '
+                        'finish the episode.'),
+                    trailing: DropdownButton<String>(
+                      value: whenFinished,
+                      onChanged: (v) async {
+                        if (v == null) return;
+                        final enabled =
+                            v == 'default' ? null : v == 'on';
+                        if (await _pinepodsService
+                            .setPodcastAutoDeleteOnComplete(
+                                userId, podcastId, enabled)) {
+                          setSheetState(() => whenFinished = v);
+                        }
+                      },
+                      items: [
+                        DropdownMenuItem(
+                            value: 'default',
+                            child: Text(
+                                'Default (${deleteDefault ? 'on' : 'off'})')),
+                        const DropdownMenuItem(value: 'on', child: Text('On')),
+                        const DropdownMenuItem(value: 'off', child: Text('Off')),
+                      ],
+                    ),
+                  ),
+                  ListTile(
+                    title: const Text('Delete after'),
+                    subtitle: const Text(
+                        'Remove server downloads older than this.'),
+                    trailing: DropdownButton<int?>(
+                      value: afterDays,
+                      onChanged: (v) async {
+                        final ok = v == null
+                            ? await _pinepodsService.clearPodcastAutoDeleteDays(
+                                userId, podcastId)
+                            : await _pinepodsService.setPodcastAutoDeleteDays(
+                                userId, podcastId, v);
+                        if (ok) setSheetState(() => afterDays = v);
+                      },
+                      items: [
+                        DropdownMenuItem<int?>(
+                            value: null,
+                            child:
+                                Text('Default (${deleteAfterDaysLabel(daysDefault)})')),
+                        for (final d in {...deleteAfterDayChoices, if (afterDays != null) afterDays!})
+                          DropdownMenuItem<int?>(
+                              value: d, child: Text(deleteAfterDaysLabel(d))),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// This device's download settings for this podcast: auto-download new
+  /// episodes, delete when finished, and delete after a number of days.
+  Future<void> _showDeviceDownloadsSheet() async {
+    final podcastId = _podcast.id;
+    if (podcastId <= 0) return;
+    final settings =
+        Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    final finishedOverride =
+        await DownloadCleanupService.getFinishedOverride(podcastId);
+    int? afterDays = await DownloadCleanupService.getDaysOverride(podcastId);
+    if (!mounted) return;
+    // 'default' | 'on' | 'off'
+    var whenFinished = finishedOverride == null
+        ? 'default'
+        : (finishedOverride ? 'on' : 'off');
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final theme = Theme.of(context);
+          return SafeArea(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Text('Device downloads',
+                        style: theme.textTheme.titleLarge!
+                            .copyWith(fontWeight: FontWeight.bold)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      'Downloads kept on this device (separate from '
+                      'downloads on your server).',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  SwitchListTile(
+                    title: const Text('Auto-download to device'),
+                    subtitle: const Text(
+                        'Download new episodes to this device as they arrive.'),
+                    value: _isAutoDownloadEnabled,
+                    onChanged: (_) async {
+                      await _toggleAutoDownload();
+                      setSheetState(() {});
+                    },
+                  ),
+                  ListTile(
+                    title: const Text('Delete when finished'),
+                    subtitle: const Text(
+                        'Remove the download about an hour after you finish '
+                        'the episode.'),
+                    trailing: DropdownButton<String>(
+                      value: whenFinished,
+                      onChanged: (v) async {
+                        if (v == null) return;
+                        await DownloadCleanupService.setFinishedOverride(
+                            podcastId, v == 'default' ? null : v == 'on');
+                        setSheetState(() => whenFinished = v);
+                      },
+                      items: [
+                        DropdownMenuItem(
+                            value: 'default',
+                            child: Text(
+                                'Default (${settings.deleteDownloadedPlayedEpisodes ? 'on' : 'off'})')),
+                        const DropdownMenuItem(value: 'on', child: Text('On')),
+                        const DropdownMenuItem(value: 'off', child: Text('Off')),
+                      ],
+                    ),
+                  ),
+                  ListTile(
+                    title: const Text('Delete after'),
+                    subtitle: const Text('Remove downloads older than this.'),
+                    trailing: DropdownButton<int?>(
+                      value: afterDays,
+                      onChanged: (v) async {
+                        await DownloadCleanupService.setDaysOverride(
+                            podcastId, v);
+                        setSheetState(() => afterDays = v);
+                      },
+                      items: [
+                        DropdownMenuItem<int?>(
+                            value: null,
+                            child: Text(
+                                'Default (${deleteAfterDaysLabel(settings.deleteDownloadsAfterDays)})')),
+                        for (final d in {...deleteAfterDayChoices, if (afterDays != null) afterDays!})
+                          DropdownMenuItem<int?>(
+                              value: d, child: Text(deleteAfterDaysLabel(d))),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _saveSortPreference() async {
     final prefs = await SharedPreferences.getInstance();
-    final key = 'episode_sort_${widget.podcast.url.hashCode}';
+    final key = 'episode_sort_${_podcast.url.hashCode}';
     String value;
     switch (_sortDirection) {
       case EpisodeSortDirection.newestFirst:
@@ -436,73 +761,21 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   @override
   void dispose() {
     _searchController.dispose();
+    _searchDebounce?.cancel();
+    _collapsed.dispose();
     // Don't dispose global audio service - it should persist across pages
     super.dispose();
   }
 
   void _onSearchChanged() {
-    setState(() {
-      _searchQuery = _searchController.text;
-      _filterEpisodes();
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted || _searchQuery == _searchController.text) return;
+      setState(() {
+        _searchQuery = _searchController.text;
+        _filterEpisodes();
+      });
     });
-  }
-
-  void _filterEpisodes() {
-    // Start with all episodes
-    List<PinepodsEpisode> filtered = List.from(_episodes);
-
-    // Apply search filter (search both title and description)
-    if (_searchQuery.isNotEmpty) {
-      final query = _searchQuery.toLowerCase();
-      filtered = filtered.where((episode) {
-        return episode.episodeTitle.toLowerCase().contains(query) ||
-            episode.episodeDescription.toLowerCase().contains(query);
-      }).toList();
-    }
-
-    // Apply completed filter (3-state)
-    if (_showInProgress) {
-      // In Progress: not completed but has some listen duration
-      filtered = filtered.where((episode) {
-        return !episode.completed && (episode.listenDuration ?? 0) > 0;
-      }).toList();
-    } else {
-      switch (_completedFilter) {
-        case CompletedFilter.showOnly:
-          filtered = filtered.where((episode) => episode.completed).toList();
-          break;
-        case CompletedFilter.hide:
-          filtered = filtered.where((episode) => !episode.completed).toList();
-          break;
-        case CompletedFilter.showAll:
-          // No filtering
-          break;
-      }
-    }
-
-    // Apply sorting
-    filtered.sort((a, b) {
-      switch (_sortDirection) {
-        case EpisodeSortDirection.newestFirst:
-          return _compareDates(b.episodePubDate, a.episodePubDate);
-        case EpisodeSortDirection.oldestFirst:
-          return _compareDates(a.episodePubDate, b.episodePubDate);
-        case EpisodeSortDirection.shortestFirst:
-          return (a.episodeDuration ?? 0).compareTo(b.episodeDuration ?? 0);
-        case EpisodeSortDirection.longestFirst:
-          return (b.episodeDuration ?? 0).compareTo(a.episodeDuration ?? 0);
-        case EpisodeSortDirection.titleAZ:
-          return a.episodeTitle.toLowerCase().compareTo(b.episodeTitle.toLowerCase());
-        case EpisodeSortDirection.titleZA:
-          return b.episodeTitle.toLowerCase().compareTo(a.episodeTitle.toLowerCase());
-        case EpisodeSortDirection.season:
-          final seasonOrder = _compareSeason(a, b);
-          if (seasonOrder != 0) return seasonOrder;
-          return _compareDates(b.episodePubDate, a.episodePubDate);
-      }
-    });
-
-    _filteredEpisodes = filtered;
   }
 
   int _compareSeason(PinepodsEpisode a, PinepodsEpisode b) {
@@ -514,15 +787,176 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     if (season != 0) return season;
     return aKey.$3.compareTo(bKey.$3);
   }
-
-  int _compareDates(String dateA, String dateB) {
+  Future<void> _loadShowTags(int podcastId) async {
+    final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+    if (userId == null) return;
     try {
-      final a = DateTime.parse(dateA);
-      final b = DateTime.parse(dateB);
-      return a.compareTo(b);
+      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
+      final tags = ChannelTags.fromJson(data?['tags'] as Map<String, dynamic>?);
+      if (mounted) setState(() => _showTags = tags);
     } catch (e) {
-      return 0;
+      debugPrint('Error loading show tags: $e');
     }
+  }
+  String get _coverUrl => artworkChoice(_showTags?.image ?? const [], _showTags?.images, _podcast.artwork).src;
+
+  Future<void> _playTrailer(Trailer trailer) async {
+    final url = httpLink(trailer.url) ?? safeLink(trailer.url);
+    if (url == null) return;
+    if (trailer.isVideo) {
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final episode = Episode(
+      guid: 'p2-trailer-${url.hashCode}',
+      podcast: _podcast.title,
+      title: trailer.title.trim().isEmpty ? 'Trailer' : trailer.title,
+      contentUrl: url,
+      imageUrl: _podcast.artwork,
+    );
+    episode.streaming = true;
+    await audioPlayerService.playEpisode(episode: episode, resume: false);
+  }
+  Future<void> _playTrailer(Trailer trailer) async {
+    final url = httpLink(trailer.url) ?? safeLink(trailer.url);
+    if (url == null) return;
+    if (trailer.isVideo) {
+      final uri = Uri.tryParse(url);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final episode = Episode(
+      guid: 'p2-trailer-${url.hashCode}',
+      podcast: _podcast.title,
+      title: trailer.title.trim().isEmpty ? 'Trailer' : trailer.title,
+      contentUrl: url,
+      imageUrl: _podcast.artwork,
+    );
+    episode.streaming = true;
+    await audioPlayerService.playEpisode(episode: episode, resume: false);
+  }
+  Future<void> _playLive(LiveItem item) async {
+    final url = item.playableUrl;
+    if (url == null) return;
+    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
+    final title = (item.title ?? '').trim();
+    final fallback = AppLocalizations.of(context)?.p2_live_now ?? 'Live';
+    final episode = Episode(
+      guid: (item.guid ?? '').trim().isEmpty ? 'p2-live-${url.hashCode}' : item.guid!.trim(),
+      podcast: _podcast.title,
+      title: title.isEmpty ? fallback : title,
+      description: item.description ?? '',
+      contentUrl: url,
+      imageUrl: _podcast.artwork,
+    );
+    episode.streaming = true;
+    await audioPlayerService.playEpisode(episode: episode, resume: false);
+  }
+  Future<void> _loadPodcasting2Extras(int podcastId) async {
+    try {
+      final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+      if (userId == null) return;
+      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
+      if (!mounted || data == null) return;
+      final channel = Podcasting2Channel.fromJson(data);
+      setState(() {
+        _podroll = channel.podroll;
+        _valueBlocks = channel.value;
+      });
+    } catch (e) {
+      debugPrint('Error loading podcasting 2.0 extras: $e');
+    }
+  }
+  Future<bool> _subscribePodroll(ResolvedPodroll show) async {
+    final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    final userId = settings.pinepodsUserId;
+    if (userId == null || show.feedUrl.isEmpty) return false;
+    final podcast = UnifiedPinepodsPodcast(
+      id: 0,
+      indexId: show.indexId,
+      title: show.title,
+      url: show.feedUrl,
+      originalUrl: show.originalUrl.isEmpty ? show.feedUrl : show.originalUrl,
+      link: show.link,
+      description: show.description,
+      author: show.author,
+      ownerName: show.author,
+      image: show.artwork,
+      artwork: show.artwork,
+      lastUpdateTime: 0,
+      explicit: show.explicit,
+      episodeCount: show.episodeCount,
+      categories: show.categories,
+    );
+    try {
+      final ok = await _pinepodsService.addPodcast(podcast, userId);
+      if (mounted) {
+        final l10n = AppLocalizations.of(context);
+        _showSnackBar(
+          ok ? (l10n?.podroll_subscribed ?? 'Subscribed') : (l10n?.podroll_subscribe_failed ?? 'Could not subscribe'),
+          ok ? Colors.green : Colors.red,
+        );
+      }
+      return ok;
+    } catch (e) {
+      if (mounted) _showSnackBar(AppLocalizations.of(context)?.podroll_subscribe_failed ?? 'Could not subscribe', Colors.red);
+      return false;
+    }
+  }
+
+  _EpisodeKeys _keysFor(PinepodsEpisode e) => _episodeKeys[e] ??= _EpisodeKeys(e);
+
+  void _filterEpisodes() {
+    final query = _searchQuery.trim().toLowerCase();
+    final indexes = <int>[];
+    for (var i = 0; i < _episodes.length; i++) {
+      final e = _episodes[i];
+      if (query.isNotEmpty) {
+        final keys = _keysFor(e);
+        if (!keys.title.contains(query) && !keys.description.contains(query)) continue;
+      }
+      if (_showInProgress) {
+        if (e.completed || (e.listenDuration ?? 0) <= 0) continue;
+      } else if (_completedFilter == CompletedFilter.showOnly && !e.completed) {
+        continue;
+      } else if (_completedFilter == CompletedFilter.hide && e.completed) {
+        continue;
+      }
+      indexes.add(i);
+    }
+
+    indexes.sort((ia, ib) {
+      final a = _episodes[ia];
+      final b = _episodes[ib];
+      switch (_sortDirection) {
+        case EpisodeSortDirection.newestFirst:
+          return _keysFor(b).date.compareTo(_keysFor(a).date);
+        case EpisodeSortDirection.oldestFirst:
+          return _keysFor(a).date.compareTo(_keysFor(b).date);
+        case EpisodeSortDirection.shortestFirst:
+          return a.episodeDuration.compareTo(b.episodeDuration);
+        case EpisodeSortDirection.longestFirst:
+          return b.episodeDuration.compareTo(a.episodeDuration);
+        case EpisodeSortDirection.titleAZ:
+          return _keysFor(a).title.compareTo(_keysFor(b).title);
+        case EpisodeSortDirection.titleZA:
+          return _keysFor(b).title.compareTo(_keysFor(a).title);
+        case EpisodeSortDirection.season:
+          final seasonOrder = _compareSeason(a, b);
+          if (seasonOrder != 0) return seasonOrder;
+          return _keysFor(b).date.compareTo(_keysFor(a).date);
+      }
+    });
+
+    _filteredIndexes = indexes;
+    _filteredEpisodes = [for (final i in indexes) _episodes[i]];
   }
 
   void _initializeCredentials() {
@@ -553,8 +987,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
 
     try {
       // If we have a valid podcast ID (> 0), assume it's followed since we got it from episode metadata
-      if (widget.podcast.id > 0 && widget.isFollowing) {
-        print('Using podcast ID ${widget.podcast.id} - assuming followed');
+      if (_podcast.id > 0 && widget.isFollowing) {
+        print('Using podcast ID ${_podcast.id} - assuming followed');
         setState(() {
           _isFollowing = true;
         });
@@ -562,10 +996,10 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         return;
       }
 
-      print('Checking follow status for: ${widget.podcast.title}');
+      print('Checking follow status for: ${_podcast.title}');
       final isFollowing = await _pinepodsService.checkPodcastExists(
-        widget.podcast.title,
-        widget.podcast.url,
+        _podcast.title,
+        _podcast.url,
         userId,
       );
       
@@ -583,7 +1017,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   }
 
   Future<void> _checkFavoriteStatus() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0) return;
 
     final settingsBloc = Provider.of<SettingsBloc>(context, listen: false);
@@ -612,7 +1046,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   }
 
   Future<void> _toggleFavorite() async {
-    final podcastId = widget.podcast.id;
+    final podcastId = _podcast.id;
     if (podcastId <= 0 || _isFavoriteLoading) return;
 
     final settingsBloc = Provider.of<SettingsBloc>(context, listen: false);
@@ -659,11 +1093,11 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   // Convert Episode objects to PinepodsEpisode objects
   PinepodsEpisode _convertEpisodeToPinepodsEpisode(Episode episode) {
     return PinepodsEpisode(
-      podcastName: episode.podcast ?? widget.podcast.title,
+      podcastName: episode.podcast ?? _podcast.title,
       episodeTitle: episode.title ?? '',
       episodePubDate: episode.publicationDate?.toIso8601String() ?? '',
       episodeDescription: episode.description ?? '',
-      episodeArtwork: episode.imageUrl ?? widget.podcast.artwork,
+      episodeArtwork: episode.imageUrl ?? _podcast.artwork,
       episodeUrl: episode.contentUrl ?? '',
       episodeDuration: episode.duration,
       listenDuration: 0, // RSS episodes don't have listen duration
@@ -693,20 +1127,20 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       
       if (_isFollowing && userId != null) {
         try {
-          print('Loading episodes for followed podcast: ${widget.podcast.title}');
+          print('Loading episodes for followed podcast: ${_podcast.title}');
           
           int? podcastId;
           
           // If we already have a podcast ID (from episode metadata), use it directly
-          if (widget.podcast.id > 0) {
-            podcastId = widget.podcast.id;
+          if (_podcast.id > 0) {
+            podcastId = _podcast.id;
             print('Using existing podcast ID: $podcastId');
           } else {
             // Get the actual podcast ID using the dedicated endpoint
             podcastId = await _pinepodsService.getPodcastId(
               userId,
-              widget.podcast.url,
-              widget.podcast.title,
+              _podcast.url,
+              _podcast.title,
             );
             print('Got podcast ID from lookup: $podcastId');
           }
@@ -723,14 +1157,14 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
             // If server has no episodes, this podcast may need episode sync
             if (episodes.isEmpty) {
               print('Server has no episodes for subscribed podcast. This should not happen.');
-              print('Podcast ID: $podcastId, Title: ${widget.podcast.title}');
+              print('Podcast ID: $podcastId, Title: ${_podcast.title}');
               
               // For subscribed podcasts, we should NOT fall back to RSS
               // The server should have episodes. This indicates a server-side sync issue.
               // Fall back to RSS ONLY as emergency backup, but episodes won't be clickable
               try {
                 final podcastService = Provider.of<PodcastService>(context, listen: false);
-                final rssPodcast = Podcast.fromUrl(url: widget.podcast.url);
+                final rssPodcast = Podcast.fromUrl(url: _podcast.url);
                 
                 final loadedPodcast = await podcastService.loadPodcast(podcast: rssPodcast);
                 
@@ -753,11 +1187,11 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         }
       } else {
         try {
-          print('Loading episodes from RSS feed for non-followed podcast: ${widget.podcast.url}');
+          print('Loading episodes from RSS feed for non-followed podcast: ${_podcast.url}');
           
           // Use the existing podcast service to parse RSS feed
           final podcastService = Provider.of<PodcastService>(context, listen: false);
-          final rssePodcast = Podcast.fromUrl(url: widget.podcast.url);
+          final rssePodcast = Podcast.fromUrl(url: _podcast.url);
           
           final loadedPodcast = await podcastService.loadPodcast(podcast: rssePodcast);
           
@@ -819,113 +1253,6 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     }
   }
 
-  Future<void> _loadShowTags(int podcastId) async {
-    final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
-    if (userId == null) return;
-    try {
-      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
-      final tags = ChannelTags.fromJson(data?['tags'] as Map<String, dynamic>?);
-      if (mounted) setState(() => _showTags = tags);
-    } catch (e) {
-      debugPrint('Error loading show tags: $e');
-    }
-  }
-
-  String get _coverUrl => artworkChoice(_showTags?.image ?? const [], _showTags?.images, widget.podcast.artwork).src;
-
-  Future<void> _playTrailer(Trailer trailer) async {
-    final url = httpLink(trailer.url) ?? safeLink(trailer.url);
-    if (url == null) return;
-    if (trailer.isVideo) {
-      final uri = Uri.tryParse(url);
-      if (uri != null) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-      return;
-    }
-    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
-    final episode = Episode(
-      guid: 'p2-trailer-${url.hashCode}',
-      podcast: widget.podcast.title,
-      title: trailer.title.trim().isEmpty ? 'Trailer' : trailer.title,
-      contentUrl: url,
-      imageUrl: widget.podcast.artwork,
-    );
-    episode.streaming = true;
-    await audioPlayerService.playEpisode(episode: episode, resume: false);
-  }
-
-  Future<void> _playLive(LiveItem item) async {
-    final url = item.playableUrl;
-    if (url == null) return;
-    final audioPlayerService = Provider.of<AudioPlayerService>(context, listen: false);
-    final title = (item.title ?? '').trim();
-    final fallback = AppLocalizations.of(context)?.p2_live_now ?? 'Live';
-    final episode = Episode(
-      guid: (item.guid ?? '').trim().isEmpty ? 'p2-live-${url.hashCode}' : item.guid!.trim(),
-      podcast: widget.podcast.title,
-      title: title.isEmpty ? fallback : title,
-      description: item.description ?? '',
-      contentUrl: url,
-      imageUrl: widget.podcast.artwork,
-    );
-    episode.streaming = true;
-    await audioPlayerService.playEpisode(episode: episode, resume: false);
-  }
-
-  Future<void> _loadPodcasting2Extras(int podcastId) async {
-    try {
-      final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
-      if (userId == null) return;
-      final data = await _pinepodsService.fetchPodcasting2PodData(podcastId, userId);
-      if (!mounted || data == null) return;
-      final channel = Podcasting2Channel.fromJson(data);
-      setState(() {
-        _podroll = channel.podroll;
-        _valueBlocks = channel.value;
-      });
-    } catch (e) {
-      debugPrint('Error loading podcasting 2.0 extras: $e');
-    }
-  }
-
-  Future<bool> _subscribePodroll(ResolvedPodroll show) async {
-    final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
-    final userId = settings.pinepodsUserId;
-    if (userId == null || show.feedUrl.isEmpty) return false;
-    final podcast = UnifiedPinepodsPodcast(
-      id: 0,
-      indexId: show.indexId,
-      title: show.title,
-      url: show.feedUrl,
-      originalUrl: show.originalUrl.isEmpty ? show.feedUrl : show.originalUrl,
-      link: show.link,
-      description: show.description,
-      author: show.author,
-      ownerName: show.author,
-      image: show.artwork,
-      artwork: show.artwork,
-      lastUpdateTime: 0,
-      explicit: show.explicit,
-      episodeCount: show.episodeCount,
-      categories: show.categories,
-    );
-    try {
-      final ok = await _pinepodsService.addPodcast(podcast, userId);
-      if (mounted) {
-        final l10n = AppLocalizations.of(context);
-        _showSnackBar(
-          ok ? (l10n?.podroll_subscribed ?? 'Subscribed') : (l10n?.podroll_subscribe_failed ?? 'Could not subscribe'),
-          ok ? Colors.green : Colors.red,
-        );
-      }
-      return ok;
-    } catch (e) {
-      if (mounted) _showSnackBar(AppLocalizations.of(context)?.podroll_subscribe_failed ?? 'Could not subscribe', Colors.red);
-      return false;
-    }
-  }
-
   Future<void> _addPeople() async {
     final podcastId = _peoplePodcastId;
     if (podcastId == null) return;
@@ -957,7 +1284,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         builder: (context) => AlertDialog(
           title: const Text('Unfollow Podcast'),
           content: Text(
-            'Are you sure you want to unfollow "${widget.podcast.title}"?\n\nThis will remove the podcast and all episode history from your library.',
+            'Are you sure you want to unfollow "${_podcast.title}"?\n\nThis will remove the podcast and all episode history from your library.',
           ),
           actions: [
             TextButton(
@@ -993,8 +1320,8 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       if (oldFollowingState) {
         print('PinePods: Attempting to remove podcast');
         success = await _pinepodsService.removePodcast(
-          widget.podcast.title,
-          widget.podcast.url,
+          _podcast.title,
+          _podcast.url,
           userId,
         );
         print('PinePods: Remove podcast result: $success');
@@ -1011,7 +1338,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         }
       } else {
         print('PinePods: Attempting to add podcast');
-        success = await _pinepodsService.addPodcast(widget.podcast, userId);
+        success = await _pinepodsService.addPodcast(_podcast, userId);
         print('PinePods: Add podcast result: $success');
         if (success) {
           setState(() {
@@ -1450,400 +1777,469 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     );
   }
 
+  /// Artwork-derived accent when that setting is on, else the theme's.
+  Color _accentColor(ThemeData theme) {
+    final enabled = Provider.of<SettingsBloc>(context, listen: false).currentSettings.artworkAccentColors;
+    return (enabled ? _artColor : null) ?? theme.primaryColor;
+  }
+
+  void _resolveArtColor() {
+    final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+    if (!settings.artworkAccentColors) return;
+    final brightness = ThemeData.estimateBrightnessForColor(Theme.of(context).scaffoldBackgroundColor);
+    final url = _podcast.artwork;
+    _artColor = ArtworkColors.cached(url, null, brightness);
+    if (_artColor != null) return;
+    ArtworkColors.resolve(url, null, brightness).then((color) {
+      if (!mounted || color == null) return;
+      setState(() => _artColor = color);
+    });
+  }
+
+  /// Newest episode that hasn't been finished, for the header's play button.
+  PinepodsEpisode? get _latestUnplayed {
+    PinepodsEpisode? best;
+    var bestDate = -1;
+    for (final e in _episodes) {
+      if (e.completed || e.episodeId <= 0) continue;
+      final date = _keysFor(e).date;
+      if (date > bestDate) {
+        best = e;
+        bestDate = date;
+      }
+    }
+    return best;
+  }
+
+  bool _onScroll(ScrollNotification n) {
+    if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
+    _collapsed.value = n.metrics.pixels > 140;
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Eases the header between colours when the artwork colour arrives.
+    return TweenAnimationBuilder<Color?>(
+      tween: ColorTween(end: _accentColor(theme)),
+      duration: const Duration(milliseconds: 350),
+      builder: (context, accent, _) => _buildPage(theme, accent!),
+    );
+  }
+
+  Widget _buildPage(ThemeData theme, Color accent) {
+    final bg = theme.scaffoldBackgroundColor;
+    final headerTint = Color.alphaBlend(accent.withOpacity(0.18), bg);
+
     return Scaffold(
-      body: SafeArea(child: Column(
+      body: Column(
         children: [
           Expanded(
-            child: CustomScrollView(
-              slivers: [
-          SliverAppBar(
-            expandedHeight: 300,
-            pinned: true,
-            flexibleSpace: FlexibleSpaceBar(
-              title: Text(
-                widget.podcast.title,
-                style: const TextStyle(
-                  shadows: [
-                    Shadow(
-                      offset: Offset(0, 1),
-                      blurRadius: 3,
-                      color: Colors.black54,
-                    ),
-                  ],
-                ),
-              ),
-              background: Stack(
-                fit: StackFit.expand,
-                children: [
-                  _coverUrl.isNotEmpty
-                      ? Image.network(
-                          _coverUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              color: Colors.grey[300],
-                              child: const Icon(
-                                Icons.music_note,
-                                size: 80,
-                                color: Colors.grey,
-                              ),
-                            );
-                          },
-                        )
-                      : Container(
-                          color: Colors.grey[300],
-                          child: const Icon(
-                            Icons.music_note,
-                            size: 80,
-                            color: Colors.grey,
-                          ),
-                        ),
-                  Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.transparent,
-                          Colors.black.withOpacity(0.7),
-                        ],
+            child: NotificationListener<ScrollNotification>(
+              onNotification: _onScroll,
+              child: CustomScrollView(
+                slivers: [
+                  SliverAppBar(
+                    pinned: true,
+                    backgroundColor: headerTint,
+                    surfaceTintColor: Colors.transparent,
+                    elevation: 0,
+                    scrolledUnderElevation: 0,
+                    title: ValueListenableBuilder<bool>(
+                      valueListenable: _collapsed,
+                      builder: (context, collapsed, child) => AnimatedOpacity(
+                        opacity: collapsed ? 1 : 0,
+                        duration: const Duration(milliseconds: 180),
+                        child: child,
                       ),
+                      child: Text(_podcast.title, maxLines: 1, overflow: TextOverflow.ellipsis),
                     ),
                   ),
+                  SliverToBoxAdapter(child: _buildHeader(theme, accent, headerTint, bg)),
+                  ..._buildEpisodeSlivers(theme, accent),
                 ],
               ),
-            ),
-            actions: [
-              if (widget.podcast.id > 0)
-                IconButton(
-                  onPressed: _isFavoriteLoading ? null : _toggleFavorite,
-                  icon: _isFavoriteLoading
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.0,
-                            valueColor:
-                                AlwaysStoppedAnimation<Color>(Colors.white),
-                          ),
-                        )
-                      : Icon(
-                          _isFavorite ? Icons.star : Icons.star_border,
-                          color: _isFavorite ? Colors.amber : Colors.white,
-                        ),
-                  tooltip: _isFavorite
-                      ? 'Remove from favorites'
-                      : 'Add to favorites',
-                ),
-              if (_isFollowing && widget.podcast.id > 0)
-                IconButton(
-                  onPressed: _toggleAutoDownload,
-                  icon: Icon(
-                    _isAutoDownloadEnabled
-                        ? Icons.download_for_offline
-                        : Icons.download_for_offline_outlined,
-                    color: _isAutoDownloadEnabled ? Colors.blue[300] : Colors.white,
-                  ),
-                  tooltip: _isAutoDownloadEnabled ? 'Disable auto-download' : 'Enable auto-download',
-                ),
-              if (_isFollowing && widget.podcast.id > 0)
-                IconButton(
-                  onPressed: _toggleAutoPlayNext,
-                  icon: Icon(
-                    _isAutoPlayNextEnabled
-                        ? Icons.skip_next
-                        : Icons.skip_next_outlined,
-                    color: _isAutoPlayNextEnabled ? Colors.green[300] : Colors.white,
-                  ),
-                  tooltip: _isAutoPlayNextEnabled ? 'Disable auto-play next' : 'Enable auto-play next',
-                ),
-              if (_isFollowing && widget.podcast.id > 0 && _aiAvailable)
-                IconButton(
-                  onPressed: _showAiSettingsSheet,
-                  icon: const Icon(Icons.auto_awesome, color: Colors.white),
-                  tooltip: 'AI features',
-                ),
-              IconButton(
-                onPressed: _isFollowButtonLoading ? null : _toggleFollow,
-                icon: _isFollowButtonLoading
-                  ? const SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.0,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                      ),
-                    )
-                  : Icon(
-                      _isFollowing ? Icons.favorite : Icons.favorite_border,
-                      color: _isFollowing ? Colors.red : Colors.white,
-                    ),
-                tooltip: _isFollowing ? 'Unfollow' : 'Follow',
-              ),
-            ],
-          ),
-          
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Podcast info with follow/unfollow button
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (widget.podcast.author.isNotEmpty)
-                              Text(
-                                'By ${widget.podcast.author}',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: Theme.of(context).primaryColor,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: _isFollowButtonLoading ? null : _toggleFollow,
-                        icon: _isFollowButtonLoading 
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.0,
-                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                              ),
-                            )
-                          : Icon(
-                              _isFollowing ? Icons.remove : Icons.add,
-                              size: 16,
-                            ),
-                        label: Text(_isFollowing ? 'Unfollow' : 'Follow'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _isFollowing ? Colors.red : Colors.green,
-                          foregroundColor: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 8),
-                  
-                  _ExpandableDescription(description: widget.podcast.description),
-                  
-                  const SizedBox(height: 16),
-                  
-                  // Podcast stats
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.mic,
-                        size: 16,
-                        color: Colors.grey[600],
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${_episodes.length} episode${_episodes.length != 1 ? 's' : ''}',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[600],
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      if (widget.podcast.explicit)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.red,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'Explicit',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  
-                  if (_credits.people.isNotEmpty || _peoplePodcastId != null) ...[
-                    const SizedBox(height: 16),
-                    PeopleStrip(
-                      title: 'Hosts',
-                      people: _credits.people,
-                      onAdd: _peoplePodcastId != null ? _addPeople : null,
-                      emptyPrompt: 'Who hosts this show? Add them so everyone can find them.',
-                    ),
-                  ],
-                  if (_credits.guests.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    PeopleStrip(title: 'Guests', people: _credits.guests, showEpisodeCount: true),
-                  ],
-                  if (_podroll.isNotEmpty || _valueBlocks.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Podcasting2Section(
-                      podroll: _podroll,
-                      valueBlocks: _valueBlocks,
-                      lookup: (item) => resolvePodroll(
-                        item: item,
-                        search: (query) async {
-                          final result = await _pinepodsService.searchPodcasts(query, SearchProvider.podcastIndex);
-                          return result.toJson();
-                        },
-                      ),
-                      alreadySubscribed: (show) async {
-                        final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
-                        if (userId == null || show.feedUrl.isEmpty) return false;
-                        return _pinepodsService.checkPodcastExists(show.title, show.feedUrl, userId);
-                      },
-                      onOpen: (show) => openFeed(
-                        context,
-                        title: show.title,
-                        feedUrl: show.feedUrl,
-                        artwork: show.artwork,
-                        indexId: show.indexId,
-                      ),
-                      onSubscribe: _subscribePodroll,
-                    ),
-                  ],
-
-                  // The show payload already drops an ended live item whose guid
-                  // matches a stored episode. This episode list has no guid.
-                  ShowPodcasting2Panel(
-                    tags: _showTags,
-                    onPlayTrailer: _playTrailer,
-                    onPlayLive: _playLive,
-                  ),
-
-                  const SizedBox(height: 24),
-                  
-                  // Episodes section header
-                  Row(
-                    children: [
-                      const Text(
-                        'Episodes',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      if (_isLoading)
-                        const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 16),
-                ],
-              ),
-            ),
-          ),
-          
-          // Episodes list
-          if (_isLoading)
-            const SliverToBoxAdapter(
-              child: Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32.0),
-                  child: PlatformProgressIndicator(),
-                ),
-              ),
-            )
-          else if (_errorMessage != null)
-            SliverToBoxAdapter(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32.0),
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.error_outline,
-                        size: 64,
-                        color: Colors.red[300],
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _errorMessage!,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _loadPodcastFeed,
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            )
-          else if (_episodes.isEmpty)
-            SliverToBoxAdapter(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(32.0),
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.info_outline,
-                        size: 64,
-                        color: Colors.blue[300],
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        _isFollowing ? 'No episodes found' : 'Episodes available after following',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _isFollowing
-                            ? 'Episodes from your PinePods library will appear here'
-                            : 'Follow this podcast to add it to your library and view episodes',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton.icon(
-                        onPressed: _isFollowing ? _loadPodcastFeed : _toggleFollow,
-                        icon: Icon(_isFollowing ? Icons.refresh : Icons.add),
-                        label: Text(_isFollowing ? 'Retry' : 'Follow'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            )
-          else
-            MultiSliver(
-              children: [
-                _buildSearchAndFilterBar(),
-                _buildEpisodesList(),
-              ],
-            ),
-              ],
             ),
           ),
           _buildBottomPlayer(),
         ],
-      )),
+      ),
+    );
+  }
+
+  Widget _buildHeader(ThemeData theme, Color accent, Color headerTint, Color bg) {
+    final muted = theme.hintColor;
+    final count = _episodes.isNotEmpty ? _episodes.length : _podcast.episodeCount;
+    final meta = [
+      if (count > 0) '$count episode${count == 1 ? '' : 's'}',
+      if (_podcast.explicit) 'Explicit',
+    ].join('  ·  ');
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [headerTint, bg],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(color: Colors.black.withOpacity(0.25), blurRadius: 18, offset: const Offset(0, 6)),
+                    ],
+                  ),
+                  child: LazyNetworkImage(
+                    imageUrl: _coverUrl,
+                    width: 116,
+                    height: 116,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _podcast.title,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleLarge!.copyWith(fontWeight: FontWeight.bold, height: 1.2),
+                      ),
+                      if (_podcast.author.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          _podcast.author,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall!.copyWith(color: accent, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                      if (meta.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(meta, style: theme.textTheme.bodySmall!.copyWith(color: muted, fontSize: 12.5)),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildActionRow(theme, accent),
+            if (_podcast.description.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              _ExpandableDescription(description: _podcast.description, accent: accent),
+            ],
+            if (_credits.people.isNotEmpty || _peoplePodcastId != null) ...[
+              const SizedBox(height: 16),
+              PeopleStrip(
+                title: 'Hosts',
+                people: _credits.people,
+                onAdd: _peoplePodcastId != null ? _addPeople : null,
+                emptyPrompt: 'Who hosts this show? Add them so everyone can find them.',
+              ),
+            ],
+            if (_credits.guests.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              PeopleStrip(title: 'Guests', people: _credits.guests, showEpisodeCount: true),
+            ],
+            // The show payload already drops an ended live item whose guid
+            // matches a stored episode. This episode list has no guid.
+            ShowPodcasting2Panel(
+              tags: _showTags,
+              onPlayTrailer: _playTrailer,
+              onPlayLive: _playLive,
+            ),
+            if (_podroll.isNotEmpty || _valueBlocks.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Podcasting2Section(
+                podroll: _podroll,
+                valueBlocks: _valueBlocks,
+                lookup: (item) => resolvePodroll(
+                  item: item,
+                  search: (query) async {
+                    final result = await _pinepodsService.searchPodcasts(query, SearchProvider.podcastIndex);
+                    return result.toJson();
+                  },
+                ),
+                alreadySubscribed: (show) async {
+                  final userId = Provider.of<SettingsBloc>(context, listen: false).currentSettings.pinepodsUserId;
+                  if (userId == null || show.feedUrl.isEmpty) return false;
+                  return _pinepodsService.checkPodcastExists(show.title, show.feedUrl, userId);
+                },
+                onOpen: (show) => openFeed(
+                  context,
+                  title: show.title,
+                  feedUrl: show.feedUrl,
+                  artwork: show.artwork,
+                  indexId: show.indexId,
+                ),
+                onSubscribe: _subscribePodroll,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionRow(ThemeData theme, Color accent) {
+    final onAccent = onColor(accent);
+    final pillStyle = FilledButton.styleFrom(
+      backgroundColor: accent,
+      foregroundColor: onAccent,
+      disabledBackgroundColor: accent.withOpacity(0.5),
+      disabledForegroundColor: onAccent.withOpacity(0.7),
+      shape: const StadiumBorder(),
+      minimumSize: const Size(0, 46),
+      textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+    );
+
+    final Widget primary;
+    if (!_isFollowing) {
+      primary = FilledButton.icon(
+        style: pillStyle,
+        onPressed: _isFollowButtonLoading ? null : _toggleFollow,
+        icon: _isFollowButtonLoading
+            ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2, color: onAccent))
+            : const Icon(PhosphorIconsBold.plus, size: 18),
+        label: const Text('Follow'),
+      );
+    } else {
+      final latest = _latestUnplayed;
+      final starting = latest != null && _pendingEpisode == latest;
+      primary = FilledButton.icon(
+        style: pillStyle,
+        onPressed: latest == null || starting ? null : () => _playEpisode(latest),
+        icon: starting
+            ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2, color: onAccent))
+            : const Icon(PhosphorIconsFill.play, size: 18),
+        label: Text(latest != null && latest.isStarted ? 'Resume latest' : 'Play latest'),
+      );
+    }
+
+    return Row(
+      children: [
+        Expanded(child: primary),
+        if (_isFollowing) ...[
+          const SizedBox(width: 10),
+          CircleAction(
+            tooltip: 'Unfollow',
+            icon: _isFollowButtonLoading
+                ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2, color: accent))
+                : Icon(PhosphorIconsBold.check, color: accent, size: 20),
+            onTap: _isFollowButtonLoading ? null : _toggleFollow,
+          ),
+        ],
+        if (_podcast.id > 0) ...[
+          const SizedBox(width: 10),
+          CircleAction(
+            tooltip: _isFavorite ? 'Remove from favorites' : 'Add to favorites',
+            icon: Icon(
+              _isFavorite ? PhosphorIconsFill.star : PhosphorIconsRegular.star,
+              color: _isFavorite ? Colors.amber : softNeutral(theme).withOpacity(0.8),
+              size: 20,
+            ),
+            onTap: _isFavoriteLoading ? null : _toggleFavorite,
+          ),
+        ],
+        const SizedBox(width: 10),
+        _buildOptionsMenu(theme),
+      ],
+    );
+  }
+
+  Widget _buildOptionsMenu(ThemeData theme) {
+    return PopupMenuButton<String>(
+      tooltip: 'Podcast options',
+      onSelected: (value) {
+        switch (value) {
+          case 'device_downloads':
+            _showDeviceDownloadsSheet();
+            break;
+          case 'autoplay':
+            _toggleAutoPlayNext();
+            break;
+          case 'ai':
+            _showAiSettingsSheet();
+            break;
+          case 'server_downloads':
+            _showServerDownloadsSheet();
+            break;
+          case 'follow':
+            _toggleFollow();
+            break;
+          case 'refresh_details':
+            _refreshDetails();
+            break;
+        }
+      },
+      itemBuilder: (context) => [
+        if (_isFollowing && _podcast.id > 0) ...[
+          const PopupMenuItem<String>(
+            value: 'device_downloads',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(PhosphorIconsRegular.deviceMobile),
+              title: Text('Device downloads'),
+            ),
+          ),
+          const PopupMenuItem<String>(
+            value: 'server_downloads',
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(PhosphorIconsRegular.hardDrives),
+              title: Text('Server downloads'),
+            ),
+          ),
+          CheckedPopupMenuItem<String>(
+            value: 'autoplay',
+            checked: _isAutoPlayNextEnabled,
+            child: const Text('Auto-play next'),
+          ),
+          PopupMenuItem<String>(
+            value: 'refresh_details',
+            enabled: !_isRefreshingDetails,
+            child: const ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(PhosphorIconsRegular.arrowsClockwise),
+              title: Text('Refresh from feed'),
+            ),
+          ),
+          if (_aiAvailable)
+            const PopupMenuItem<String>(
+              value: 'ai',
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(PhosphorIconsRegular.sparkle),
+                title: Text('AI features'),
+              ),
+            ),
+          const PopupMenuDivider(),
+        ],
+        PopupMenuItem<String>(
+          value: 'follow',
+          enabled: !_isFollowButtonLoading,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(_isFollowing ? PhosphorIconsRegular.minusCircle : PhosphorIconsRegular.plusCircle),
+            title: Text(_isFollowing ? 'Unfollow' : 'Follow'),
+          ),
+        ),
+      ],
+      child: CircleAction(
+        tooltip: null,
+        icon: Icon(PhosphorIconsBold.dotsThree, color: softNeutral(theme).withOpacity(0.8), size: 20),
+        onTap: null,
+      ),
+    );
+  }
+
+  List<Widget> _buildEpisodeSlivers(ThemeData theme, Color accent) {
+    Widget message(IconData icon, String title, String body, {Widget? action}) => SliverToBoxAdapter(
+          child: SoftEmptyState(icon: icon, title: title, body: body, action: action),
+        );
+
+    if (_isLoading) {
+      return const [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.all(40),
+            child: Center(child: PlatformProgressIndicator()),
+          ),
+        ),
+      ];
+    }
+    if (_errorMessage != null) {
+      return [
+        message(PhosphorIconsRegular.warningCircle, _errorMessage!, 'Check your connection and try again.',
+            action: FilledButton.tonal(onPressed: _loadPodcastFeed, child: const Text('Retry'))),
+      ];
+    }
+    if (_episodes.isEmpty) {
+      return [
+        message(
+          PhosphorIconsRegular.info,
+          _isFollowing ? 'No episodes found' : 'Episodes available after following',
+          _isFollowing
+              ? 'Episodes from your PinePods library will appear here'
+              : 'Follow this podcast to add it to your library and view episodes',
+          action: _isFollowing ? FilledButton.tonal(onPressed: _loadPodcastFeed, child: const Text('Retry')) : null,
+        ),
+      ];
+    }
+
+    return [
+      ListToolbar.sliver(context, _buildEpisodeToolbar(accent)),
+      if (_filteredEpisodes.isEmpty)
+        message(
+          PhosphorIconsRegular.magnifyingGlassMinus,
+          'No episodes found',
+          _searchQuery.isNotEmpty ? 'No episodes match "$_searchQuery"' : 'No episodes match this filter',
+        )
+      else
+        _buildEpisodesList(),
+      const SliverToBoxAdapter(child: SizedBox(height: 12)),
+    ];
+  }
+
+  ListToolbar<EpisodeSortDirection> _buildEpisodeToolbar(Color accent) {
+    final _EpisodeFilter current = _showInProgress
+        ? _EpisodeFilter.inProgress
+        : switch (_completedFilter) {
+            CompletedFilter.showAll => _EpisodeFilter.all,
+            CompletedFilter.hide => _EpisodeFilter.unplayed,
+            CompletedFilter.showOnly => _EpisodeFilter.played,
+          };
+
+    return ListToolbar<EpisodeSortDirection>(
+      accent: accent,
+      searchController: _searchController,
+      searchHint: 'Search episodes',
+      filters: [
+        for (final f in _EpisodeFilter.values)
+          ToolbarFilter(
+            label: f.label,
+            selected: f == current,
+            onTap: () => setState(() {
+              _showInProgress = f == _EpisodeFilter.inProgress;
+              _completedFilter = switch (f) {
+                _EpisodeFilter.unplayed => CompletedFilter.hide,
+                _EpisodeFilter.played => CompletedFilter.showOnly,
+                _ => CompletedFilter.showAll,
+              };
+              _filterEpisodes();
+            }),
+          ),
+      ],
+      sortOptions: const {
+        EpisodeSortDirection.newestFirst: 'Newest first',
+        EpisodeSortDirection.oldestFirst: 'Oldest first',
+        EpisodeSortDirection.shortestFirst: 'Shortest first',
+        EpisodeSortDirection.longestFirst: 'Longest first',
+        EpisodeSortDirection.titleAZ: 'Title A–Z',
+        EpisodeSortDirection.titleZA: 'Title Z–A',
+        EpisodeSortDirection.season: 'Season',
+      },
+      sortValue: _sortDirection,
+      onSort: (value) {
+        setState(() {
+          _sortDirection = value;
+          _filterEpisodes();
+        });
+        _saveSortPreference();
+      },
     );
   }
 
@@ -1851,15 +2247,16 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     final audioBloc = Provider.of<AudioBloc>(context, listen: false);
     return StreamBuilder<AudioState>(
       stream: audioBloc.playingState,
-      initialData: AudioState.none,
+      initialData: audioBloc.playingState?.valueOrNull ?? AudioState.none,
       builder: (context, snapshot) {
         final audioState = snapshot.data ?? AudioState.none;
+        // Error keeps the mini player up so it can offer a retry.
         final isAudioActive = audioState != AudioState.none &&
-            audioState != AudioState.stopped &&
-            audioState != AudioState.error;
+            audioState != AudioState.stopped;
 
+        // The shell's mini player takes over once audio is active.
         if (isAudioActive) {
-          return const MiniPlayer();
+          return const SizedBox.shrink();
         } else if (_pendingEpisode != null) {
           return _PendingMiniPlayer(episode: _pendingEpisode!);
         }
@@ -1868,278 +2265,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     );
   }
 
-  Widget _buildSearchAndFilterBar() {
-    return SliverToBoxAdapter(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Search bar with sort dropdown
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
-            child: Row(
-              children: [
-                // Search field
-                Expanded(
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: 'Search episodes...',
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear),
-                              onPressed: () {
-                                _searchController.clear();
-                              },
-                            )
-                          : null,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Theme.of(context).cardColor,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // Sort dropdown
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).cardColor,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Theme.of(context).dividerColor),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<EpisodeSortDirection>(
-                      value: _sortDirection,
-                      icon: const Icon(Icons.sort),
-                      items: [
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.newestFirst,
-                          child: Text('Newest'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.oldestFirst,
-                          child: Text('Oldest'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.shortestFirst,
-                          child: Text('Shortest'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.longestFirst,
-                          child: Text('Longest'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.titleAZ,
-                          child: Text('Title A-Z'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.titleZA,
-                          child: Text('Title Z-A'),
-                        ),
-                        DropdownMenuItem(
-                          value: EpisodeSortDirection.season,
-                          child: Text(L.of(context)?.p2_sort_season ?? 'Season'),
-                        ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() {
-                            _sortDirection = value;
-                            _filterEpisodes();
-                          });
-                          _saveSortPreference();
-                        }
-                      },
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // Filter chips
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 8.0),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  // Clear all filters chip
-                  _buildFilterChip(
-                    label: 'Clear All',
-                    icon: Icons.clear_all,
-                    isActive: false,
-                    onTap: () {
-                      setState(() {
-                        _completedFilter = CompletedFilter.showAll;
-                        _showInProgress = false;
-                        _filterEpisodes();
-                      });
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  // Completed filter chip (3-state)
-                  _buildFilterChip(
-                    label: _getCompletedFilterLabel(),
-                    icon: _getCompletedFilterIcon(),
-                    isActive: _completedFilter != CompletedFilter.showAll,
-                    isAlert: _completedFilter == CompletedFilter.hide,
-                    onTap: () {
-                      setState(() {
-                        // Cycle through states: showAll -> showOnly -> hide -> showAll
-                        switch (_completedFilter) {
-                          case CompletedFilter.showAll:
-                            _completedFilter = CompletedFilter.showOnly;
-                            _showInProgress = false;
-                            break;
-                          case CompletedFilter.showOnly:
-                            _completedFilter = CompletedFilter.hide;
-                            _showInProgress = false;
-                            break;
-                          case CompletedFilter.hide:
-                            _completedFilter = CompletedFilter.showAll;
-                            break;
-                        }
-                        _filterEpisodes();
-                      });
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  // In Progress filter chip
-                  _buildFilterChip(
-                    label: 'In Progress',
-                    icon: Icons.play_circle_outline,
-                    isActive: _showInProgress,
-                    onTap: () {
-                      setState(() {
-                        _showInProgress = !_showInProgress;
-                        if (_showInProgress) {
-                          _completedFilter = CompletedFilter.showAll;
-                        }
-                        _filterEpisodes();
-                      });
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _getCompletedFilterLabel() {
-    switch (_completedFilter) {
-      case CompletedFilter.showAll:
-        return 'Completed';
-      case CompletedFilter.showOnly:
-        return 'Completed Only';
-      case CompletedFilter.hide:
-        return 'Hide Completed';
-    }
-  }
-
-  IconData _getCompletedFilterIcon() {
-    switch (_completedFilter) {
-      case CompletedFilter.showAll:
-        return Icons.circle_outlined;
-      case CompletedFilter.showOnly:
-        return Icons.check_circle;
-      case CompletedFilter.hide:
-        return Icons.cancel;
-    }
-  }
-
-  Widget _buildFilterChip({
-    required String label,
-    required IconData icon,
-    required bool isActive,
-    bool isAlert = false,
-    required VoidCallback onTap,
-  }) {
-    final theme = Theme.of(context);
-    final Color backgroundColor;
-    final Color foregroundColor;
-
-    if (isAlert) {
-      backgroundColor = Colors.orange.withOpacity(0.2);
-      foregroundColor = Colors.orange;
-    } else if (isActive) {
-      backgroundColor = theme.primaryColor.withOpacity(0.2);
-      foregroundColor = theme.primaryColor;
-    } else {
-      backgroundColor = theme.cardColor;
-      foregroundColor = theme.textTheme.bodyMedium?.color ?? Colors.grey;
-    }
-
-    return Material(
-      color: backgroundColor,
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: isActive || isAlert ? foregroundColor : theme.dividerColor,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 18, color: foregroundColor),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: foregroundColor,
-                  fontWeight: isActive || isAlert ? FontWeight.w600 : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildEpisodesList() {
-    // Check if search returned no results
-    if (_filteredEpisodes.isEmpty && _searchQuery.isNotEmpty) {
-      return SliverFillRemaining(
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.search_off,
-                size: 64,
-                color: Theme.of(context).primaryColor,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'No episodes found',
-                style: Theme.of(context).textTheme.titleLarge,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'No episodes match "$_searchQuery"',
-                style: Theme.of(context).textTheme.bodyMedium,
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
     final numbers = [
       for (final episode in _filteredEpisodes)
         resolveNumbers(itunesSeason: episode.itunesSeason, itunesEpisode: episode.itunesEpisode),
@@ -2148,12 +2274,11 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     if (!groupBySeason) {
       return SliverList(
         delegate: SliverChildBuilderDelegate(
-          (context, index) => _episodeTile(_filteredEpisodes[index]),
+          (context, index) => _episodeTile(index),
           childCount: _filteredEpisodes.length,
         ),
       );
     }
-
     final children = <Widget>[];
     int? previousSeason;
     var havePrevious = false;
@@ -2162,10 +2287,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       if (!havePrevious || seasonNumber != previousSeason) {
         havePrevious = true;
         previousSeason = seasonNumber;
-        final l10n = L.of(context);
-        final label = seasonNumber == null
-            ? (l10n?.p2_other_episodes ?? 'Other episodes')
-            : (l10n?.p2_season_group('$seasonNumber') ?? 'Season $seasonNumber');
+        final label = seasonNumber == null ? 'Other episodes' : 'Season $seasonNumber';
         children.add(
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
@@ -2173,50 +2295,63 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           ),
         );
       }
-      children.add(_episodeTile(_filteredEpisodes[i]));
+      children.add(_episodeTile(i));
     }
     return SliverList(delegate: SliverChildListDelegate(children));
   }
 
-  Widget _episodeTile(PinepodsEpisode episode) {
-    final originalIndex = _episodes.indexOf(episode);
-    final bool hasValidServerEpisodeId = episode.episodeId > 0;
-
-    if (!hasValidServerEpisodeId) {
-      print('Episode "${episode.episodeTitle}" has no server ID (RSS fallback) - disabling episode details navigation');
-    }
+  Widget _episodeTile(int index) {
+    final episode = _filteredEpisodes[index];
+    final originalIndex = _filteredIndexes[index];
+    // RSS fallback episodes have no server id, so no details or actions.
+    final hasServerId = episode.episodeId > 0;
 
     return PinepodsEpisodeCard(
       episode: episode,
-      onTap: _isFollowing && hasValidServerEpisodeId
+      onTap: _isFollowing && hasServerId
           ? () {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => PinepodsEpisodeDetails(
-                    initialEpisode: episode,
-                  ),
+                  builder: (context) => PinepodsEpisodeDetails(initialEpisode: episode),
                 ),
               );
             }
           : null,
-      onLongPress: _isFollowing && hasValidServerEpisodeId
-          ? () {
-              _showEpisodeContextMenu(originalIndex);
-            }
-          : null,
-      onPlayPressed: _isFollowing
-          ? () {
-              _playEpisode(episode);
-            }
-          : null,
+      onLongPress: _isFollowing && hasServerId ? () => _showEpisodeContextMenu(originalIndex) : null,
+      // Unfollowed (feed) episodes play untracked.
+      onPlayPressed: () => _playEpisode(episode),
     );
   }
 }
 
+enum _EpisodeFilter {
+  all('All'),
+  unplayed('Unplayed'),
+  inProgress('In progress'),
+  played('Played');
+
+  final String label;
+  const _EpisodeFilter(this.label);
+}
+
+/// Lowercased search text and parsed date, computed once per episode instead
+/// of on every keystroke and sort comparison.
+class _EpisodeKeys {
+  final String title;
+  final String description;
+  final int date;
+
+  _EpisodeKeys(PinepodsEpisode e)
+      : title = e.episodeTitle.toLowerCase(),
+        description = e.episodeDescription.toLowerCase(),
+        date = DateTime.tryParse(e.episodePubDate)?.millisecondsSinceEpoch ?? 0;
+}
+
 class _ExpandableDescription extends StatefulWidget {
   final String description;
-  const _ExpandableDescription({required this.description});
+  final Color accent;
+  const _ExpandableDescription({required this.description, required this.accent});
 
   @override
   State<_ExpandableDescription> createState() => _ExpandableDescriptionState();
@@ -2227,30 +2362,31 @@ class _ExpandableDescriptionState extends State<_ExpandableDescription> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          widget.description,
-          style: const TextStyle(fontSize: 14),
-          maxLines: _expanded ? null : 3,
-          overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
-        ),
-        GestureDetector(
-          onTap: () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              _expanded ? 'Show less' : 'Show more',
-              style: TextStyle(
-                fontSize: 13,
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w500,
-              ),
+    final theme = Theme.of(context);
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() => _expanded = !_expanded),
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        alignment: Alignment.topCenter,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.description,
+              style: theme.textTheme.bodyMedium!.copyWith(height: 1.4, color: softNeutral(theme).withOpacity(0.85)),
+              maxLines: _expanded ? null : 2,
+              overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
             ),
-          ),
+            const SizedBox(height: 2),
+            Text(
+              _expanded ? 'Less' : 'More',
+              style: TextStyle(fontSize: 13, color: widget.accent, fontWeight: FontWeight.w600),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 }
@@ -2319,14 +2455,14 @@ class _PendingMiniPlayerState extends State<_PendingMiniPlayer>
                             fit: BoxFit.cover,
                             errorBuilder: (_, __, ___) => Container(
                               color: theme.colorScheme.surfaceVariant,
-                              child: Icon(Icons.music_note,
+                              child: Icon(PhosphorIconsRegular.musicNote,
                                   size: 20,
                                   color: theme.colorScheme.onSurfaceVariant),
                             ),
                           )
                         : Container(
                             color: theme.colorScheme.surfaceVariant,
-                            child: Icon(Icons.music_note,
+                            child: Icon(PhosphorIconsRegular.musicNote,
                                 size: 20,
                                 color: theme.colorScheme.onSurfaceVariant),
                           ),
@@ -2373,6 +2509,85 @@ class _PendingMiniPlayerState extends State<_PendingMiniPlayer>
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Shown under "Auto-detect ads": whether ads will be found on the copy that
+/// gets played. Many podcasts insert different ads each time an episode is
+/// fetched, so only a server download keeps detection and playback on one copy.
+class _AdDownloadNotice extends StatelessWidget {
+  final bool serverAutoDownload;
+  final VoidCallback onEnable;
+  final VoidCallback onServerDownloads;
+
+  const _AdDownloadNotice({
+    required this.serverAutoDownload,
+    required this.onEnable,
+    required this.onServerDownloads,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = serverAutoDownload ? Colors.green : Colors.orange;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border(left: BorderSide(color: color, width: 3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                  serverAutoDownload
+                      ? PhosphorIconsRegular.checkCircle
+                      : PhosphorIconsRegular.warning,
+                  size: 18,
+                  color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  serverAutoDownload
+                      ? 'Episodes download to the server, so ads are found on '
+                          "the copy you'll play and skips line up exactly."
+                      : 'Server auto-download is off. Many podcasts insert '
+                          'different ads every time an episode is fetched, so '
+                          'ads found on one copy can land at the wrong times in '
+                          'the copy you stream. Pinepods holds off skipping when '
+                          "the stream doesn't match, so some ads won't be "
+                          'skipped. Turn on server auto-download for exact skips; '
+                          '"Delete when finished" keeps it from filling the disk.',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (!serverAutoDownload)
+                OutlinedButton.icon(
+                  onPressed: onEnable,
+                  icon: const Icon(PhosphorIconsRegular.cloudArrowDown, size: 18),
+                  label: const Text('Turn on server auto-download'),
+                ),
+              TextButton(
+                onPressed: onServerDownloads,
+                child: const Text('Server download settings'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

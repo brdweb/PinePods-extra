@@ -11,13 +11,17 @@ use axum::{
 use tower::ServiceBuilder;
 use tower_http::{
     trace::TraceLayer,
-    compression::CompressionLayer,
+    compression::{
+        predicate::{DefaultPredicate, NotForContentType, Predicate},
+        CompressionLayer,
+    },
     services::ServeDir,
 };
 
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod gpodder;
 pub mod handlers;
 pub mod models;
 pub mod openapi;
@@ -60,6 +64,8 @@ pub struct AppState {
     /// Whether the optional pinepods-ai sidecar is reachable. Kept fresh by a
     /// background health monitor; handlers gate AI features on this.
     pub ai_available: crate::services::ai_client::AiAvailability,
+    /// Whether episode ids of merged copies exist, for following them in requests.
+    pub merged_episodes: crate::services::episode_aliases::MergedEpisodes,
 }
 
 /// Builds the spec-aware router. Handlers annotated with `#[utoipa::path]` and
@@ -83,6 +89,7 @@ pub fn openapi_router() -> OpenApiRouter<AppState> {
         .nest("/api/async", OpenApiRouter::from(create_async_routes()))
         .nest("/api/proxy", create_proxy_routes())
         .nest("/api/gpodder", create_gpodder_routes())
+        .nest("/api/sync", create_sync_routes())
         .nest("/api/feed", create_feed_routes())
         .nest("/api/auth", create_auth_routes())
         .nest("/ws", OpenApiRouter::from(create_websocket_routes()))
@@ -95,6 +102,7 @@ pub fn create_app(state: AppState) -> Router {
     router
         // Routes/services that intentionally stay out of the API spec
         .route("/api/placeholder/{width}/{height}", get(handlers::proxy::placeholder_image))
+        .merge(gpodder::router())
         .nest_service("/api/local-media", ServeDir::new("/opt/pinepods/local-media"))
         // Raw spec for tooling/docs builds, plus the interactive Scalar UI at /api/docs
         .route("/api/openapi.json", get(move || {
@@ -102,24 +110,70 @@ pub fn create_app(state: AppState) -> Router {
             async move { axum::Json(spec) }
         }))
         .merge(Scalar::with_url("/api/docs", api))
+        // Episode ids of merged copies point at the episode they became.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), services::episode_aliases::follow_merged_episodes))
         // Middleware stack
         .layer(
             ServiceBuilder::new()
                 .layer(
                     TraceLayer::new_for_http()
-                        .make_span_with(tower_http::trace::DefaultMakeSpan::new()
-                            .level(tracing::Level::INFO))
+                        .make_span_with(|req: &axum::http::Request<_>| {
+                            tracing::info_span!("request", method = %req.method(), uri = %redacted_uri(req.uri()), version = ?req.version())
+                        })
                         .on_response(tower_http::trace::DefaultOnResponse::new()
                             .level(tracing::Level::INFO))
                 )
-                .layer(CompressionLayer::new())
+                // Media is already compressed, and gzipping a full-file response
+                // also strips Accept-Ranges, which players use to decide whether
+                // they can seek.
+                .layer(CompressionLayer::new().compress_when(
+                    DefaultPredicate::new()
+                        .and(NotForContentType::const_new("audio/"))
+                        .and(NotForContentType::const_new("video/")),
+                ))
                 .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024 * 1024)) // 2GB limit for massive backup files
         )
         .with_state(state)
 }
 
+/// The request URI for logs, with the values of credential-like query parameters (websockets
+/// pass `api_key` in the query) replaced.
+fn redacted_uri(uri: &axum::http::Uri) -> String {
+    let Some(query) = uri.query() else { return uri.path().to_string() };
+    let query = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((name, _)) if ["key", "token", "password", "secret"].iter().any(|s| name.to_ascii_lowercase().contains(s)) => {
+                format!("{name}=<redacted>")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{}?{}", uri.path(), query)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn credentials_are_redacted_from_logged_uris() {
+        let uri = "/ws/api/tasks/2?api_key=secret123&device_name=Web&Token=x".parse().unwrap();
+        assert_eq!(super::redacted_uri(&uri), "/ws/api/tasks/2?api_key=<redacted>&device_name=Web&Token=<redacted>");
+        assert_eq!(super::redacted_uri(&"/api/health".parse().unwrap()), "/api/health");
+    }
+}
+
 fn create_data_routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
+        // Feeds that keep failing and failed sync imports
+        .routes(routes!(handlers::feed_problems::get_feed_problems))
+        .routes(routes!(handlers::feed_problems::refresh_failing_feed))
+        .routes(routes!(handlers::feed_problems::retry_import))
+        .routes(routes!(handlers::feed_problems::remove_import))
+        .routes(routes!(handlers::feed_problems::dismiss_import))
+        // Search service and Podping (admin)
+        .routes(routes!(handlers::update_services::get_update_services))
+        .routes(routes!(handlers::update_services::set_podping))
         // Durable in-app notifications (Activity center messages)
         .routes(routes!(handlers::notifications::list_notifications))
         .routes(routes!(handlers::notifications::mark_notification_read))
@@ -153,6 +207,7 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::podcasts::get_default_volume))
         .routes(routes!(handlers::podcasts::add_podcast))
         .routes(routes!(handlers::podcasts::update_podcast_info))
+        .routes(routes!(handlers::podcasts::refresh_podcast_details))
         .routes(routes!(handlers::podcasts::merge_podcasts))
         .routes(routes!(handlers::podcasts::unmerge_podcast))
         .routes(routes!(handlers::podcasts::get_merged_podcasts))
@@ -351,6 +406,8 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::youtube::search_youtube_channels))
         .routes(routes!(handlers::youtube::subscribe_to_youtube_channel))
         .routes(routes!(handlers::youtube::check_youtube_channel))
+        .routes(routes!(handlers::youtube::get_youtube_video_filter))
+        .routes(routes!(handlers::youtube::update_youtube_video_filter))
         .routes(routes!(handlers::settings::enable_auto_download))
         .routes(routes!(handlers::settings::enable_auto_queue))
         .routes(routes!(handlers::settings::enable_auto_play_next))
@@ -381,6 +438,9 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::settings::clear_podcast_playback_speed))
         .routes(routes!(handlers::settings::set_podcast_auto_download_delete_days))
         .routes(routes!(handlers::settings::clear_podcast_auto_download_delete_days))
+        .routes(routes!(handlers::settings::get_auto_delete_on_complete))
+        .routes(routes!(handlers::settings::set_auto_delete_on_complete_user))
+        .routes(routes!(handlers::settings::set_podcast_auto_delete_on_complete))
         .routes(routes!(handlers::settings::set_podcast_cover_preference))
         .routes(routes!(handlers::settings::clear_podcast_cover_preference))
         .routes(routes!(handlers::settings::toggle_podcast_notifications))
@@ -452,6 +512,21 @@ fn create_gpodder_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::sync::gpodder_force_sync))
         .routes(routes!(handlers::sync::gpodder_sync))
         .routes(routes!(handlers::sync::gpodder_get_statistics))
+}
+
+fn create_sync_routes() -> OpenApiRouter<AppState> {
+    use handlers::sync_settings as s;
+    OpenApiRouter::new()
+        .routes(routes!(s::get_server, s::put_server))
+        .routes(routes!(s::list_app_passwords, s::create_app_password))
+        .routes(routes!(s::revoke_app_password))
+        .routes(routes!(s::dismiss_notice))
+        .routes(routes!(s::list_devices))
+        .routes(routes!(s::rename_device, s::remove_device))
+        .routes(routes!(s::get_target, s::put_target, s::delete_target))
+        .routes(routes!(s::test_target))
+        .routes(routes!(s::run_sync))
+        .routes(routes!(s::get_stats))
 }
 
 fn create_init_routes() -> OpenApiRouter<AppState> {

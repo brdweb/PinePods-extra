@@ -8,6 +8,7 @@ import 'package:pinepods_mobile/entities/pinepods_episode.dart';
 import 'package:pinepods_mobile/entities/episode.dart';
 import 'package:pinepods_mobile/entities/downloadable.dart';
 import 'package:pinepods_mobile/repository/repository.dart';
+import 'package:pinepods_mobile/services/auto_download/download_cleanup_service.dart';
 import 'package:pinepods_mobile/services/logging/app_logger.dart';
 import 'package:pinepods_mobile/bloc/podcast/podcast_bloc.dart';
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
@@ -84,11 +85,8 @@ class LocalDownloadUtils {
       final podcastBloc = Provider.of<PodcastBloc>(context, listen: false);
       final repository = podcastBloc.podcastService.repository;
 
-      // Get all episodes and find matches with both new and old GUID formats
-      final allEpisodes = await repository.findAllEpisodes();
-      final matchingEpisodes = allEpisodes.where((ep) =>
-        ep.guid == guid || ep.guid.startsWith('${guid}_')
-      ).toList();
+      // Matches both the current and the legacy timestamp-suffixed guid.
+      final matchingEpisodes = await repository.findEpisodesByGuidOrLegacy(guid);
 
       logger.debug('LocalDownload', 'Repository lookup for $guid: found ${matchingEpisodes.length} matching episodes');
 
@@ -317,6 +315,7 @@ class LocalDownloadUtils {
       
       if (success) {
         updateLocalDownloadStatus(episode, true);
+        await DownloadCleanupService.recordDownload(episode);
       }
       
       return success;
@@ -349,7 +348,7 @@ class LocalDownloadUtils {
         // Delete ALL matching episodes (handles duplicates from old timestamp GUIDs)
         for (final localEpisode in matchingEpisodes) {
           logger.debug('LocalDownload', 'Deleting episode: ${localEpisode.guid}');
-          await podcastBloc.podcastService.repository.deleteEpisode(localEpisode);
+          await _deleteFileAndRecord(podcastBloc, localEpisode);
         }
         
         // Update cache
@@ -389,7 +388,7 @@ class LocalDownloadUtils {
       }
 
       for (final localEpisode in matchingEpisodes) {
-        await podcastBloc.podcastService.repository.deleteEpisode(localEpisode);
+        await _deleteFileAndRecord(podcastBloc, localEpisode);
       }
       _localDownloadStatusCache[guid] = false;
       return matchingEpisodes.length;
@@ -397,6 +396,17 @@ class LocalDownloadUtils {
       logger.error('LocalDownload', 'Error deleting local download for guid: $guid', e.toString());
       return 0;
     }
+  }
+
+  /// Remove the downloaded file (cancelling an in-flight download), then the
+  /// repository record.
+  static Future<void> _deleteFileAndRecord(PodcastBloc podcastBloc, Episode episode) async {
+    try {
+      await podcastBloc.podcastService.deleteDownload(episode);
+    } catch (e) {
+      AppLogger().warning('LocalDownload', 'Could not remove file for ${episode.guid}: $e');
+    }
+    await podcastBloc.podcastService.repository.deleteEpisode(episode);
   }
 
   /// Show snackbar with message

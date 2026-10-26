@@ -20,6 +20,7 @@ pub(crate) mod restore_overlay;
 pub(crate) mod safehtml;
 pub(crate) mod virtual_list;
 pub(crate) mod value4value;
+pub(crate) mod youtube_video_filter;
 
 pub(crate) mod audio;
 pub(crate) mod click_events;

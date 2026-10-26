@@ -99,10 +99,11 @@ async fn download_episode_and_wait(
                 SELECT e.episodeurl, e.episodetitle, p.podcastname, 
                        e.episodepubdate
                 FROM "Episodes" e
-                JOIN "Podcasts" p ON e.podcastid = p.podcastid
+                JOIN "Podcasts" p ON e.feedid = p.feedid AND p.userid = $2
                 WHERE e.episodeid = $1
             "#)
             .bind(episode_id)
+            .bind(user_id)
             .fetch_one(pool)
             .await?;
             
@@ -117,9 +118,10 @@ async fn download_episode_and_wait(
             let row = sqlx::query("
                 SELECT e.EpisodeURL, e.EpisodeTitle, p.PodcastName, e.EpisodePubDate
                 FROM Episodes e
-                JOIN Podcasts p ON e.PodcastID = p.PodcastID
+                JOIN Podcasts p ON e.FeedID = p.FeedID AND p.UserID = ?
                 WHERE e.EpisodeID = ?
             ")
+            .bind(user_id)
             .bind(episode_id)
             .fetch_one(pool)
             .await?;
@@ -164,47 +166,52 @@ async fn download_episode_and_wait(
     let filename = format!("{}_{}_{}_{}.mp3", pub_date_str, safe_episode_title, user_id, episode_id);
     let file_path = download_dir.join(&filename);
     
-    // SSRF guard: episode_url originates from the podcast RSS <enclosure url>,
-    // which is fully attacker-controlled. Reject loopback/private/link-local/
-    // reserved destinations before issuing any server-side request.
-    crate::services::url_guard::ensure_safe_public_url_async(&episode_url)
-        .await
-        .map_err(|reason| crate::error::AppError::Internal(format!("Refusing to download episode URL: {}", reason)))?;
+    // Link another user's download of this episode instead of fetching it again (see
+    // spawn_download_podcast_episode).
+    let reused = crate::services::audio_processing::reuse_download(db_pool, episode_id, user_id, &file_path).await;
+    if reused.is_none() {
+        // SSRF guard: episode_url originates from the podcast RSS <enclosure url>,
+        // which is fully attacker-controlled. Reject loopback/private/link-local/
+        // reserved destinations before issuing any server-side request.
+        crate::services::url_guard::ensure_safe_public_url_async(&episode_url)
+            .await
+            .map_err(|reason| crate::error::AppError::Internal(format!("Refusing to download episode URL: {}", reason)))?;
 
-    // Download the file. Redirects are re-validated by the same guard so a
-    // public URL cannot 30x-redirect into the internal network.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            match crate::services::url_guard::ensure_safe_public_url(attempt.url().as_str()) {
-                Ok(()) => attempt.follow(),
-                Err(_) => attempt.stop(),
-            }
-        }))
-        .build()
-        .map_err(|e| crate::error::AppError::Internal(format!("Failed to build HTTP client: {}", e)))?;
-    let mut response = client.get(&episode_url)
-        .header("Accept", "*/*")
-        .header("User-Agent", "PinePods/1.0")
-        .send()
-        .await
-        .map_err(|e| crate::error::AppError::Internal(format!("Failed to start download: {}", e)))?;
+        // Download the file. Redirects are re-validated by the same guard so a
+        // public URL cannot 30x-redirect into the internal network.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                match crate::services::url_guard::ensure_safe_public_url(attempt.url().as_str()) {
+                    Ok(()) => attempt.follow(),
+                    Err(_) => attempt.stop(),
+                }
+            }))
+            .build()
+            .map_err(|e| crate::error::AppError::Internal(format!("Failed to build HTTP client: {}", e)))?;
+        let mut response = client.get(&episode_url)
+            .header("Accept", "*/*")
+            .header("User-Agent", "PinePods/1.0")
+            .send()
+            .await
+            .map_err(|e| crate::error::AppError::Internal(format!("Failed to start download: {}", e)))?;
     
-    if !response.status().is_success() {
-        return Err(crate::error::AppError::Internal(format!("Server returned error: {}", response.status())));
+        if !response.status().is_success() {
+            return Err(crate::error::AppError::Internal(format!("Server returned error: {}", response.status())));
+        }
+    
+        let mut file = std::fs::File::create(&file_path)
+            .map_err(|e| crate::error::AppError::Internal(format!("Failed to create file: {}", e)))?;
+    
+        // Download the content
+        while let Some(chunk) = response.chunk().await.map_err(|e| crate::error::AppError::Internal(format!("Download failed: {}", e)))? {
+            std::io::Write::write_all(&mut file, &chunk)
+                .map_err(|e| crate::error::AppError::Internal(format!("Failed to write file: {}", e)))?;
+        }
+    
+        // Close the file
+        drop(file);
+        // Ownership is handled by running the process as PUID:PGID (see startup.sh); no chown needed.
     }
-    
-    let mut file = std::fs::File::create(&file_path)
-        .map_err(|e| crate::error::AppError::Internal(format!("Failed to create file: {}", e)))?;
-    
-    // Download the content
-    while let Some(chunk) = response.chunk().await.map_err(|e| crate::error::AppError::Internal(format!("Download failed: {}", e)))? {
-        std::io::Write::write_all(&mut file, &chunk)
-            .map_err(|e| crate::error::AppError::Internal(format!("Failed to write file: {}", e)))?;
-    }
-    
-    // Close the file
-    drop(file);
-    // Ownership is handled by running the process as PUID:PGID (see startup.sh); no chown needed.
 
     // Record download in database
     let file_size = tokio::fs::metadata(&file_path).await
@@ -232,6 +239,18 @@ async fn download_episode_and_wait(
         }
     }
     
+    let fingerprint = match reused {
+        Some((_, fp)) => fp,
+        None => crate::services::audio_processing::audio_fingerprint(&file_path.to_string_lossy()).await.ok(),
+    };
+    if let Some(fp) = &fingerprint {
+        if let Err(e) = crate::services::audio_processing::set_download_fingerprint(db_pool, episode_id, user_id, fp).await {
+            tracing::warn!("Could not store fingerprint for episode {}: {}", episode_id, e);
+        }
+    }
+    crate::services::audio_processing::maybe_detect_silence_after_download(db_pool.clone(), episode_id);
+    crate::services::transcription::after_download(db_pool.clone(), episode_id, user_id);
+
     tracing::info!("Successfully downloaded episode {} - {}", episode_id, episode_title);
     Ok(episode_title)
 }
@@ -245,6 +264,10 @@ pub struct TaskSpawner {
 impl TaskSpawner {
     pub fn new(task_manager: Arc<TaskManager>, db_pool: DatabasePool) -> Self {
         Self { task_manager, db_pool }
+    }
+
+    pub fn db_pool(&self) -> &DatabasePool {
+        &self.db_pool
     }
 
     pub async fn spawn_task<F, Fut>(
@@ -385,10 +408,11 @@ impl TaskSpawner {
                                    e."episodedescription", p."username", p."password",
                                    p."feedurl", e."episodeguid", e."episodeduration"
                             FROM "Episodes" e
-                            JOIN "Podcasts" p ON e."podcastid" = p."podcastid"
+                            JOIN "Podcasts" p ON e."feedid" = p."feedid" AND p."userid" = $2
                             WHERE e."episodeid" = $1
                         "#)
                         .bind(episode_id)
+                        .bind(user_id)
                         .fetch_one(pool)
                         .await?;
 
@@ -415,9 +439,10 @@ impl TaskSpawner {
                                    e.EpisodeDescription, p.Username, p.Password,
                                    p.FeedURL, e.EpisodeGUID, e.EpisodeDuration
                             FROM Episodes e
-                            JOIN Podcasts p ON e.PodcastID = p.PodcastID
+                            JOIN Podcasts p ON e.FeedID = p.FeedID AND p.UserID = ?
                             WHERE e.EpisodeID = ?
                         ")
+                        .bind(user_id)
                         .bind(episode_id)
                         .fetch_one(pool)
                         .await?;
@@ -501,51 +526,68 @@ impl TaskSpawner {
 
                 let client = reqwest::Client::new();
                 let mut saved: Option<(std::path::PathBuf, u64)> = None;
-                let mut last_error = String::from("No source could be downloaded");
-                for step in &plan.download {
-                    if step.uri != original_episode_url {
-                        if let Err(reason) = crate::services::url_guard::ensure_safe_public_url_async(&step.uri).await {
-                            last_error = format!("Refusing alternate source: {reason}");
-                            tracing::info!("Skipping alternate download for episode {episode_id}: {reason}");
-                            continue;
-                        }
-                    }
-                    let ext = crate::services::alternate_media::file_extension(&step.mime_type, &step.uri);
+                // Another user's server download of the original enclosure is linked
+                // instead of fetched again, so everyone plays the copy ads were detected
+                // on. Alternate sources are always fetched.
+                let mut reused: Option<(u64, Option<String>)> = None;
+                if let Some(first) = plan.download.first().filter(|step| step.uri == original_episode_url) {
+                    let ext = crate::services::alternate_media::file_extension(&first.mime_type, &first.uri);
                     let filename = format!("{}_{}_{}_{}.{}", pub_date_str, safe_episode_title, user_id, episode_id, ext);
                     let file_path = download_dir.join(&filename);
-                    let _ = std::fs::remove_file(&file_path);
-                    // Feed credentials stay on the original enclosure. Sending them to an
-                    // alternate host would hand the password to a different site.
-                    let (source_user, source_pass) = if step.uri == original_episode_url {
-                        (feed_username.as_deref(), feed_password.as_deref())
-                    } else {
-                        (None, None)
-                    };
-                    match download_one_source(
-                        &client,
-                        &step.uri,
-                        &file_path,
-                        source_user,
-                        source_pass,
-                        step.integrity.as_ref(),
-                        &task_manager,
-                        &task_id_clone,
-                        episode_id,
-                        &episode_title,
-                    ).await {
-                        Ok(size) => {
-                            episode_url = step.uri.clone();
-                            saved = Some((file_path, size));
-                            break;
+                    if let Some((size, fp)) = crate::services::audio_processing::reuse_download(&db_pool, episode_id, user_id, &file_path).await {
+                        episode_url = first.uri.clone();
+                        saved = Some((file_path, size));
+                        reused = Some((size, fp));
+                    }
+                }
+                let mut last_error = String::from("No source could be downloaded");
+                if saved.is_none() {
+                    for step in &plan.download {
+                        if step.uri != original_episode_url {
+                            if let Err(reason) = crate::services::url_guard::ensure_safe_public_url_async(&step.uri).await {
+                                last_error = format!("Refusing alternate source: {reason}");
+                                tracing::info!("Skipping alternate download for episode {episode_id}: {reason}");
+                                continue;
+                            }
                         }
-                        Err(err) => {
-                            let _ = std::fs::remove_file(&file_path);
-                            tracing::info!("Download source failed for episode {episode_id}: {err}");
-                            last_error = err;
+                        let ext = crate::services::alternate_media::file_extension(&step.mime_type, &step.uri);
+                        let filename = format!("{}_{}_{}_{}.{}", pub_date_str, safe_episode_title, user_id, episode_id, ext);
+                        let file_path = download_dir.join(&filename);
+                        let _ = std::fs::remove_file(&file_path);
+                        // Feed credentials stay on the original enclosure. Sending them to an
+                        // alternate host would hand the password to a different site.
+                        let (source_user, source_pass) = if step.uri == original_episode_url {
+                            (feed_username.as_deref(), feed_password.as_deref())
+                        } else {
+                            (None, None)
+                        };
+                        match download_one_source(
+                            &client,
+                            &step.uri,
+                            &file_path,
+                            source_user,
+                            source_pass,
+                            step.integrity.as_ref(),
+                            &task_manager,
+                            &task_id_clone,
+                            episode_id,
+                            &episode_title,
+                        ).await {
+                            Ok(size) => {
+                                episode_url = step.uri.clone();
+                                saved = Some((file_path, size));
+                                break;
+                            }
+                            Err(err) => {
+                                let _ = std::fs::remove_file(&file_path);
+                                tracing::info!("Download source failed for episode {episode_id}: {err}");
+                                last_error = err;
+                            }
                         }
                     }
                 }
                 let (file_path, downloaded) = saved.ok_or_else(|| crate::error::AppError::internal(last_error))?;
+                let mut fingerprint = reused.clone().and_then(|(_, fp)| fp);
                 // Ownership is handled by running the process as PUID:PGID (see startup.sh); no chown needed.
 
                 let status_message = format!("Processing {}", episode_title);
@@ -566,14 +608,18 @@ impl TaskSpawner {
                     podcast_artwork: artwork_url.clone(),
                 };
 
-                // ID3 tagging is for mp3. Other codecs keep their own container.
-                if file_path.extension().and_then(|ext| ext.to_str()) == Some("mp3") {
+                // ID3 tagging is for mp3 (a reused copy is already tagged). Other codecs
+                // keep their own container.
+                if reused.is_none() && file_path.extension().and_then(|ext| ext.to_str()) == Some("mp3") {
                     if let Err(e) = crate::services::download_metadata::add_podcast_metadata(
                         &file_path,
                         &episode_meta,
                     ).await {
                         tracing::warn!("Failed to add metadata to {}: {}", file_path.display(), e);
                     }
+                }
+                if reused.is_none() {
+                    fingerprint = crate::services::audio_processing::audio_fingerprint(&file_path.to_string_lossy()).await.ok();
                 }
 
                 // Optional sidecar artifacts (folder.jpg, episode cover, metadata files).
@@ -648,8 +694,22 @@ impl TaskSpawner {
                 // detached so it never delays the download's completion.
                 crate::services::audio_processing::maybe_detect_silence_after_download(db_pool.clone(), episode_id);
 
-                // Likewise auto-transcribe if the podcast opted in and the AI sidecar is configured.
-                crate::services::transcription::maybe_transcribe_episode(db_pool.clone(), episode_id);
+                if let Some(fp) = &fingerprint {
+                    if let Err(e) = crate::services::audio_processing::set_download_fingerprint(&db_pool, episode_id, user_id, fp).await {
+                        tracing::warn!("Could not store fingerprint for episode {}: {}", episode_id, e);
+                    }
+                }
+
+                // Ads the user asked to find once this download finished, else the usual
+                // auto-transcription (which also moves ad times onto this copy when needed).
+                if crate::services::ad_detection::take_detect_after_download(episode_id, user_id) {
+                    let spawner = TaskSpawner::new(task_manager.clone(), db_pool.clone());
+                    if let Err(e) = spawner.spawn_detect_ads(episode_id, user_id, true).await {
+                        tracing::warn!("Could not start ad detection for episode {}: {}", episode_id, e);
+                    }
+                } else {
+                    crate::services::transcription::after_download(db_pool.clone(), episode_id, user_id);
+                }
 
                 Ok(serde_json::json!({
                     "episode_id": episode_id,
@@ -745,7 +805,7 @@ impl TaskSpawner {
                 cb_progress.store((p * 100.0).round() as u32, Ordering::Relaxed);
             };
 
-            let result = crate::services::transcription::transcribe_episode(&db_pool, episode_id, force, on_progress).await;
+            let result = crate::services::transcription::transcribe_episode(&db_pool, episode_id, force, Some(user_id), on_progress).await;
             ticker.abort();
 
             match result {
@@ -806,7 +866,7 @@ impl TaskSpawner {
                 cb_progress.store((p * 100.0).round() as u32, Ordering::Relaxed);
             };
 
-            let result = crate::services::ad_detection::detect_episode_ads(&db_pool, episode_id, force, on_progress).await;
+            let result = crate::services::ad_detection::detect_episode_ads(&db_pool, episode_id, force, Some(user_id), on_progress).await;
             ticker.abort();
 
             match result {
@@ -1000,7 +1060,7 @@ impl TaskSpawner {
                             SELECT e.episodeid 
                             FROM "Episodes" e
                             LEFT JOIN "DownloadedEpisodes" de ON e.episodeid = de.episodeid AND de.userid = $2
-                            WHERE e.podcastid = $1 AND de.episodeid IS NULL
+                            WHERE e.feedid = (SELECT feedid FROM "Podcasts" WHERE podcastid = $1) AND de.episodeid IS NULL
                             ORDER BY e.episodepubdate DESC
                         "#)
                             .bind(podcast_id)
@@ -1017,7 +1077,7 @@ impl TaskSpawner {
                             SELECT e.EpisodeID 
                             FROM Episodes e
                             LEFT JOIN DownloadedEpisodes de ON e.EpisodeID = de.EpisodeID AND de.UserID = ?
-                            WHERE e.PodcastID = ? AND de.EpisodeID IS NULL
+                            WHERE e.FeedID = (SELECT FeedID FROM Podcasts WHERE PodcastID = ?) AND de.EpisodeID IS NULL
                             ORDER BY e.EpisodePubDate DESC
                         ")
                             .bind(user_id)
@@ -1235,6 +1295,8 @@ impl TaskSpawner {
         user_id: i32,
         username: Option<String>,
         password: Option<String>,
+        // The feed as already fetched by the caller; fetched again only when None.
+        feed_body: Option<String>,
     ) -> AppResult<String> {
         let task_type = "add_podcast_episodes".to_string();
         
@@ -1256,6 +1318,7 @@ impl TaskSpawner {
                         false, // auto_download
                         username.as_deref(),
                         password.as_deref(),
+                        feed_body.as_deref(),
                     ).await {
                         Ok(first_episode_id) => {
                             // Update progress - fetching count
@@ -1264,13 +1327,13 @@ impl TaskSpawner {
                             // Count episodes for logging and notification
                             let episode_count: i64 = match &db_pool {
                                 crate::database::DatabasePool::Postgres(pool) => {
-                                    sqlx::query_scalar(r#"SELECT COUNT(*) FROM "Episodes" WHERE podcastid = $1"#)
+                                    sqlx::query_scalar(r#"SELECT COUNT(*) FROM "Episodes" WHERE feedid = (SELECT feedid FROM "Podcasts" WHERE podcastid = $1)"#)
                                         .bind(podcast_id)
                                         .fetch_one(pool)
                                         .await?
                                 }
                                 crate::database::DatabasePool::MySQL(pool) => {
-                                    sqlx::query_scalar("SELECT COUNT(*) FROM Episodes WHERE PodcastID = ?")
+                                    sqlx::query_scalar("SELECT COUNT(*) FROM Episodes WHERE FeedID = (SELECT FeedID FROM Podcasts WHERE PodcastID = ?)")
                                         .bind(podcast_id)
                                         .fetch_one(pool)
                                         .await?
@@ -1299,5 +1362,36 @@ impl TaskSpawner {
                 })
             },
         ).await
+    }
+}
+
+impl TaskSpawner {
+    /// Import a feed a sync source subscribed to (sync::apply_subscription_changes; never
+    /// fetched inside the sync request). `claim` marks the (user, url) as in flight until
+    /// the task ends; at most a few of these fetch at once. Failures are kept for retrying.
+    pub async fn spawn_sync_add_podcast(
+        &self,
+        user_id: i32,
+        feed_url: String,
+        origin: crate::services::sync::SyncOrigin,
+        claim: crate::services::sync::apply::InFlightAdd,
+    ) -> AppResult<String> {
+        self.spawn_task("sync_add_podcast".to_string(), user_id, move |task_id, task_manager, db_pool| {
+            Box::pin(async move {
+                let _claim = claim;
+                let _permit = crate::services::sync::apply::add_permit().await;
+                task_manager.update_task_progress(&task_id, 10.0, Some("Fetching podcast feed...".to_string())).await?;
+                if let Err(e) = db_pool.add_podcast_from_url(user_id, &feed_url, None, origin).await {
+                    warn!("Sync subscription add of {} for user {} failed: {}", feed_url, user_id, e);
+                    crate::services::sync::imports::failed(&db_pool, &task_manager, user_id, &feed_url, origin, &e).await;
+                    return Err(e);
+                }
+                if let Err(e) = db_pool.sync_import_succeeded(user_id, &feed_url).await {
+                    warn!("Clearing the failed import of {} for user {} failed: {}", feed_url, user_id, e);
+                }
+                Ok(serde_json::json!({ "user_id": user_id, "feed_url": feed_url, "status": "completed" }))
+            })
+        })
+        .await
     }
 }

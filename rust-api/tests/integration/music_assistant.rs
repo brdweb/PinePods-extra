@@ -63,7 +63,7 @@ async fn finished_episode_moves_to_the_next_queued_one_even_after_completion() {
         episode(ids[1], None)
     );
     app.db()
-        .mark_episode_completed(ids[0], user.id, false)
+        .mark_episode_completed(ids[0], user.id, false, pinepods_api::services::sync::SyncOrigin::Pinepods)
         .await
         .unwrap();
     // Completion took the finished row out of the queue; the answer is the same.
