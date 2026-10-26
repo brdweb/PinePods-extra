@@ -1527,6 +1527,14 @@ pub fn advance_due(
     was_playing && position >= duration - end_skip.max(NATURAL_END_GRACE_SEC)
 }
 
+/// A finished episode is playing again from earlier on, so history writes
+/// resume. The bare 0 a Chromecast sends at the end of a track while it still
+/// reports playing is not a replay; a real one passes 1 second a moment later.
+pub fn replayed_after_finish(playing: bool, position: f64, duration: f64, end_skip: i32) -> bool {
+    let finish_line = duration - (end_skip.max(0) as f64).max(NATURAL_END_GRACE_SEC) - 1.0;
+    playing && position >= 1.0 && position < finish_line
+}
+
 /// Whether a queue event ends the loaded episode.
 ///
 /// `reported` is the event's position and `projected` the bridge's position
@@ -3878,10 +3886,14 @@ async fn write_track_progress(
         .last_write
         .map(|t| t.elapsed())
         .unwrap_or(PROGRESS_WRITE_EVERY);
-    let finish_line =
-        track.duration - (track.end_skip.max(0) as f64).max(NATURAL_END_GRACE_SEC) - 1.0;
-    if track.advanced && track.playing && track.position < finish_line {
-        // Played again from earlier in the episode.
+    if track.advanced
+        && replayed_after_finish(
+            track.playing,
+            track.position,
+            track.duration,
+            track.end_skip,
+        )
+    {
         track.advanced = false;
     }
     if !track.advanced && should_write_progress(track.sample.as_ref(), &sample, since) {
@@ -5287,6 +5299,29 @@ mod tests {
         assert_eq!(paused_position(held, Some(5615.0), true), None);
         assert_eq!(paused_position(None, Some(0.0), false), None);
         assert_eq!(paused_position(None, None, false), None);
+    }
+
+    #[test]
+    fn the_zero_after_the_end_does_not_resume_history_writes() {
+        // Chromecast, Music Assistant 2.10.4: after an episode finished and
+        // the speaker stopped there, a bare queue_time_updated 0 arrived while
+        // it still reported playing, and history was overwritten with 0.
+        // (playing, position, duration, end_skip, replayed)
+        let cases = [
+            (true, 0.0, 6565.0, 0, false),
+            (true, 0.4, 6565.0, 0, false),
+            (true, 30.0, 6565.0, 0, true),
+            (true, 6000.0, 6565.0, 60, true),
+            (true, 6563.0, 6565.0, 0, false),
+            (false, 30.0, 6565.0, 0, false),
+        ];
+        for (playing, position, duration, end_skip, want) in cases {
+            assert_eq!(
+                replayed_after_finish(playing, position, duration, end_skip),
+                want,
+                "playing {playing} at {position} of {duration}, end_skip {end_skip}"
+            );
+        }
     }
 
     #[test]
