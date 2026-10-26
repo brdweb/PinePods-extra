@@ -635,6 +635,16 @@ pub fn is_nothing_next(resp: &MaCommandResponse) -> bool {
     resp.detail == "nothing_next"
 }
 
+/// Items fetched for `episode_id`, or none when what is stored belongs to an
+/// earlier episode. A late response must not label the next episode.
+pub fn for_episode<T>(tagged: &(i32, std::rc::Rc<Vec<T>>), episode_id: i32) -> std::rc::Rc<Vec<T>> {
+    if episode_id > 0 && tagged.0 == episode_id {
+        tagged.1.clone()
+    } else {
+        std::rc::Rc::new(Vec::new())
+    }
+}
+
 /// Width of the bar's thin progress line, in percent. An unknown duration
 /// shows no progress rather than a full bar.
 pub fn progress_percent(shown: f64, duration: f64) -> f64 {
@@ -944,6 +954,14 @@ pub fn refresh_music_assistant() {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn speaker_extras_show_only_for_the_episode_they_were_fetched_for() {
+        let tagged = (22, std::rc::Rc::new(vec!["chapter"]));
+        assert_eq!(*for_episode(&tagged, 22), vec!["chapter"]);
+        assert!(for_episode(&tagged, 33).is_empty());
+        assert!(for_episode(&(0, std::rc::Rc::new(vec!["x"])), 0).is_empty());
+    }
 
     #[wasm_bindgen_test]
     fn progress_line_is_clamped_and_empty_without_a_duration() {
