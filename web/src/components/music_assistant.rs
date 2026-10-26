@@ -25,13 +25,13 @@ use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
     note_relay_transport,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
-    for_episode, progress_percent, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
+    for_episode, progress_percent, sleep_args, sleep_remaining, SleepChoice, SLEEP_CHOICES, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
     transport_shown, unix_now,
     GroupPlanError, MaPlayer,
     MusicAssistantState, PlaybackCandidate,
 };
 use crate::requests::notify::{toast_error, toast_info};
-use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState};
+use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState, SleepTimer};
 use crate::requests::pod_req::{
     call_fetch_podcasting_2_data, call_get_episode_metadata, call_get_play_episode_details,
     Chapter, EpisodeRequest, FetchPodcasting2DataRequest, Transcript,
@@ -310,6 +310,7 @@ pub fn ma_now_playing_bar() -> Html {
     let transcripts = use_state(|| (0, Rc::new(Vec::<Transcript>::new())));
     let chapters_open = use_state(|| false);
     let transcript_open = use_state(|| false);
+    let sleep_open = use_state(|| false);
     // Show notes are fetched when asked for, for the episode then playing.
     let notes = use_state(|| None::<Episode>);
 
@@ -590,6 +591,72 @@ pub fn ma_now_playing_bar() -> Html {
                 />
             }
         });
+    let sleep_label = match device.sleep_timer {
+        Some(SleepTimer::Minutes { .. }) => {
+            sleep_remaining(device.sleep_timer, now_unix()).map(|left| format_clock(left as f64))
+        }
+        Some(SleepTimer::EndOfEpisode) => {
+            Some(i18n.t("music_assistant.sleep_end_of_episode").to_string())
+        }
+        Some(SleepTimer::Episodes { left }) => Some(
+            i18n.t("music_assistant.sleep_episodes_left")
+                .to_string()
+                .replace("{n}", &left.to_string()),
+        ),
+        None => None,
+    };
+    let sleep_menu = (*sleep_open).then(|| {
+        let close = {
+            let sleep_open = sleep_open.clone();
+            Callback::from(move |_: MouseEvent| sleep_open.set(false))
+        };
+        let current = match device.sleep_timer {
+            None => Some(SleepChoice::Off),
+            Some(SleepTimer::EndOfEpisode) => Some(SleepChoice::EndOfEpisode),
+            Some(SleepTimer::Episodes { left }) => Some(SleepChoice::Episodes(left)),
+            Some(SleepTimer::Minutes { .. }) => None,
+        };
+        html! {
+            <div class="chapter-select-modal fixed top-0 right-0 left-0 flex justify-center items-center w-full h-[calc(100%-1rem)] max-h-full bg-black bg-opacity-25"
+                onclick={close.clone()}>
+                <div class="modal-container relative p-4 w-full max-w-sm max-h-full rounded-lg shadow"
+                    onclick={Callback::from(|e: MouseEvent| e.stop_propagation())}>
+                    <div class="flex items-center justify-between p-4 border-b rounded-t">
+                        <h3 class="text-xl font-semibold">{ i18n.t("music_assistant.sleep_timer") }</h3>
+                        <button type="button" class="player-btn" title={i18n.t("common.close_modal").to_string()} onclick={close}>
+                            <i class="ph ph-x"></i>
+                        </button>
+                    </div>
+                    <div class="p-2">
+                        { for SLEEP_CHOICES.iter().map(|choice| {
+                            let label = match *choice {
+                                SleepChoice::Off => i18n.t("music_assistant.sleep_off").to_string(),
+                                SleepChoice::Minutes(n) => i18n.t("music_assistant.sleep_minutes").to_string().replace("{n}", &n.to_string()),
+                                SleepChoice::EndOfEpisode => i18n.t("music_assistant.sleep_end_of_episode").to_string(),
+                                SleepChoice::Episodes(n) => i18n.t("music_assistant.sleep_episodes").to_string().replace("{n}", &n.to_string()),
+                            };
+                            let pick = {
+                                let id = device.device_id.clone();
+                                let sleep_open = sleep_open.clone();
+                                let choice = *choice;
+                                Callback::from(move |_: MouseEvent| {
+                                    send_command(&id, "sleep_timer", sleep_args(choice));
+                                    sleep_open.set(false);
+                                })
+                            };
+                            html! {
+                                <button type="button"
+                                    class={classes!("ma-sleep-choice", (current == Some(*choice)).then_some("is-current"))}
+                                    onclick={pick}>
+                                    { label }
+                                </button>
+                            }
+                        }) }
+                    </div>
+                </div>
+            </div>
+        }
+    });
     let open_chapters = {
         let chapters_open = chapters_open.clone();
         Callback::from(move |_: MouseEvent| chapters_open.set(true))
@@ -734,6 +801,7 @@ pub fn ma_now_playing_bar() -> Html {
         <>
         { for chapter_list }
         { for transcript_panel }
+        { for sleep_menu }
         <div class={classes!("audio-player", "ma-now", (*expanded).then_some("expanded"))}>
             <div class="player-fs-backdrop"
                 style={format!("background-image: url('{}');", device.artwork_url)}
@@ -746,6 +814,18 @@ pub fn ma_now_playing_bar() -> Html {
                     </button>
                     <span class="player-fs-eyebrow">{ kicker.clone() }</span>
                     <div class="player-fs-topbar-right">
+                        if device.supports("sleep_timer") {
+                            <button type="button" class="player-btn ma-sleep-btn" title={i18n.t("music_assistant.sleep_timer").to_string()}
+                                onclick={{
+                                    let sleep_open = sleep_open.clone();
+                                    Callback::from(move |_: MouseEvent| sleep_open.set(true))
+                                }}>
+                                <i class={ if sleep_label.is_some() { "ph ph-moon-stars" } else { "ph ph-moon" } } style="font-size:22px;"></i>
+                                if let Some(label) = sleep_label.clone() {
+                                    <span class="ma-sleep-label">{ label }</span>
+                                }
+                            </button>
+                        }
                         <button type="button" class="player-btn" title={i18n.t("music_assistant.speakers").to_string()} onclick={open_picker.clone()}>
                             <i class="ph ph-speaker-high" style="font-size:22px;"></i>
                         </button>
