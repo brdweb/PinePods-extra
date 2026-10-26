@@ -14,6 +14,7 @@ use crate::components::people::{AddPeopleSheet, PeopleLayout, PeopleStrip};
 use crate::components::podcasting2::{cover_art, cover_html, EpisodeTagsPanel};
 use crate::components::safehtml::SafeHtml;
 use crate::requests::people_req::{call_get_episode_people, CreditedPerson};
+use crate::requests::podcasting2::{current_cue, parse_transcript_cues};
 use crate::requests::pod_req;
 use crate::requests::pod_req::{
     call_check_podcast, call_create_share_link, call_download_episode, call_download_episode_file,
@@ -240,58 +241,13 @@ pub struct TranscriptInlineProps {
     /// Detected ad time ranges (seconds) to highlight within the transcript (#790).
     #[prop_or_default]
     pub ad_ranges: Vec<(f64, f64)>,
-}
-
-/// One timed transcript cue parsed from SRT/VTT.
-struct TranscriptCue {
-    start: f64,
-    end: f64,
-    text: String,
-}
-
-/// Parse an SRT/VTT timestamp (`HH:MM:SS,mmm`, `MM:SS.mmm`, …) into seconds.
-fn parse_ts(s: &str) -> Option<f64> {
-    let s = s.trim().replace(',', ".");
-    let parts: Vec<&str> = s.split(':').collect();
-    let (h, m, sec) = match parts.as_slice() {
-        [h, m, s] => (h.trim().parse::<f64>().ok()?, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
-        [m, s] => (0.0, m.trim().parse::<f64>().ok()?, s.parse::<f64>().ok()?),
-        _ => return None,
-    };
-    Some(h * 3600.0 + m * 60.0 + sec)
-}
-
-/// Parse SRT/VTT content into timed cues, so we can render the transcript as timestamped,
-/// clickable segments instead of an undifferentiated text blob (#790). Returns empty for content
-/// that has no cue timings (e.g. plain text / HTML), so callers can fall back to paragraphs.
-fn parse_transcript_cues(content: &str) -> Vec<TranscriptCue> {
-    let speaker_re = Regex::new(r"<v\s+[^>]*>").unwrap();
-    let mut cues = Vec::new();
-    let mut lines = content.lines().peekable();
-    while let Some(line) = lines.next() {
-        let Some(idx) = line.find("-->") else { continue };
-        let start = parse_ts(&line[..idx]);
-        let end = parse_ts(line[idx + 3..].split_whitespace().next().unwrap_or(""));
-        let (Some(start), Some(end)) = (start, end) else { continue };
-        let mut text_parts: Vec<String> = Vec::new();
-        while let Some(peek) = lines.peek() {
-            if peek.trim().is_empty() || peek.contains("-->") {
-                break;
-            }
-            let l = lines.next().unwrap();
-            let l = speaker_re.replace_all(l, "");
-            let l = l.replace("</v>", "");
-            let t = l.trim();
-            if !t.is_empty() {
-                text_parts.push(t.to_string());
-            }
-        }
-        let text = text_parts.join(" ");
-        if !text.is_empty() {
-            cues.push(TranscriptCue { start, end, text });
-        }
-    }
-    cues
+    /// Playback position to follow: the current cue is highlighted and kept
+    /// in view. Without it the transcript does not follow anything.
+    #[prop_or_default]
+    pub position: Option<f64>,
+    /// Where a cue's timestamp seeks. Without it, the local player.
+    #[prop_or_default]
+    pub on_seek: Option<Callback<f64>>,
 }
 
 /// Fetches and renders a transcript's text directly (no modal chrome), so it
@@ -414,9 +370,10 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
         },
     );
 
-    // Seek the global player to a transcript timestamp when a cue is clicked.
+    // Seek the global player to a transcript timestamp when a cue is clicked,
+    // unless the caller seeks somewhere else (a speaker).
     let (ui_state, _) = use_store::<UIState>();
-    let seek = {
+    let seek = props.on_seek.clone().unwrap_or_else(|| {
         let ui_state = ui_state.clone();
         Callback::from(move |t: f64| {
             if let Some(me) = ui_state.media_element.as_ref() {
@@ -425,8 +382,36 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
                 ae.set_current_time(t);
             }
         })
-    };
+    });
     let ad_ranges = props.ad_ranges.clone();
+    let cues = (*transcript_content)
+        .as_deref()
+        .map(parse_transcript_cues)
+        .unwrap_or_default();
+    let current = props.position.and_then(|p| current_cue(&cues, p));
+    let cues_ref = use_node_ref();
+    {
+        // Keep the current cue in view when it changes.
+        let cues_ref = cues_ref.clone();
+        use_effect_with(current, move |current| {
+            if current.is_some() {
+                let el = cues_ref
+                    .cast::<web_sys::Element>()
+                    .and_then(|list| list.query_selector(".ep-transcript-cue.is-current").ok().flatten());
+                if let Some(el) = el {
+                    let opts = js_sys::Object::new();
+                    let _ = js_sys::Reflect::set(&opts, &"block".into(), &"center".into());
+                    let _ = js_sys::Reflect::set(&opts, &"behavior".into(), &"smooth".into());
+                    if let Ok(f) = js_sys::Reflect::get(&el, &"scrollIntoView".into())
+                        .and_then(|f| f.dyn_into::<js_sys::Function>())
+                    {
+                        let _ = f.call1(&el, &opts);
+                    }
+                }
+            }
+            || ()
+        });
+    }
 
     html! {
         <div class="ep-transcript-content space-y-4 item_container-text prose dark:prose-invert max-w-none">
@@ -438,17 +423,20 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
                 <div class="text-red-500 dark:text-red-400 p-2">{err}</div>
             } else if let Some(content) = &*transcript_content {
                 {{
-                    let cues = parse_transcript_cues(content);
                     if !cues.is_empty() {
                         // Timecoded, clickable transcript with ad ranges highlighted (#790).
                         html! {
-                            <div class="ep-transcript-cues">
-                                { for cues.iter().map(|cue| {
+                            <div class="ep-transcript-cues" ref={cues_ref.clone()}>
+                                { for cues.iter().enumerate().map(|(index, cue)| {
                                     let is_ad = ad_ranges.iter().any(|(s, e)| cue.start < *e && cue.end > *s);
                                     let start = cue.start;
                                     let seek = seek.clone();
                                     let onclick = Callback::from(move |_: MouseEvent| seek.emit(start));
-                                    let cls = if is_ad { "ep-transcript-cue is-ad" } else { "ep-transcript-cue" };
+                                    let cls = classes!(
+                                        "ep-transcript-cue",
+                                        is_ad.then_some("is-ad"),
+                                        (current == Some(index)).then_some("is-current"),
+                                    );
                                     html! {
                                         <div class={cls}>
                                             <button class="ep-transcript-cue-ts" {onclick} title="Jump to this point">

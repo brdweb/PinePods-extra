@@ -639,6 +639,68 @@ pub fn chapter_image_at(chapters: &[crate::requests::pod_req::Chapter], position
         .and_then(|c| c.img.as_deref())
 }
 
+/// One timed transcript cue parsed from SRT/VTT.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptCue {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Parse an SRT/VTT timestamp (`HH:MM:SS,mmm`, `MM:SS.mmm`, …) into seconds.
+fn parse_ts(s: &str) -> Option<f64> {
+    let s = s.trim().replace(',', ".");
+    let parts: Vec<&str> = s.split(':').collect();
+    let (h, m, sec) = match parts.as_slice() {
+        [h, m, s] => (h.trim().parse::<f64>().ok()?, m.parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        [m, s] => (0.0, m.trim().parse::<f64>().ok()?, s.parse::<f64>().ok()?),
+        _ => return None,
+    };
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+/// Parse SRT/VTT content into timed cues, so we can render the transcript as timestamped,
+/// clickable segments instead of an undifferentiated text blob (#790). Returns empty for content
+/// that has no cue timings (e.g. plain text / HTML), so callers can fall back to paragraphs.
+pub fn parse_transcript_cues(content: &str) -> Vec<TranscriptCue> {
+    let speaker_re = regex::Regex::new(r"<v\s+[^>]*>").unwrap();
+    let mut cues = Vec::new();
+    let mut lines = content.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(idx) = line.find("-->") else { continue };
+        let start = parse_ts(&line[..idx]);
+        let end = parse_ts(line[idx + 3..].split_whitespace().next().unwrap_or(""));
+        let (Some(start), Some(end)) = (start, end) else { continue };
+        let mut text_parts: Vec<String> = Vec::new();
+        while let Some(peek) = lines.peek() {
+            if peek.trim().is_empty() || peek.contains("-->") {
+                break;
+            }
+            let l = lines.next().unwrap();
+            let l = speaker_re.replace_all(l, "");
+            let l = l.replace("</v>", "");
+            let t = l.trim();
+            if !t.is_empty() {
+                text_parts.push(t.to_string());
+            }
+        }
+        let text = text_parts.join(" ");
+        if !text.is_empty() {
+            cues.push(TranscriptCue { start, end, text });
+        }
+    }
+    cues
+}
+
+/// Cue to highlight while playback is at `position`: the last one that has
+/// started, so the highlight holds through the short gaps between cues.
+pub fn current_cue(cues: &[TranscriptCue], position: f64) -> Option<usize> {
+    if !position.is_finite() {
+        return None;
+    }
+    cues.iter().rposition(|cue| cue.start <= position)
+}
+
 pub fn artwork_choice(images: &[PodcastImage], set: Option<&ImageSet>, fallback: &str) -> ArtworkChoice {
     let preferred = images.iter().find(|img| {
         img.purpose
@@ -984,6 +1046,24 @@ mod tests {
             url: None,
             img: img.map(|s| s.to_string()),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn srt_cues_parse_and_the_current_one_follows_the_position() {
+        let srt = "1\n00:00:01,000 --> 00:00:04,500\nHello\n\n2\n00:00:06,000 --> 00:00:09,000\n<v Adam>Second</v> line\n\n";
+        let cues = parse_transcript_cues(srt);
+        assert_eq!(cues.len(), 2);
+        assert_eq!((cues[0].start, cues[0].end, cues[0].text.as_str()), (1.0, 4.5, "Hello"));
+        assert_eq!(cues[1].text, "Second line");
+        assert_eq!(parse_ts("01:02:03.5"), Some(3723.5));
+        assert!(parse_transcript_cues("plain text, no timings").is_empty());
+        assert_eq!(current_cue(&cues, 0.5), None);
+        assert_eq!(current_cue(&cues, 2.0), Some(0));
+        // Held through the gap until the next cue starts.
+        assert_eq!(current_cue(&cues, 5.0), Some(0));
+        assert_eq!(current_cue(&cues, 6.0), Some(1));
+        assert_eq!(current_cue(&cues, 600.0), Some(1));
+        assert_eq!(current_cue(&cues, f64::NAN), None);
     }
 
     #[wasm_bindgen_test]

@@ -10059,6 +10059,10 @@ body.search-takeover-open .drawer-icon { display: none; }
     background: color-mix(in srgb, var(--warning-color, #e0a800) 14%, transparent);
     border-left: 3px solid var(--warning-color, #e0a800);
 }
+.ep-transcript-cue.is-current {
+    background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+}
+.ep-transcript-cue.is-current .ep-transcript-cue-text { font-weight: 600; }
 .ep-transcript-cue-ts {
     font-family: var(--font-mono);
     font-size: 12px;
