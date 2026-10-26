@@ -522,6 +522,7 @@ async fn handle_now_playing_socket(
                                 volume_muted: None,
                                 ma_player_id: None,
                                 group_members: None,
+                                sleep_timer: None,
                             };
                             let _ = reader_state
                                 .redis_client
@@ -680,6 +681,7 @@ fn idle_snapshot(
         volume_muted: None,
         ma_player_id: None,
         group_members: None,
+        sleep_timer: None,
     }
 }
 
@@ -1014,6 +1016,7 @@ mod tests {
             volume_muted: None,
             ma_player_id: None,
             group_members: None,
+            sleep_timer: None,
         }
     }
 
