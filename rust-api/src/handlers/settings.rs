@@ -8,6 +8,8 @@ use crate::{
     error::AppError,
     handlers::{extract_api_key, require_valid_api_key, check_user_access},
     models::{AvailableLanguage, LanguageUpdateRequest, UserLanguageResponse, AvailableLanguagesResponse},
+    services::sync::engine::{self, RunMode},
+    services::sync::targets::gpodder::GpodderTarget,
     AppState,
 };
 use tracing::{debug, error, info, warn};
@@ -1985,18 +1987,21 @@ pub async fn restore_server(
     // upload itself can take a while; the restore then runs against the streamed file).
     // The guard is moved into the task and released (via Drop) when it finishes.
     let db_pool = state.db_pool.clone();
+    let merged = state.merged_episodes.clone();
     let task_id = state.task_spawner.spawn_progress_task(
         "restore_server".to_string(),
         user_id,
         move |reporter| {
             let db_pool = db_pool.clone();
             let tmp_path = tmp_path.clone();
+            let merged = merged.clone();
             let _restore_guard = restore_guard;
             async move {
                 reporter.update_progress(10.0, Some("Starting restore...".to_string())).await?;
                 reporter.update_progress(50.0, Some("Restoring database...".to_string())).await?;
 
                 let result = db_pool.restore_server_data_from_path(&tmp_path).await;
+                merged.reset();
 
                 // Always clean up the temp upload, success or failure.
                 if let Err(e) = tokio::fs::remove_file(&tmp_path).await {
@@ -2287,8 +2292,7 @@ pub async fn add_nextcloud_server(
         return Err(AppError::forbidden("You are not authorized to access these user details"));
     }
 
-    // Reset gPodder settings to default like Python version
-    state.db_pool.remove_podcast_sync(request.user_id).await?;
+    // The current setup stays until the login completes; saving the Nextcloud target replaces it.
 
     // Create a task for the Nextcloud authentication polling  
     let task_id = state.task_manager.create_task("nextcloud_auth".to_string(), request.user_id).await?;
@@ -2314,7 +2318,7 @@ async fn poll_for_auth_completion_background(state: AppState, request: AddNextcl
 
     match poll_for_auth_completion(&request.poll_endpoint, &request.token, &state.task_manager, &task_id).await {
         Ok(credentials) => {
-            info!("Nextcloud authentication successful: {:?}", credentials);
+            debug!("Nextcloud authentication completed for user {}", request.user_id);
             
             // Update task progress
             if let Err(e) = state.task_manager.update_task_progress(&task_id, 90.0, Some("Authentication successful, saving credentials...".to_string())).await {
@@ -2335,6 +2339,8 @@ async fn poll_for_auth_completion_background(state: AppState, request: AddNextcl
                             Some("Nextcloud authentication completed successfully".to_string())).await {
                             error!("Failed to complete task: {}", e);
                         }
+                        // First sync with the new server; a failure is recorded on the target.
+                        let _ = engine::run_for_user(&state.db_pool, &state.task_spawner, request.user_id, RunMode::Full).await;
                     }
                     Err(e) => {
                         error!("Failed to add Nextcloud settings: {}", e);
@@ -2395,7 +2401,6 @@ async fn poll_for_auth_completion(
                 match response.status().as_u16() {
                     200 => {
                         let credentials = response.json::<serde_json::Value>().await?;
-                        info!("Authentication successful: {:?}", credentials);
                         return Ok(credentials);
                     }
                     404 => {
@@ -2447,27 +2452,14 @@ pub async fn verify_gpodder_auth(
     let api_key = extract_api_key(&headers)?;
     require_valid_api_key(&state, &api_key).await?;
 
-    // Direct HTTP call to match Python implementation exactly
-    let client = reqwest::Client::new();
-    let auth_url = format!("{}/api/2/auth/{}/login.json", 
-                          request.gpodder_url.trim_end_matches('/'), 
-                          request.gpodder_username);
-    
-    match client
-        .post(&auth_url)
-        .basic_auth(&request.gpodder_username, Some(&request.gpodder_password))
-        .send()
-        .await
-    {
-        Ok(response) => {
-            if response.status().is_success() {
-                Ok(Json(serde_json::json!({"status": "success", "message": "Logged in!"})))
-            } else {
-                Err(AppError::unauthorized("Authentication failed"))
-            }
-        }
-        Err(_) => {
-            Err(AppError::internal("Internal Server Error"))
+    // The same login the sync engine does.
+    match GpodderTarget::verify(&request.gpodder_url, &request.gpodder_username, &request.gpodder_password).await {
+        Ok(()) => Ok(Json(serde_json::json!({"status": "success", "message": "Logged in!"}))),
+        Err(AppError::Auth(_)) => Err(AppError::unauthorized("Authentication failed")),
+        Err(AppError::BadRequest(m)) => Err(AppError::bad_request(m)),
+        Err(e) => {
+            warn!("Checking gpodder server credentials failed: {}", e);
+            Err(AppError::internal("Couldn't reach the gpodder server"))
         }
     }
 }
@@ -2505,6 +2497,11 @@ pub async fn add_gpodder_server(
     let success = state.db_pool.add_gpodder_server(user_id, &request.gpodder_url, &request.gpodder_username, &request.gpodder_password).await?;
     
     if success {
+        // First sync in the background; a failure is recorded on the target.
+        let (db, tasks) = (state.db_pool.clone(), state.task_spawner.clone());
+        tokio::spawn(async move {
+            let _ = engine::run_for_user(&db, &tasks, user_id, RunMode::Full).await;
+        });
         Ok(Json(serde_json::json!({ "status": "success" })))
     } else {
         Err(AppError::internal("Failed to add gPodder server"))
@@ -2762,12 +2759,7 @@ pub async fn add_custom_podcast(
         let state_clone = state.clone();
         let channel_id_clone = channel_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::handlers::youtube::process_youtube_channel(
-                podcast_id,
-                &channel_id_clone,
-                feed_cutoff,
-                &state_clone
-            ).await {
+            if let Err(e) = crate::handlers::refresh::import_added_channel(&state_clone, podcast_id, &channel_id_clone, feed_cutoff).await {
                 warn!("Error processing YouTube channel {}: {}", channel_id_clone, e);
             }
         });
@@ -2780,7 +2772,7 @@ pub async fn add_custom_podcast(
 
     // Regular podcast feed handling
     // Get podcast values from feed URL
-    let podcast_values = state.db_pool.get_podcast_values(
+    let (podcast_values, feed_body) = state.db_pool.get_podcast_values_with_body(
         &request.feed_url,
         request.user_id,
         request.username.as_deref(),
@@ -2793,7 +2785,9 @@ pub async fn add_custom_podcast(
         request.user_id,
         30,
         request.username.as_deref(),
-        request.password.as_deref()
+        request.password.as_deref(),
+        Some(&feed_body),
+        crate::services::sync::SyncOrigin::Pinepods,
     ).await?;
 
     // Get complete podcast details for response
@@ -3389,6 +3383,118 @@ pub async fn clear_podcast_auto_download_delete_days(
     Ok(Json(serde_json::json!({ "message": "Podcast auto-delete downloads reset to global default." })))
 }
 
+// "Delete server downloads when I finish an episode": the user's default (no podcast_id) or a
+// podcast's effective value and whether it overrides the default.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct GetAutoDeleteOnCompleteRequest {
+    pub user_id: i32,
+    pub podcast_id: Option<i32>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/get_auto_delete_on_complete",
+    tag = "settings",
+    summary = "Get delete-downloads-when-finished",
+    request_body = GetAutoDeleteOnCompleteRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "`enabled` and, for a podcast, whether it is `customized`", body = serde_json::Value),
+        (status = 401, description = "Invalid or missing API key"),
+    ),
+)]
+pub async fn get_auto_delete_on_complete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<GetAutoDeleteOnCompleteRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    require_valid_api_key(&state, &api_key).await?;
+
+    let key_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+    if key_id != request.user_id && !is_web_key {
+        return Err(AppError::forbidden("You can only view your own settings."));
+    }
+
+    let (enabled, customized) = state.db_pool.get_auto_delete_on_complete(request.user_id, request.podcast_id).await?;
+    Ok(Json(serde_json::json!({ "enabled": enabled, "customized": customized })))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct SetAutoDeleteOnCompleteUser {
+    pub user_id: i32,
+    pub enabled: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/user/set_auto_delete_on_complete",
+    tag = "settings",
+    summary = "Set delete-downloads-when-finished (user default)",
+    request_body = SetAutoDeleteOnCompleteUser,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 401, description = "Invalid or missing API key"),
+    ),
+)]
+pub async fn set_auto_delete_on_complete_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<SetAutoDeleteOnCompleteUser>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    require_valid_api_key(&state, &api_key).await?;
+
+    let key_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+    if key_id != request.user_id && !is_web_key {
+        return Err(AppError::forbidden("You can only modify your own settings."));
+    }
+
+    state.db_pool.set_auto_delete_on_complete_user(request.user_id, request.enabled).await?;
+    Ok(Json(serde_json::json!({ "detail": "Delete-when-finished setting updated." })))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct SetAutoDeleteOnCompletePodcast {
+    pub user_id: i32,
+    pub podcast_id: i32,
+    /// `null` goes back to the user's default.
+    pub enabled: Option<bool>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/podcast/set_auto_delete_on_complete",
+    tag = "settings",
+    summary = "Set or clear a podcast's delete-downloads-when-finished",
+    request_body = SetAutoDeleteOnCompletePodcast,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 401, description = "Invalid or missing API key"),
+    ),
+)]
+pub async fn set_podcast_auto_delete_on_complete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<SetAutoDeleteOnCompletePodcast>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    require_valid_api_key(&state, &api_key).await?;
+
+    let key_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+    if key_id != request.user_id && !is_web_key {
+        return Err(AppError::forbidden("You can only modify your own podcasts."));
+    }
+
+    state.db_pool.set_podcast_auto_delete_on_complete(request.user_id, request.podcast_id, request.enabled).await?;
+    Ok(Json(serde_json::json!({ "detail": "Podcast delete-when-finished setting updated." })))
+}
+
 // Request struct for enable_auto_download - matches Python AutoDownloadRequest model
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct AutoDownloadRequest {
@@ -3683,10 +3789,12 @@ pub async fn ai_status(
     } else {
         (false, false)
     };
+    let downloads_enabled = state.db_pool.download_status().await.unwrap_or(false);
     Ok(Json(serde_json::json!({
         "available": available,
         "transcription_ready": transcription_ready,
         "ad_removal_ready": ad_removal_ready,
+        "downloads_enabled": downloads_enabled,
     })))
 }
 
@@ -3997,7 +4105,15 @@ pub async fn get_episode_skip_segments(
     .await
     .map_err(|e| AppError::internal(&e))?;
 
-    Ok(Json(serde_json::json!({ "segments": segments })))
+    // Which audio copy the ad times fit, so players can hold off skipping on a copy whose ads
+    // sit elsewhere (dynamically inserted ads differ between fetches).
+    let audio = if segments.iter().any(|s| s.kind == crate::services::ad_detection::KIND_AD) {
+        Some(crate::services::ad_detection::ad_audio_match(&state.db_pool, query.user_id, query.episode_id).await)
+    } else {
+        None
+    };
+
+    Ok(Json(serde_json::json!({ "segments": segments, "ad_audio": audio })))
 }
 
 // Manually (re-)run silence detection for one episode as a tracked background task
@@ -4053,6 +4169,10 @@ pub struct DetectAdsRequest {
     pub user_id: i32,
     #[serde(default)]
     pub force: bool,
+    /// Download the episode to the server first (when it isn't) and detect ads on that copy, so
+    /// ad times match what the user plays.
+    #[serde(default)]
+    pub download_first: bool,
 }
 
 #[utoipa::path(
@@ -4084,6 +4204,22 @@ pub async fn detect_ads(
     crate::handlers::require_episode_owner(&state, request.user_id, request.episode_id, false).await?;
     if !state.ai_available.is_available() {
         return Err(AppError::service_unavailable("AI service is not available."));
+    }
+
+    if request.download_first && !state.db_pool.check_downloaded(request.user_id, request.episode_id, false).await? {
+        if !state.db_pool.download_status().await? {
+            return Err(AppError::forbidden("Server downloads are disabled by the administrator."));
+        }
+        crate::services::ad_detection::request_detect_after_download(request.episode_id, request.user_id);
+        let task_id = state
+            .task_spawner
+            .spawn_download_podcast_episode(request.episode_id, request.user_id, None)
+            .await?;
+        return Ok(Json(serde_json::json!({
+            "task_id": task_id,
+            "waiting_for_download": true,
+            "detail": "Downloading to the server; ads will be detected on that copy when it finishes.",
+        })));
     }
 
     let task_id = state
@@ -4955,6 +5091,7 @@ pub async fn restore_from_backup_file(
     // Clone for the async closure
     let backup_filename_for_closure = backup_filename.clone();
     let db_pool = state.db_pool.clone();
+    let merged = state.merged_episodes.clone();
 
     // Spawn restoration task
     let task_id = state.task_spawner.spawn_progress_task(
@@ -4964,6 +5101,7 @@ pub async fn restore_from_backup_file(
             let backup_path = backup_path.clone();
             let backup_filename = backup_filename_for_closure;
             let db_pool = db_pool.clone();
+            let merged = merged.clone();
             // Released (via Drop) when the restore task finishes.
             let _restore_guard = restore_guard;
             async move {
@@ -4971,7 +5109,9 @@ pub async fn restore_from_backup_file(
                 reporter.update_progress(50.0, Some("Restoring database...".to_string())).await?;
 
                 // Clears existing data, then streams the dump into psql/mysql.
-                db_pool.restore_server_data_from_path(std::path::Path::new(&backup_path)).await?;
+                let result = db_pool.restore_server_data_from_path(std::path::Path::new(&backup_path)).await;
+                merged.reset();
+                result?;
 
                 reporter.update_progress(100.0, Some("Restoration completed successfully".to_string())).await?;
 

@@ -281,6 +281,17 @@ pub async fn cleanup_tasks_internal(state: &AppState) -> AppResult<()> {
     if let Err(e) = state.db_pool.auto_delete_old_downloads().await {
         tracing::error!("Auto-delete old downloads failed during cleanup tasks: {}", e);
     }
+    if let Err(e) = state.db_pool.auto_delete_finished_downloads().await {
+        tracing::error!("Deleting downloads of finished episodes failed during cleanup tasks: {}", e);
+    }
+
+    if let Err(e) = state.db_pool.cleanup_expired_gpodder_sessions().await {
+        tracing::warn!("Expired gpodder session cleanup failed: {}", e);
+    }
+
+    if let Err(e) = state.db_pool.delete_orphan_feeds().await {
+        tracing::warn!("Deleting feeds without subscribers failed: {}", e);
+    }
 
     tracing::info!("Cleanup tasks completed successfully");
 

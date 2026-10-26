@@ -296,7 +296,8 @@ pub async fn add_podcast(
     let user_id = request.podcast_values.user_id;
     
     // Get properly parsed podcast values from feed-rs
-    let parsed_podcast_values = state.db_pool.get_podcast_values(feed_url, user_id, None, None).await?;
+    // The body is handed to the episode import below so the feed is only downloaded once.
+    let (parsed_podcast_values, feed_body) = state.db_pool.get_podcast_values_with_body(feed_url, user_id, None, None).await?;
     
     // Convert to PodcastValues struct using backend-parsed data
     let backend_podcast_values = PodcastValues {
@@ -318,6 +319,7 @@ pub async fn add_podcast(
         request.podcast_index_id.unwrap_or(0),
         None, // username
         None, // password
+        crate::services::sync::SyncOrigin::Pinepods,
     ).await?;
     
     // Spawn background task to add episodes
@@ -328,6 +330,7 @@ pub async fn add_podcast(
         backend_podcast_values.user_id,
         None, // username
         None, // password
+        Some(feed_body),
     ).await?;
     
     Ok(Json(PodcastStatusResponse {
@@ -373,6 +376,7 @@ pub async fn remove_podcast(
         &request.podcast_name,
         &request.podcast_url,
         request.user_id,
+        crate::services::sync::SyncOrigin::Pinepods,
     ).await?;
     
     Ok(Json(RemovePodcastResponse { success: true }))
@@ -417,7 +421,7 @@ pub async fn remove_podcast_id(
     }
 
     // Remove podcast from database
-    state.db_pool.remove_podcast_id(request.podcast_id, request.user_id).await?;
+    state.db_pool.remove_podcast_id(request.podcast_id, request.user_id, crate::services::sync::SyncOrigin::Pinepods).await?;
     
     Ok(Json(RemovePodcastResponse { success: true }))
 }
@@ -2373,7 +2377,8 @@ pub async fn mark_episode_completed(
         state.db_pool.mark_episode_completed(
             request.episode_id,
             request.user_id,
-            request.is_youtube.unwrap_or(false)
+            request.is_youtube.unwrap_or(false),
+            crate::services::sync::SyncOrigin::Pinepods,
         ).await?;
         
         Ok(Json(serde_json::json!({ "detail": "Episode marked as completed." })))
@@ -2513,7 +2518,10 @@ pub async fn get_stats(
     if key_id == query.user_id || is_web_key {
         let stats = state.db_pool.get_stats(query.user_id).await?;
         
-        if let Some(stats) = stats {
+        if let Some(mut stats) = stats {
+            if let Some(obj) = stats.as_object_mut() {
+                obj.extend(crate::handlers::sync_settings::user_stats_sync_fields(&state, &headers, query.user_id).await?);
+            }
             Ok(Json(stats))
         } else {
             Err(AppError::not_found("Stats not found for the given user ID"))
@@ -2851,7 +2859,7 @@ pub async fn mark_episode_uncompleted(
     }
     require_episode_owner(&state, request.user_id, request.episode_id, request.is_youtube).await?;
 
-    state.db_pool.mark_episode_uncompleted(request.episode_id, request.user_id, request.is_youtube).await?;
+    state.db_pool.mark_episode_uncompleted(request.episode_id, request.user_id, request.is_youtube, crate::services::sync::SyncOrigin::Pinepods).await?;
     
     Ok(Json(serde_json::json!({ "detail": "Episode marked as uncompleted." })))
 }
@@ -2864,6 +2872,10 @@ pub struct RecordListenDurationRequest {
     pub listen_duration: f64,
     #[serde(default)]
     pub is_youtube: bool,
+    /// The player's duration for the episode in seconds, if it knows it. Stored when the feed
+    /// gave none (new episodes beyond the newest few are inserted with duration 0).
+    #[serde(default)]
+    pub episode_duration: Option<f64>,
 }
 
 // Record listen duration - matches Python api record_listen_duration function exactly
@@ -2904,7 +2916,10 @@ pub async fn record_listen_duration(
     if data.is_youtube {
         state.db_pool.record_youtube_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?;
     } else {
-        state.db_pool.record_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?;
+        state.db_pool.record_listen_duration(data.episode_id, data.user_id, data.listen_duration, crate::services::sync::SyncOrigin::Pinepods).await?;
+        if let Some(d) = data.episode_duration.filter(|d| d.is_finite() && *d >= 1.0) {
+            state.db_pool.set_episode_duration_if_missing(data.episode_id, d.round() as i32).await?;
+        }
     }
 
     // Check if episode should be auto-completed based on user's setting
@@ -2924,7 +2939,7 @@ pub async fn record_listen_duration(
             // Auto-complete if remaining time <= auto_complete_seconds
             // Also handle cases where listen_duration exceeds episode_duration (dynamic ads, etc.)
             if remaining_time <= auto_complete_seconds as f64 || data.listen_duration >= episode_duration as f64 {
-                let _ = state.db_pool.mark_episode_completed(data.episode_id, data.user_id, data.is_youtube).await;
+                let _ = state.db_pool.mark_episode_completed(data.episode_id, data.user_id, data.is_youtube, crate::services::sync::SyncOrigin::Pinepods).await;
             }
         }
     }
@@ -3339,6 +3354,8 @@ pub async fn stream_episode(
     State(state): State<crate::AppState>,
     Path(episode_id): Path<i32>,
     Query(query): Query<StreamQuery>,
+    headers: HeaderMap,
+    method: axum::http::Method,
 ) -> Result<axum::response::Response, AppError> {
     let api_key = &query.api_key;
     tracing::debug!("Stream request for episode {} (user_id {})", episode_id, query.user_id);
@@ -3435,26 +3452,7 @@ pub async fn stream_episode(
     if let Some(path) = file_path {
         debug!("Found file at: {}", path);
         
-        // Use tower_http's ServeFile for proper file serving with range support
-        use tower_http::services::ServeFile;
-        use tower::ServiceExt;
-        
-        let service = ServeFile::new(&path);
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri("/")
-            .body(axum::body::Body::empty())
-            .map_err(|e| AppError::external_error(&format!("Failed to build request: {}", e)))?;
-            
-        let response = service.oneshot(request).await
-            .map_err(|e| AppError::external_error(&format!("Failed to serve file: {}", e)))?;
-            
-        // Convert the response body to the expected type
-        let (parts, body) = response.into_parts();
-        let body = axum::body::Body::new(body);
-        let response = axum::response::Response::from_parts(parts, body);
-            
-        Ok(response)
+        super::media_stream::serve_episode_file(&path, method, &headers).await
     } else {
         Err(AppError::not_found("Episode not found or not downloaded"))
     }
@@ -3781,6 +3779,42 @@ pub async fn fetch_podcast_feed(
     Ok(Json(serde_json::json!({ "episodes": episodes })))
 }
 
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct RefreshPodcastDetailsRequest {
+    pub podcast_id: i32,
+    /// Also hand the details the user edited (name, artwork, ...) back to the feed.
+    #[serde(default)]
+    pub reset_edits: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/refresh_podcast_details",
+    tag = "podcasts",
+    summary = "Refresh a podcast's details from its feed",
+    description = "Reads the podcast's feed in full now, even if it looks unchanged, and updates its name, artwork, author, description, website and episodes. Details the user edited are kept unless `reset_edits` is set.",
+    request_body = RefreshPodcastDetailsRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Success", body = UpdatePodcastInfoResponse),
+        (status = 401, description = "Invalid or missing API key"),
+        (status = 404, description = "No such podcast"),
+    ),
+)]
+pub async fn refresh_podcast_details(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(request): Json<RefreshPodcastDetailsRequest>,
+) -> Result<Json<UpdatePodcastInfoResponse>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    require_valid_api_key(&state, &api_key).await?;
+    let user_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    if !crate::handlers::refresh::refresh_podcast_details(&state, user_id, request.podcast_id, request.reset_edits).await? {
+        return Err(AppError::not_found("Podcast not found"));
+    }
+    Ok(Json(UpdatePodcastInfoResponse { success: true, message: "Podcast details refreshed".to_string() }))
+}
+
 // Handler for updating podcast basic info (URL, username, password)
 #[utoipa::path(
     put,
@@ -3827,6 +3861,19 @@ pub async fn update_podcast_info(
             message: "No fields provided to update".to_string(),
         }));
     }
+
+    // Details changed by hand stay as the user set them when the feed changes.
+    let edits: Vec<(&str, &str)> = [
+        ("podcastname", &request.podcast_name),
+        ("description", &request.description),
+        ("author", &request.author),
+        ("artworkurl", &request.artwork_url),
+        ("websiteurl", &request.website_url),
+    ]
+    .into_iter()
+    .filter_map(|(col, v)| v.as_deref().map(|v| (col, v)))
+    .collect();
+    state.db_pool.mark_metadata_edited(request.podcast_id, request.user_id, &edits).await?;
 
     // Update the podcast info
     let success = state.db_pool.update_podcast_info(
@@ -4043,7 +4090,9 @@ pub struct ProxySearchParams {
     security(("api_key" = [])),
     responses(
         (status = 200, description = "Success", body = serde_json::Value),
+        (status = 400, description = "Empty search"),
         (status = 401, description = "Invalid or missing API key"),
+        (status = 503, description = "The search service isn't reachable or answered with an error"),
     ),
 )]
 pub async fn proxy_search(
@@ -4056,6 +4105,10 @@ pub async fn proxy_search(
     let is_valid = state.db_pool.verify_api_key(&api_key).await?;
     if !is_valid {
         return Err(AppError::unauthorized("Invalid API key"));
+    }
+
+    if params.query.trim().is_empty() {
+        return Err(AppError::bad_request("Enter something to search for"));
     }
 
     let search_api_url = std::env::var("SEARCH_API_URL")
@@ -4075,13 +4128,10 @@ pub async fn proxy_search(
         .query(&query_params)
         .send()
         .await
-        .map_err(|e| AppError::external_error(&format!("Failed to call search service: {}", e)))?;
+        .map_err(|e| search_unreachable(&search_api_url, e))?;
 
     if !response.status().is_success() {
-        return Err(AppError::external_error(&format!(
-            "Search service error: {}",
-            response.status()
-        )));
+        return Err(search_failed(&search_api_url, response.status()));
     }
 
     let body: serde_json::Value = response
@@ -4090,6 +4140,25 @@ pub async fn proxy_search(
         .map_err(|e| AppError::external_error(&format!("Failed to parse search response: {}", e)))?;
 
     Ok(Json(body))
+}
+
+/// The search service didn't answer: a 503 naming it, so clients can say so.
+fn search_unreachable(url: &str, e: reqwest::Error) -> AppError {
+    tracing::warn!("Search service {} unreachable: {}", url, e);
+    AppError::service_unavailable(format!("The search service isn't reachable ({}): {}", service_host(url), e.without_url()))
+}
+
+/// The search service answered with an error status.
+fn search_failed(url: &str, status: reqwest::StatusCode) -> AppError {
+    tracing::warn!("Search service {} answered HTTP {}", url, status);
+    AppError::service_unavailable(format!("The search service ({}) answered with an error: HTTP {}", service_host(url), status.as_u16()))
+}
+
+fn service_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| u.port().map_or_else(|| h.to_string(), |p| format!("{h}:{p}"))))
+        .unwrap_or_else(|| url.to_string())
 }
 
 // Derive a sibling search-service endpoint URL from SEARCH_API_URL, which by
@@ -4165,13 +4234,10 @@ pub async fn proxy_trending(
         .query(&query_params)
         .send()
         .await
-        .map_err(|e| AppError::external_error(&format!("Failed to call search service: {}", e)))?;
+        .map_err(|e| search_unreachable(&url, e))?;
 
     if !response.status().is_success() {
-        return Err(AppError::external_error(&format!(
-            "Search service error: {}",
-            response.status()
-        )));
+        return Err(search_failed(&url, response.status()));
     }
 
     let body: serde_json::Value = response
@@ -4211,13 +4277,10 @@ pub async fn proxy_categories(
         .get(&url)
         .send()
         .await
-        .map_err(|e| AppError::external_error(&format!("Failed to call search service: {}", e)))?;
+        .map_err(|e| search_unreachable(&url, e))?;
 
     if !response.status().is_success() {
-        return Err(AppError::external_error(&format!(
-            "Search service error: {}",
-            response.status()
-        )));
+        return Err(search_failed(&url, response.status()));
     }
 
     let body: serde_json::Value = response

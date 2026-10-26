@@ -171,7 +171,7 @@ Channel `podcast:person` tags are not inside `tags`. They are the resolved `peop
 
 ## Podping
 
-`podcast:podping` is parsed and returned on `tags.podping`. A Hive listener can refresh a subscribed feed when Podping names its URL. It is off unless `PINEPODS_PODPING=1`. See `docs/podping.md`. The scheduled refresh above still runs either way.
+`podcast:podping` is parsed and returned on `tags.podping`. Refreshing feeds that Podping announces is the server's optional Podping setting (admin, via the search service), not this tag. The scheduled refresh above still runs either way.
 
 ## What is not in this API
 

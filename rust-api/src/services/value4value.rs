@@ -1228,15 +1228,16 @@ async fn load_episode(db: &DatabasePool, user_id: i32, episode_id: i32) -> AppRe
     match db {
         DatabasePool::Postgres(pool) => {
             let row = sqlx::query(
-                r#"SELECT e.podcastid AS podcast_id,
+                r#"SELECT p.podcastid AS podcast_id,
                           e.episodetitle AS episode,
                           COALESCE(e.episodeguid, '') AS episode_guid,
                           p.podcastname AS podcast,
                           COALESCE(p.podcastguid, '') AS feed_id,
                           COALESCE(p.feedurl, '') AS feed_url
                    FROM "Episodes" e
-                   JOIN "Podcasts" p ON p.podcastid = e.podcastid
-                   WHERE e.episodeid = $1 AND p.userid = $2"#,
+                   JOIN "Podcasts" p ON p.feedid = e.feedid
+                   WHERE e.episodeid = $1 AND p.userid = $2
+                   LIMIT 1"#,
             )
             .bind(episode_id)
             .bind(user_id)
@@ -1246,15 +1247,16 @@ async fn load_episode(db: &DatabasePool, user_id: i32, episode_id: i32) -> AppRe
         }
         DatabasePool::MySQL(pool) => {
             let row = sqlx::query(
-                r#"SELECT e.PodcastID AS podcast_id,
+                r#"SELECT p.PodcastID AS podcast_id,
                           e.EpisodeTitle AS episode,
                           COALESCE(e.EpisodeGUID, '') AS episode_guid,
                           p.PodcastName AS podcast,
                           COALESCE(p.PodcastGUID, '') AS feed_id,
                           COALESCE(p.FeedURL, '') AS feed_url
                    FROM Episodes e
-                   JOIN Podcasts p ON p.PodcastID = e.PodcastID
-                   WHERE e.EpisodeID = ? AND p.UserID = ?"#,
+                   JOIN Podcasts p ON p.FeedID = e.FeedID
+                   WHERE e.EpisodeID = ? AND p.UserID = ?
+                   LIMIT 1"#,
             )
             .bind(episode_id)
             .bind(user_id)

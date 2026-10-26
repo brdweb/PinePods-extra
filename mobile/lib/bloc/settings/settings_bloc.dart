@@ -41,6 +41,9 @@ class SettingsBloc extends Bloc {
   final BehaviorSubject<bool> _preferServerDownloadSource = BehaviorSubject<bool>();
   final BehaviorSubject<int> _autoDownloadQueueCount = BehaviorSubject<int>();
   final BehaviorSubject<bool> _mirrorServerDownloads = BehaviorSubject<bool>();
+  final BehaviorSubject<int> _deleteDownloadsAfterDays = BehaviorSubject<int>();
+  final BehaviorSubject<String> _playButtonStyle = BehaviorSubject<String>();
+  final BehaviorSubject<bool> _artworkAccentColors = BehaviorSubject<bool>();
   var _currentSettings = AppSettings.sensibleDefaults();
 
   SettingsBloc(this._settingsService) {
@@ -117,6 +120,9 @@ class SettingsBloc extends Bloc {
       preferServerDownloadSource: _settingsService.preferServerDownloadSource,
       autoDownloadQueueCount: _settingsService.autoDownloadQueueCount,
       mirrorServerDownloads: _settingsService.mirrorServerDownloads,
+      deleteDownloadsAfterDays: _settingsService.deleteDownloadsAfterDays,
+      playButtonStyle: _settingsService.playButtonStyle,
+      artworkAccentColors: _settingsService.artworkAccentColors,
     );
 
     _settings.add(_currentSettings);
@@ -287,6 +293,24 @@ class SettingsBloc extends Bloc {
       _settings.add(_currentSettings);
       _settingsService.mirrorServerDownloads = value;
     });
+
+    _deleteDownloadsAfterDays.listen((value) {
+      _currentSettings = _currentSettings.copyWith(deleteDownloadsAfterDays: value);
+      _settings.add(_currentSettings);
+      _settingsService.deleteDownloadsAfterDays = value;
+    });
+
+    _playButtonStyle.listen((value) {
+      _currentSettings = _currentSettings.copyWith(playButtonStyle: value);
+      _settings.add(_currentSettings);
+      _settingsService.playButtonStyle = value;
+    });
+
+    _artworkAccentColors.listen((value) {
+      _currentSettings = _currentSettings.copyWith(artworkAccentColors: value);
+      _settings.add(_currentSettings);
+      _settingsService.artworkAccentColors = value;
+    });
   }
 
   Stream<AppSettings> get settings => _settings.stream;
@@ -340,6 +364,12 @@ class SettingsBloc extends Bloc {
   void Function(int) get setAutoDownloadQueueCount => _autoDownloadQueueCount.add;
 
   void Function(bool) get setMirrorServerDownloads => _mirrorServerDownloads.add;
+
+  void Function(int) get setDeleteDownloadsAfterDays => _deleteDownloadsAfterDays.add;
+
+  void Function(String) get setPlayButtonStyle => _playButtonStyle.add;
+
+  void Function(bool) get setArtworkAccentColors => _artworkAccentColors.add;
 
   void Function(String) get setTheme => _theme.add;
 
@@ -423,6 +453,9 @@ class SettingsBloc extends Bloc {
     _preferServerDownloadSource.close();
     _autoDownloadQueueCount.close();
     _mirrorServerDownloads.close();
+    _deleteDownloadsAfterDays.close();
+    _playButtonStyle.close();
+    _artworkAccentColors.close();
     _settings.close();
   }
 }

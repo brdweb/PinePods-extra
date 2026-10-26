@@ -28,7 +28,7 @@ bigdecimal = "0.4.11"
 redis = { version = "1.7.1", features = ["aio", "tokio-comp", "connection-manager"] }
 
 # HTTP Client
-reqwest = { version = "0.13.5", features = ["json", "stream", "cookies", "query", "form"] }
+reqwest = { version = "0.13.5", features = ["json", "stream", "cookies", "query", "form", "gzip", "brotli", "deflate", "zstd"] }
 
 # Configuration and Environment
 config = "0.15.27"
@@ -71,6 +71,7 @@ quick-xml = "0.42.0"
 unicode-normalization = "0.1.26"
 sha2 = "0.10.9"
 hex = "0.4.3"
+pbkdf2 = { version = "0.12.2", default-features = false, features = ["hmac"] }
 
 # Email
 lettre = { version = "0.11.23", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }

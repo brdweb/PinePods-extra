@@ -45,9 +45,6 @@ services:
       # Optional AI features (#726 transcripts). Uncomment + run the pinepods-ai
       # service below to enable; leave unset to keep AI features disabled.
       # PINEPODS_AI_URL: "http://pinepods-ai:8100"
-      # Optional Podping listener. Off unless set. See docs/podping.md.
-      # PINEPODS_PODPING: "1"
-      # PINEPODS_PODPING_API: "https://api.hive.blog"
 
     volumes:
       # Mount the download and backup locations on the server

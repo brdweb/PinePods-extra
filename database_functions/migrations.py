@@ -173,6 +173,45 @@ class DatabaseMigrationManager:
             
         return hashlib.sha256(content.encode()).hexdigest()
 
+    # PinePods-extra migrations that shipped under numbers upstream later used:
+    # old version -> (name the fork recorded, new version).
+    RENUMBERED_MIGRATIONS = {
+        "063": ("podcasting2_full", "900"),
+        "064": ("music_assistant_settings", "901"),
+        "065": ("value_wallet", "902"),
+    }
+
+    def relabel_renumbered_migrations(self):
+        """Move rows recorded under a fork migration's old number to its new one.
+
+        Matched on version and name, so upstream's own 063-065 are never touched,
+        and those upstream migrations then run as pending on a fork database.
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        table_name = '"schema_migrations"' if self.db_type == 'postgresql' else 'schema_migrations'
+        try:
+            for old, (name, new) in self.RENUMBERED_MIGRATIONS.items():
+                cursor.execute(
+                    f"SELECT 1 FROM {table_name} WHERE version = %s",
+                    (new,),
+                )
+                if cursor.fetchone():
+                    continue
+                cursor.execute(
+                    f"UPDATE {table_name} SET version = %s WHERE version = %s AND name = %s",
+                    (new, old, name),
+                )
+                if cursor.rowcount:
+                    logger.info(f"Relabelled migration {old} ({name}) as {new}")
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to relabel renumbered migrations: {e}")
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
     def record_migration(self, migration: Migration, execution_time_ms: int):
         """Record a migration as applied"""
         conn = self.get_connection()
@@ -318,7 +357,7 @@ class DatabaseMigrationManager:
                     logger.info("Detected existing schema for migration 004")
             
             # Check for gpodder tables - if ANY exist, ALL gpodder migrations are applied
-            # (since they were created by the Go gpodder-api service and haven't changed)
+            # (older installs created them outside this runner, all at once)
             gpodder_indicator_tables = ['"GpodderSyncMigrations"', '"GpodderSyncDeviceState"', 
                                       '"GpodderSyncSubscriptions"', '"GpodderSyncSettings"', 
                                       '"GpodderSessions"', '"GpodderSyncState"']
@@ -384,6 +423,7 @@ class DatabaseMigrationManager:
         try:
             # Create migration table
             self.create_migration_table()
+            self.relabel_renumbered_migrations()
             
             # Get applied migrations
             applied_migrations = self.get_applied_migrations()

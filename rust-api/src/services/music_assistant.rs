@@ -3043,7 +3043,12 @@ async fn advance_queue(
     };
     if let Err(e) = state
         .db_pool
-        .mark_episode_completed(finished.episode_id, user_id, finished.is_youtube)
+        .mark_episode_completed(
+            finished.episode_id,
+            user_id,
+            finished.is_youtube,
+            crate::services::sync::SyncOrigin::Pinepods,
+        )
         .await
     {
         tracing::warn!(
@@ -4063,7 +4068,12 @@ async fn write_listen_progress(
     if should_mark_complete(position, duration, auto, end_skip) {
         let _ = state
             .db_pool
-            .mark_episode_completed(episode_id, user_id, is_youtube)
+            .mark_episode_completed(
+                episode_id,
+                user_id,
+                is_youtube,
+                crate::services::sync::SyncOrigin::Pinepods,
+            )
             .await;
     }
 }
