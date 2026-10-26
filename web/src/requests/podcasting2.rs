@@ -600,6 +600,45 @@ pub fn http_link(url: &str) -> Option<&str> {
     }
 }
 
+/// Start and end of each chapter in seconds. A chapter ends where the next
+/// one starts, and the last one at `duration`.
+pub fn chapter_bounds(chapters: &[crate::requests::pod_req::Chapter], duration: f64) -> Vec<(f64, f64)> {
+    chapters
+        .iter()
+        .enumerate()
+        .map(|(index, chapter)| {
+            let start = chapter.startTime.unwrap_or_default() as f64;
+            let end = chapters
+                .get(index + 1)
+                .map(|next| next.startTime.unwrap_or_default() as f64)
+                .unwrap_or(duration);
+            (start, end)
+        })
+        .collect()
+}
+
+/// How far `position` is through a chapter, in percent: 100 once it is past,
+/// 0 before it starts.
+pub fn chapter_progress(position: f64, start: f64, end: f64) -> f64 {
+    if position >= end {
+        100.0
+    } else if position >= start && end > start {
+        ((position - start) / (end - start) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+/// Image of the chapter playing at `position`, when that chapter has one.
+/// The cover falls back to the episode artwork otherwise.
+pub fn chapter_image_at(chapters: &[crate::requests::pod_req::Chapter], position: f64) -> Option<&str> {
+    chapters
+        .iter()
+        .rev()
+        .find(|c| c.startTime.is_some_and(|start| start as f64 <= position))
+        .and_then(|c| c.img.as_deref())
+}
+
 pub fn artwork_choice(images: &[PodcastImage], set: Option<&ImageSet>, fallback: &str) -> ArtworkChoice {
     let preferred = images.iter().find(|img| {
         img.purpose
@@ -937,6 +976,37 @@ fn is_dangerous(url: &str) -> bool {
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    fn chapter(start: Option<i32>, img: Option<&str>) -> crate::requests::pod_req::Chapter {
+        crate::requests::pod_req::Chapter {
+            startTime: start,
+            title: String::new(),
+            url: None,
+            img: img.map(|s| s.to_string()),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn chapters_end_where_the_next_starts_and_follow_the_position() {
+        let chapters = vec![
+            chapter(Some(0), Some("intro.jpg")),
+            chapter(Some(60), None),
+            chapter(Some(300), Some("news.jpg")),
+        ];
+        assert_eq!(
+            chapter_bounds(&chapters, 900.0),
+            vec![(0.0, 60.0), (60.0, 300.0), (300.0, 900.0)]
+        );
+        assert_eq!(chapter_progress(30.0, 0.0, 60.0), 50.0);
+        assert_eq!(chapter_progress(60.0, 0.0, 60.0), 100.0);
+        assert_eq!(chapter_progress(30.0, 60.0, 300.0), 0.0);
+        assert_eq!(chapter_progress(10.0, 10.0, 10.0), 100.0);
+        assert_eq!(chapter_image_at(&chapters, 30.0), Some("intro.jpg"));
+        // A chapter without art shows the episode artwork, not the last image.
+        assert_eq!(chapter_image_at(&chapters, 120.0), None);
+        assert_eq!(chapter_image_at(&chapters, 600.0), Some("news.jpg"));
+        assert_eq!(chapter_image_at(&[chapter(None, Some("x.jpg"))], 30.0), None);
+    }
 
     fn season(number: &str, name: Option<&str>) -> Season {
         Season {
