@@ -234,6 +234,8 @@ The web now-playing bar shows a Next button when the device advertises `next`; t
 
 While the bar follows a speaker, the keyboard controls the speaker with the same keys as local web: Space plays or pauses, and the left and right arrows skip 15 seconds. Keys typed into a text field, and keys held with Alt, Ctrl or Meta, are left alone. The local player's own key handler ignores these keys while the bar follows a speaker, so one key press acts on the speaker only.
 
+The bar expands into the same fullscreen view as the local player. For the speaker's episode it shows chapters (tap to seek the speaker), show notes, people, a sleep timer, and the transcript. The transcript follows playback and keeps the current line in view; scrolling it pauses that so you can read, and Follow playback or tapping a timestamp resumes it.
+
 ## Queue advance
 
 When an episode finishes on a speaker, the bridge plays the next one, so a speaker keeps going after the browser tab closes. An episode finishes when either:
