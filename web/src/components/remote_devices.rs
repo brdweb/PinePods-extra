@@ -17,6 +17,7 @@ use yewdux::prelude::*;
 use crate::components::audio::on_play_click;
 use crate::components::context::NotificationState;
 use crate::components::context::{AppState, UIState};
+use crate::requests::music_assistant::send_to_speaker_allowed;
 use crate::components::music_assistant::{device_is_ma, now_unix, SeekSlider, VolumeControl};
 use crate::requests::music_assistant::{
     displayed_position, include_in_other_devices, MusicAssistantState,
@@ -265,7 +266,13 @@ pub fn remote_devices_panel() -> Html {
             let can_skip_back = device.supports("skip_back");
             let can_skip_fwd = device.supports("skip_forward");
             let can_play_pause = device.supports(if is_playing { "pause" } else { "play" });
-            let can_send_here = local_playing && device.supports("play_episode");
+            // Offline playback is a file only this browser can reach.
+            let can_send_here = device.supports("play_episode")
+                && if device_is_ma(&device.device_type) {
+                    send_to_speaker_allowed(local_playing, ui_state.offline == Some(true))
+                } else {
+                    local_playing
+                };
             let source_pauses = device.supports("pause");
 
             let on_play_pause = {

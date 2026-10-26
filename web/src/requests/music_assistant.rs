@@ -54,7 +54,7 @@ pub struct MaTestReport {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct MaPlayer {
     pub player_id: String,
     pub device_id: String,
@@ -690,6 +690,32 @@ pub fn sleep_remaining(
     }
 }
 
+/// The sync leader a speaker plays under as a member: the one it is
+/// `synced_to`, or a sync leader (a player, not a group player) that lists it
+/// in `group_members`. Playing on the member would split it off, so the picker
+/// offers play on the leader only.
+pub fn member_of<'a>(player: &MaPlayer, players: &'a [MaPlayer]) -> Option<&'a MaPlayer> {
+    if let Some(leader) = player
+        .synced_to
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return players.iter().find(|p| p.player_id == leader);
+    }
+    players.iter().find(|p| {
+        p.player_id != player.player_id
+            && !p.kind.eq_ignore_ascii_case("group")
+            && p.group_members.iter().any(|m| *m == player.player_id)
+    })
+}
+
+/// Whether a speaker may take this browser's playback. Offline playback is a
+/// file only this device can reach, so it stays here.
+pub fn send_to_speaker_allowed(local_playing: bool, offline: bool) -> bool {
+    local_playing && !offline
+}
+
 /// Width of the bar's thin progress line, in percent. An unknown duration
 /// shows no progress rather than a full bar.
 pub fn progress_percent(shown: f64, duration: f64) -> f64 {
@@ -1040,6 +1066,40 @@ mod tests {
         assert_eq!(*for_episode(&tagged, 22), vec!["chapter"]);
         assert!(for_episode(&tagged, 33).is_empty());
         assert!(for_episode(&(0, std::rc::Rc::new(vec!["x"])), 0).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn sync_members_point_at_their_leader_and_groups_do_not() {
+        let player = |id: &str, kind: &str, synced: Option<&str>, members: &[&str]| MaPlayer {
+            player_id: id.into(),
+            kind: kind.into(),
+            synced_to: synced.map(Into::into),
+            group_members: members.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        };
+        let players = vec![
+            player("living", "player", None, &["bed", "kitchen"]),
+            player("bed", "player", Some("living"), &[]),
+            player("kitchen", "player", None, &[]),
+            player("party", "group", None, &["garage"]),
+            player("garage", "player", None, &[]),
+            player("office", "player", None, &[]),
+        ];
+        let leader = |id: &str| {
+            let p = players.iter().find(|p| p.player_id == id).unwrap();
+            member_of(p, &players).map(|l| l.player_id.clone())
+        };
+        assert_eq!(leader("bed").as_deref(), Some("living"));
+        // Listed by a sync leader without synced_to yet.
+        assert_eq!(leader("kitchen").as_deref(), Some("living"));
+        // A group player's member can still play on its own.
+        assert_eq!(leader("garage"), None);
+        assert_eq!(leader("living"), None);
+        assert_eq!(leader("office"), None);
+
+        assert!(send_to_speaker_allowed(true, false));
+        assert!(!send_to_speaker_allowed(true, true));
+        assert!(!send_to_speaker_allowed(false, false));
     }
 
     #[wasm_bindgen_test]

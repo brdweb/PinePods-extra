@@ -294,6 +294,10 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 - No `player_queues/get` poll. Progress comes from queue events, the bridge's projection between them, and the 20 second player refresh.
 - No power, source select, or MA library sync.
 - Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
+- Silence trimming and ad skipping run in the local player only; a speaker plays the whole stream. There is no volume boost on web.
+- A video episode plays its audio on a speaker. There is no picture to show there.
+- Offline playback (a file only this browser can reach) is not offered to speakers; the picker and the devices drawer say it stays on this device.
+- A sync group member is shown as "In the <leader> group" in the speaker picker and has no Play button: playing on it alone would split it from the group. Play on the leader instead. A group player's members can still play on their own.
 - Seek right after `play_media` can race; a failed seek is a warning.
 - Queue advance has a short gap between episodes while the next stream loads. It is not gapless.
 - Each API replica opens its own MA session. A command runs on the replica that holds the commanding client. Progress writes are absolute, so overlapping replicas do not stack time. There is no lock electing a single connection.
