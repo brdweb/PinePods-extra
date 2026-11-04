@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 jobs:
   test:
+    if: github.repository == 'madeofpendletonwool/PinePods'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
