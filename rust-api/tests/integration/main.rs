@@ -18,6 +18,7 @@ mod library;
 mod music_assistant;
 mod fork_shared_episodes;
 mod moved_feeds;
+mod oidc;
 mod opml;
 mod people;
 mod playback;

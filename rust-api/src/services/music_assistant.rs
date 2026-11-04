@@ -3160,7 +3160,7 @@ async fn prepare_play_episode(
         })?;
     let rss_key = state
         .db_pool
-        .get_or_create_podcast_scoped_rss_key(user_id, podcast_id)
+        .get_or_create_podcast_rss_key(user_id, podcast_id)
         .await?;
     let downloaded = if is_youtube {
         state

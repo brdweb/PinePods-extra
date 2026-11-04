@@ -360,3 +360,188 @@ async fn the_dedupe_migration_merges_duplicate_episodes_and_their_state() {
     };
     assert!(rejected, "a duplicate GUID insert must fail after 065");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_episode_posts_an_http_notification() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    let mut feed = Feed::with_episodes("Notify Show", 1);
+    let url = app.feed("notify.xml", &feed);
+    let pod = app.subscribe(&user, &url, 1).await;
+
+    let hook = app.fixtures().serve("hook", Fixture::new("application/json", "{}"));
+    let save = |enabled: bool, method: &str, token: &str| {
+        let app = &app;
+        let user = &user;
+        let hook = hook.clone();
+        let method = method.to_string();
+        let token = token.to_string();
+        async move {
+            app.put("/api/data/user/notification_settings")
+                .key(user)
+                .json(&json!({
+                    "user_id": user.id,
+                    "platform": "http",
+                    "enabled": enabled,
+                    "http_url": hook,
+                    "http_token": token,
+                    "http_method": method,
+                }))
+                .send()
+                .await
+                .assert_ok();
+        }
+    };
+    save(true, "POST", "hook-secret").await;
+
+    // The channel is on, but this podcast is not: a new episode must not call the webhook.
+    feed = feed.episode(Episode::new(2));
+    app.feed("notify.xml", &feed);
+    app.refresh().await;
+    assert!(app.fixtures().hits("hook").is_empty(), "podcast notifications are off");
+
+    app.put("/api/data/podcast/toggle_notifications")
+        .key(&user)
+        .json(&json!({ "user_id": user.id, "podcast_id": pod, "enabled": true }))
+        .send()
+        .await
+        .assert_ok();
+
+    feed = feed.episode(Episode::new(3));
+    app.feed("notify.xml", &feed);
+    app.refresh().await;
+
+    let hits = app.fixtures().hits("hook");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    let hit = &hits[0];
+    assert_eq!(hit.method, "POST");
+    assert_eq!(hit.headers.get("authorization").map(String::as_str), Some("Bearer hook-secret"));
+    assert_eq!(
+        hit.headers.get("content-type").map(String::as_str),
+        Some("application/json"),
+        "{:?}",
+        hit.headers
+    );
+    let body: Value = serde_json::from_slice(&hit.body).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&hit.body)));
+    let text = "New episode available for Notify Show: Episode 3";
+    assert_eq!(
+        body,
+        json!({ "title": "New Podcast Episode", "message": text, "text": text }),
+        "Mattermost reads `text`"
+    );
+
+    // The same feed again is not a new episode.
+    app.refresh().await;
+    assert_eq!(app.fixtures().hits("hook").len(), 1);
+
+    // GET puts the same notice in the query string and sends no bearer token when none is set.
+    save(true, "GET", "").await;
+    feed = feed.episode(Episode::new(4));
+    app.feed("notify.xml", &feed);
+    app.refresh().await;
+    let hits = app.fixtures().hits("hook");
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    let get = &hits[1];
+    assert_eq!(get.method, "GET");
+    assert!(get.headers.get("authorization").is_none(), "{:?}", get.headers);
+    let message = "New episode available for Notify Show: Episode 4";
+    let expected_query = format!("message={}", urlencoding::encode(&message));
+    assert_eq!(get.query.as_deref(), Some(expected_query.as_str()));
+
+    save(false, "GET", "").await;
+    feed = feed.episode(Episode::new(5));
+    app.feed("notify.xml", &feed);
+    app.refresh().await;
+    assert_eq!(app.fixtures().hits("hook").len(), 2, "a disabled HTTP channel does not send");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nested_media_player_never_becomes_the_episode_url() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    let audio = "https://example.invalid/audio.mp3";
+    let player = format!(
+        r#"<media:content xmlns:media="http://search.yahoo.com/mrss/" url="{audio}" type="audio/mpeg"><media:player url="https://example.invalid/embed?media=Audio" /></media:content>"#
+    );
+    let feed = Feed::new("Player Show").episode(Episode::new(1).enclosure(audio).extra(&player));
+    let url = app.fixtures().serve("player.xml", Fixture::new("application/rss+xml", feed.to_xml()).etag("\"v1\""));
+    let pod = app.subscribe(&user, &url, 1).await;
+    app.refresh().await; // learns the ETag
+
+    let stored_url = || async {
+        let episodes = app.episodes(&user, pod).await;
+        episodes[0]["Episodeurl"].as_str().unwrap().to_string()
+    };
+    assert_eq!(stored_url().await, audio);
+
+    // A URL stored by an older release, on a feed that hasn't changed since.
+    exec(&app, r#"UPDATE "Episodes" SET EpisodeURL = 'https://example.invalid/embed?media=Audio'"#).await;
+    app.refresh().await;
+    assert_ne!(stored_url().await, audio, "a 304 doesn't reapply");
+
+    rerun_migrations(&app, &["087"]).await;
+    app.refresh().await;
+    assert_eq!(stored_url().await, audio);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_image_media_content_does_not_lose_the_enclosure() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    let audio = "https://example.invalid/audio.mp3";
+    let image = r#"<media:content xmlns:media="http://search.yahoo.com/mrss/" url="https://example.invalid/art.jpg" type="image/jpeg"/>"#;
+    let feed = Feed::new("Media Show").episode(Episode::new(1).enclosure(audio).extra(image));
+    let url = app.feed("media.xml", &feed);
+    let pod = app.subscribe(&user, &url, 1).await;
+
+    assert_eq!(app.episodes(&user, pod).await[0]["Episodeurl"], audio);
+}
+
+async fn guidless_episodes(app: &TestApp, user: &TestUser, pod: i32) -> Vec<String> {
+    let episodes = app.episodes(user, pod).await;
+    episodes.iter().map(|e| e["Episodeurl"].as_str().unwrap().to_string()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repairing_a_url_does_not_duplicate_a_guidless_episode() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    let audio = "https://example.invalid/audio.mp3";
+    let player_url = "https://example.invalid/embed?media=Audio";
+    let player = format!(
+        r#"<media:content xmlns:media="http://search.yahoo.com/mrss/" url="{audio}" type="audio/mpeg"><media:player url="{player_url}" /></media:content>"#
+    );
+    let feed = Feed::new("No Guid").episode(Episode::new(1).guid(None).enclosure(audio).extra(&player));
+    let url = app.feed("noguid.xml", &feed);
+    let pod = app.subscribe(&user, &url, 1).await;
+
+    // The player page, as 0.9.1 stored it.
+    exec(&app, &format!(r#"UPDATE "Episodes" SET EpisodeURL = '{player_url}' WHERE PodcastID = {pod}"#)).await;
+    rerun_migrations(&app, &["087"]).await;
+    app.refresh().await;
+    assert_eq!(guidless_episodes(&app, &user, pod).await, [audio]);
+
+    // No URL at all, as 0.9.1 stored it beside an image media:content.
+    exec(&app, &format!(r#"UPDATE "Episodes" SET EpisodeURL = '' WHERE PodcastID = {pod}"#)).await;
+    rerun_migrations(&app, &["087"]).await;
+    app.refresh().await;
+    assert_eq!(guidless_episodes(&app, &user, pod).await, [audio]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guidless_episode_with_a_reused_title_stays_separate() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    let first = Episode::new(1).guid(None).title("Bonus").enclosure("https://example.invalid/one.mp3");
+    let feed = Feed::new("Reused Titles").episode(first);
+    let url = app.feed("reused.xml", &feed);
+    let pod = app.subscribe(&user, &url, 1).await;
+
+    let second = Episode::new(2).guid(None).title("Bonus").enclosure("https://example.invalid/two.mp3");
+    app.feed("reused.xml", &feed.episode(second));
+    app.refresh().await;
+
+    let mut urls = guidless_episodes(&app, &user, pod).await;
+    urls.sort();
+    assert_eq!(urls, ["https://example.invalid/one.mp3", "https://example.invalid/two.mp3"]);
+}

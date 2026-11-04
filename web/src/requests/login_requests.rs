@@ -120,6 +120,8 @@ pub struct GetUserDetails {
     pub Email: Option<String>,
     pub Hashed_PW: Option<String>,
     pub Salt: Option<String>,
+    #[serde(default)]
+    pub UseGravatar: bool,
 }
 
 pub async fn call_get_user_details(
@@ -973,6 +975,9 @@ pub struct StoreStateRequest {
     pub origin_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_verifier: Option<String>,
+    // The server repeats this exact value in the token request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
 }
 
 // Then create the function to make the request
@@ -983,6 +988,7 @@ pub async fn call_store_oidc_state(
     client_id: String,
     origin_url: Option<String>,
     code_verifier: Option<String>,
+    redirect_uri: Option<String>,
 ) -> Result<(), Error> {
     let url = format!("{}/api/auth/store_state", server_name);
     let request_body = StoreStateRequest {
@@ -990,6 +996,7 @@ pub async fn call_store_oidc_state(
         client_id,
         origin_url,
         code_verifier,
+        redirect_uri,
     };
 
     let response = Request::post(&url).json(&request_body)?.send().await?;
@@ -997,9 +1004,36 @@ pub async fn call_store_oidc_state(
     if response.ok() {
         Ok(())
     } else {
-        Err(Error::msg(format!(
-            "Failed to store OIDC state: {}",
-            response.status_text()
-        )))
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        Err(Error::msg(store_state_error(status, &body)))
+    }
+}
+
+/// The server's reason for refusing, from its JSON error body. The status text can't be used: it's
+/// always empty over HTTP/2 and HTTP/3.
+fn store_state_error(status: u16, body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| json.get("message")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("Failed to store OIDC state: HTTP {}", status))
+}
+
+#[cfg(test)]
+mod store_state_error_tests {
+    use super::store_state_error;
+
+    #[test]
+    fn shows_the_servers_message() {
+        let body = r#"{"error":"Internal server error","message":"Failed to store OIDC state: READONLY","status_code":500}"#;
+        assert_eq!(store_state_error(500, body), "Failed to store OIDC state: READONLY");
+    }
+
+    #[test]
+    fn falls_back_to_the_status_for_other_bodies() {
+        let fallback = "Failed to store OIDC state: HTTP 502";
+        assert_eq!(store_state_error(502, ""), fallback);
+        assert_eq!(store_state_error(502, "<html>Bad Gateway</html>"), fallback);
+        assert_eq!(store_state_error(502, r#"{"detail":"nope"}"#), fallback);
     }
 }
