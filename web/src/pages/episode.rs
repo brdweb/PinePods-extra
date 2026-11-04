@@ -252,8 +252,6 @@ pub struct TranscriptInlineProps {
     pub on_seek: Option<Callback<f64>>,
 }
 
-/// Fetches and renders a transcript's text directly (no modal chrome), so it
-/// can be shown inline inside the episode page's Transcript tab.
 /// Episode artwork with the default episode art as fallback. Responsive (srcset) artwork from
 /// Podcasting 2.0 keeps its own rendering.
 fn episode_cover_html(choice: &crate::requests::podcasting2::ArtworkChoice, alt: String, class: String) -> Html {
@@ -271,6 +269,8 @@ fn episode_cover_html(choice: &crate::requests::podcasting2::ArtworkChoice, alt:
     }
 }
 
+/// Fetches and renders a transcript's text directly (no modal chrome), so it
+/// can be shown inline inside the episode page's Transcript tab.
 #[function_component(TranscriptInline)]
 pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
     let (i18n, _) = use_translation();

@@ -10,7 +10,7 @@ This repository is a fork of [madeofpendletonwool/PinePods](https://github.com/m
 
 - `rust-api/` — Rust 2021 Axum API (`pinepods-api`, `rust-version` 1.99). `Cargo.lock` is committed. Schema SQL is `database_functions/`, applied by `startup/setup_database_new.py`.
 - `web/` — Yew frontend, Trunk, feature `server_build`. The Tauri shell is `web/src-tauri/`.
-- `mobile/` — Flutter app. CI pins Flutter 3.44.5. The mobile app has no Music Assistant features.
+- `mobile/` — Flutter app. CI pins Flutter 3.47.9. The mobile app has no Music Assistant features.
 
 This fork adds Podcasting 2.0 on web and mobile (`docs/podcasting2-api.md`) and Music Assistant output on the web only (`docs/music-assistant.md`). Music Assistant targets do not offer playback speed. The web UI hides speed while it is following a Music Assistant speaker. Features are contributed upstream later as separate squashed pull requests. Those upstream pull requests must not include `AGENTS.md`, `CLAUDE.md`, `docs/agent-mistakes.md`, or the `.gitignore` lines for `AGENTS.local.md` and `CLAUDE.local.md`.
 
@@ -68,7 +68,7 @@ cargo build --release
 
 Release-only `.github/workflows/build-tauri-clients.yml` is not a pull-request check. On Unix, in `web/`: `RUSTFLAGS="--cfg=web_sys_unstable_apis --cfg getrandom_backend=\"wasm_js\"" trunk build --features server_build` (`web/Trunk.toml` sets `release = true`), then `cargo tauri build` in `web/src-tauri`. Windows runs `powershell -ExecutionPolicy Bypass -File .\build.ps1` in `web/` instead of that `trunk` line. `web/dev-info.md` documents `trunk serve --open`. CI does not run it.
 
-**Mobile tests.** `.github/workflows/mobile-tests.yml`, pull requests that change `mobile/**` or that workflow. Flutter 3.44.5. In `mobile/`:
+**Mobile tests.** `.github/workflows/mobile-tests.yml`, pull requests that change `mobile/**` or that workflow. Flutter 3.47.9. In `mobile/`:
 
 ```sh
 flutter pub get
