@@ -80,6 +80,8 @@ pub struct UserDetails {
     pub Hashed_PW: Option<String>,
     /// Always null; kept for response compatibility.
     pub Salt: Option<String>,
+    /// Whether the clients show the user's Gravatar. Off by default.
+    pub UseGravatar: bool,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -442,7 +444,9 @@ pub async fn get_public_oidc_providers(
             button_color: p.button_color,
             button_text: p.button_text,
             button_text_color: p.button_text_color,
-            icon_svg: p.icon_svg,
+            // Env-configured providers store "" when OIDC_ICON_SVG is unset; an empty icon slot
+            // would push the button text off centre.
+            icon_svg: p.icon_svg.filter(|s| !s.trim().is_empty()),
         })
         .collect();
     
@@ -792,6 +796,10 @@ pub async fn setup_time_info(
         return Err(AppError::forbidden("You are not authorized to access these user details"));
     }
     
+    if data.timezone.parse::<chrono_tz::Tz>().is_err() {
+        return Err(AppError::bad_request("Invalid timezone"));
+    }
+
     let success = state.db_pool.setup_timezone_info(
         data.user_id,
         &data.timezone,
@@ -1081,6 +1089,7 @@ pub struct StoreStateRequest {
     pub client_id: String,
     pub origin_url: Option<String>, // URL user was on when they clicked OIDC login
     pub code_verifier: Option<String>, // PKCE code verifier for token exchange
+    pub redirect_uri: Option<String>, // Exact redirect_uri sent in the authorize request
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1088,6 +1097,8 @@ struct StoredOidcState {
     client_id: String,
     origin_url: Option<String>,
     code_verifier: Option<String>, // PKCE code verifier
+    #[serde(default)]
+    redirect_uri: Option<String>,
 }
 
 #[utoipa::path(
@@ -1107,10 +1118,17 @@ pub async fn store_oidc_state(
     // Store state in Redis with 10-minute expiration
     let state_key = format!("oidc_state:{}", request.state);
     
+    let redirect_uri = match request.redirect_uri.as_deref() {
+        Some(uri) => Some(crate::services::oidc::validate_redirect_uri(uri)
+            .ok_or_else(|| AppError::bad_request("redirect_uri must be an http(s) URL ending in /api/auth/callback"))?),
+        None => None,
+    };
+
     let stored_state = StoredOidcState {
         client_id: request.client_id,
         origin_url: request.origin_url,
         code_verifier: request.code_verifier,
+        redirect_uri,
     };
     
     let state_json = serde_json::to_string(&stored_state)
@@ -1120,6 +1138,39 @@ pub async fn store_oidc_state(
         .map_err(|e| AppError::internal(&format!("Failed to store OIDC state: {}", e)))?;
     
     Ok(Json(serde_json::json!({ "status": "success" })))
+}
+
+const MOBILE_OIDC_CALLBACK: &str = "pinepods://auth/callback";
+
+/// Hosts this server answers on: the callback request's own host, plus the configured public URLs.
+fn oidc_allowed_hosts(headers: &HeaderMap) -> Vec<String> {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+    let from_headers = [header("host"), header("x-forwarded-host").and_then(|h| h.split(',').next().map(|h| h.trim().to_string()))]
+        .into_iter()
+        .flatten()
+        .map(|h| format!("http://{h}"));
+    let from_env = ["SERVER_URL", crate::handlers::sync_settings::PUBLIC_URL_ENV]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok());
+    from_headers
+        .chain(from_env)
+        .filter_map(|u| url::Url::parse(u.trim()).ok()?.host_str().map(str::to_ascii_lowercase))
+        .collect()
+}
+
+/// Where the OIDC callback may send the browser: the mobile app's deep link, or the origin of a
+/// web URL on one of `allowed_hosts`. `None` for anything else, so a login started with someone
+/// else's origin can't hand them the key.
+fn oidc_frontend_base(origin_url: &str, allowed_hosts: &[String]) -> Option<String> {
+    if origin_url == MOBILE_OIDC_CALLBACK || origin_url.strip_prefix(MOBILE_OIDC_CALLBACK).is_some_and(|rest| rest.starts_with('?')) {
+        return Some(origin_url.to_string());
+    }
+    let url = url::Url::parse(origin_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    allowed_hosts.contains(&host).then(|| url.origin().ascii_serialization())
 }
 
 // Helper function to create proper redirect URLs for both web and mobile
@@ -1253,15 +1304,15 @@ pub async fn oidc_callback(
     let state_param = query.state.ok_or_else(|| AppError::bad_request("Missing state parameter"))?;
 
     // Get client_id, origin_url, and code_verifier from state
-    let (client_id, stored_origin_url, code_verifier) = match state.redis_client.get_del(&format!("oidc_state:{}", state_param)).await {
+    let (client_id, stored_origin_url, code_verifier, stored_redirect_uri) = match state.redis_client.get_del(&format!("oidc_state:{}", state_param)).await {
         Ok(Some(state_json)) => {
             // Try to parse as new JSON format first
             if let Ok(stored_state) = serde_json::from_str::<StoredOidcState>(&state_json) {
                 tracing::info!("OIDC: Retrieved state for client_id={}", stored_state.client_id);
-                (stored_state.client_id, stored_state.origin_url, stored_state.code_verifier)
+                (stored_state.client_id, stored_state.origin_url, stored_state.code_verifier, stored_state.redirect_uri)
             } else {
                 // Fallback to old format (just client_id string) for backwards compatibility
-                (state_json, None, None)
+                (state_json, None, None, None)
             }
         },
         Ok(None) => {
@@ -1272,31 +1323,20 @@ pub async fn oidc_callback(
         }
     };
 
-    // Use stored origin URL if available, otherwise fall back to constructed URL
-    let frontend_base = if let Some(ref origin_url) = stored_origin_url {
-        // Check if this is a mobile deep link callback
-        if origin_url.starts_with("pinepods://auth/callback") {
-            // For mobile deep links, use the full URL directly - don't try to parse as HTTP
-            origin_url.clone()
-        } else {
-            // Extract just the base part (scheme + host + port) from the stored origin URL for web
-            // Simple string parsing to avoid adding url dependency
-            if let Some(protocol_end) = origin_url.find("://") {
-                let after_protocol = &origin_url[protocol_end + 3..];
-                if let Some(path_start) = after_protocol.find('/') {
-                    origin_url[..protocol_end + 3 + path_start].to_string()
-                } else {
-                    origin_url.clone()
-                }
-            } else {
-                origin_url.clone()
-            }
-        }
-    } else {
-        default_frontend_base.clone()
+    // The browser is sent here with the new API key, so only to this server or the mobile app.
+    let frontend_base = match stored_origin_url.as_deref() {
+        Some(origin_url) => oidc_frontend_base(origin_url, &oidc_allowed_hosts(&headers)).unwrap_or_else(|| {
+            tracing::warn!("OIDC: ignoring origin_url {:?}, which is not this server", origin_url);
+            default_frontend_base.clone()
+        }),
+        None => default_frontend_base.clone(),
     };
 
-    let registered_redirect_uri = format!("{}/api/auth/callback", base_url);
+    // The token request must repeat the authorize request's redirect_uri exactly (RFC 6749
+    // 4.1.3). Rebuilding it from request headers loses non-default ports behind some proxies, so
+    // use the client's own value and only derive one for clients that don't send it.
+    let registered_redirect_uri = stored_redirect_uri
+        .unwrap_or_else(|| format!("{}{}", base_url, crate::services::oidc::CALLBACK_PATH));
 
     // Get OIDC provider details - EXACT match to Python get_oidc_provider returning tuple
     let provider_tuple = match state.db_pool.get_oidc_provider(&client_id).await {
@@ -1540,7 +1580,7 @@ pub async fn oidc_callback(
         }
 
         tracing::info!("OIDC: Login successful for existing user");
-        return Ok(create_oidc_response(&frontend_base, &format!("api_key={}", api_key)));
+        return Ok(create_oidc_response(&frontend_base, &format!("api_key={}&state={}", api_key, urlencoding::encode(&state_param))));
     } else {
         // Create new user - EXACT match to Python
         if username.is_none() {
@@ -1604,7 +1644,7 @@ pub async fn oidc_callback(
 
     // Success - handle both web and mobile redirects
     tracing::info!("OIDC: Login successful for new user");
-    Ok(create_oidc_response(&frontend_base, &format!("api_key={}", api_key)))
+    Ok(create_oidc_response(&frontend_base, &format!("api_key={}&state={}", api_key, urlencoding::encode(&state_param))))
 }
 
 // Update user timezone
@@ -1640,6 +1680,10 @@ pub async fn update_timezone(
         return Err(AppError::forbidden("You are not authorized to update timezone for other users"));
     }
     
+    if data.timezone.parse::<chrono_tz::Tz>().is_err() {
+        return Err(AppError::bad_request("Invalid timezone"));
+    }
+
     let success = state.db_pool.update_user_timezone(data.user_id, &data.timezone).await?;
     
     if success {
@@ -1948,7 +1992,7 @@ fn construct_base_url_from_request(headers: &HeaderMap) -> Result<String, AppErr
 
     let mut base_url = format!("{}://{}", scheme, host);
     
-    tracing::info!("OIDC Debug - Headers: Host={}, X-Forwarded-Proto={:?}, X-Forwarded-Host={:?}, X-Forwarded-Port={:?}, constructed base_url={}", 
+    tracing::debug!("OIDC Debug - Headers: Host={}, X-Forwarded-Proto={:?}, X-Forwarded-Host={:?}, X-Forwarded-Port={:?}, constructed base_url={}", 
         host, 
         headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()),
         headers.get("x-forwarded-host").and_then(|v| v.to_str().ok()),
@@ -1962,4 +2006,45 @@ fn construct_base_url_from_request(headers: &HeaderMap) -> Result<String, AppErr
     }
 
     Ok(base_url)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hosts(h: &[&str]) -> Vec<String> {
+        h.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn oidc_redirects_only_to_this_server_or_the_mobile_app() {
+        let allowed = hosts(&["pods.example.com"]);
+        assert_eq!(oidc_frontend_base("https://pods.example.com", &allowed).as_deref(), Some("https://pods.example.com"));
+        assert_eq!(oidc_frontend_base("https://Pods.Example.com:8443/login?x=1", &allowed).as_deref(), Some("https://pods.example.com:8443"));
+        assert_eq!(oidc_frontend_base("pinepods://auth/callback", &allowed).as_deref(), Some("pinepods://auth/callback"));
+        assert_eq!(oidc_frontend_base("pinepods://auth/callback?server=x", &allowed).as_deref(), Some("pinepods://auth/callback?server=x"));
+
+        for hostile in [
+            "https://attacker.example",
+            "https://pods.example.com.attacker.example",
+            "https://pods.example.com@attacker.example",
+            "//attacker.example",
+            "attacker.example",
+            "javascript:alert(1)",
+            "pinepods://auth/callbackevil",
+            "",
+        ] {
+            assert_eq!(oidc_frontend_base(hostile, &allowed), None, "{hostile}");
+        }
+    }
+
+    #[test]
+    fn oidc_allowed_hosts_come_from_the_request() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "pinepods:8040".parse().unwrap());
+        headers.insert("x-forwarded-host", "Pods.Example.com, proxy.internal".parse().unwrap());
+        let allowed = oidc_allowed_hosts(&headers);
+        assert!(allowed.contains(&"pinepods".to_string()));
+        assert!(allowed.contains(&"pods.example.com".to_string()));
+        assert!(!allowed.contains(&"proxy.internal".to_string()));
+    }
 }

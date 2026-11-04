@@ -1014,7 +1014,7 @@ mod tests {
     #[test]
     fn hex_sha256_integrity_type_is_checked() {
         let bytes = b"abc";
-        let hex = format!("{:x}", Sha256::digest(bytes));
+        let hex = hex::encode(Sha256::digest(bytes));
         let integrity = MediaIntegrity {
             kind: "sha256".into(),
             value: hex,

@@ -4,7 +4,7 @@ use crate::components::media_options::{preferred_media_option, render_media_pick
 use crate::components::audio::AudioPlayer;
 use crate::components::click_events::create_on_title_click;
 use crate::components::context::{AppState, EpisodeDetailState, EpisodeNavigationState, EpisodeStatusState, NotificationState, PageLoadState, UIState, UserPreferencesState};
-use crate::components::gen_components::{empty_message, Search_nav, UseScrollToTop};
+use crate::components::gen_components::{empty_message, FallbackImage, Search_nav, UseScrollToTop, DEFAULT_EPISODE_ART};
 use crate::components::gen_funcs::format_error_message;
 use crate::components::gen_funcs::{
     format_datetime, format_time, match_date_format, parse_date, sanitize_html_with_blank_target,
@@ -250,6 +250,23 @@ pub struct TranscriptInlineProps {
     /// Where a cue's timestamp seeks. Without it, the local player.
     #[prop_or_default]
     pub on_seek: Option<Callback<f64>>,
+}
+
+/// Episode artwork with the default episode art as fallback. Responsive (srcset) artwork from
+/// Podcasting 2.0 keeps its own rendering.
+fn episode_cover_html(choice: &crate::requests::podcasting2::ArtworkChoice, alt: String, class: String) -> Html {
+    if choice.srcset.is_some() {
+        cover_html(choice, alt, class)
+    } else {
+        html! {
+            <FallbackImage
+                src={choice.src.clone()}
+                fallback={DEFAULT_EPISODE_ART}
+                {alt}
+                class={class}
+            />
+        }
+    }
 }
 
 /// Fetches and renders a transcript's text directly (no modal chrome), so it
@@ -810,6 +827,8 @@ pub struct TranscriptTabProps {
     pub server_name: String,
     pub api_key: String,
     pub ai_available: bool,
+    #[prop_or_default]
+    pub downloaded: bool,
 }
 
 /// Unified transcript view for the episode's Transcript tab (#726): shows the built-in transcript
@@ -887,7 +906,8 @@ pub fn transcript_tab(props: &TranscriptTabProps) -> Html {
         });
     }
     let (episode_status, _) = use_store::<EpisodeStatusState>();
-    let on_server = episode_status.downloaded_episodes.is_server_download(episode_id);
+    // The store is only filled from the downloads page, so also trust the episode's own flag.
+    let on_server = props.downloaded || episode_status.downloaded_episodes.is_server_download(episode_id);
     let ad_ranges: Vec<(f64, f64)> = ad_segments.iter().map(|s| (s.start_time, s.end_time)).collect();
 
     let status = ai_transcript.as_ref().map(|t| t.status.clone());
@@ -2473,7 +2493,7 @@ pub fn epsiode() -> Html {
 
                                     // ── Compact header: artwork + meta ──
                                     <div class="ep-mobile-header">
-                                        { cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string()) }
+                                        { episode_cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string()) }
                                         <div class="ep-mobile-meta">
                                             <p class="ep-mobile-podcast-name" onclick={on_title_click.clone()}>
                                                 { &episode.podcastname }
@@ -2674,7 +2694,7 @@ pub fn epsiode() -> Html {
                                     // ===== HERO =====
                                     <div class="ep-hero">
                                         <div class="ep-hero-cover" onclick={on_title_click.clone()} title={episode.podcastname.clone()}>
-                                            { cover_html(&cover, cover_alt.clone(), "ep-hero-cover-img".to_string()) }
+                                            { episode_cover_html(&cover, cover_alt.clone(), "ep-hero-cover-img".to_string()) }
                                         </div>
                                         <div class="ep-hero-body">
                                             <div class="ep-hero-show" onclick={on_title_click.clone()}>
@@ -2936,6 +2956,7 @@ pub fn epsiode() -> Html {
                                                         server_name={server_name.clone().unwrap_or_default()}
                                                         api_key={api_key.clone().unwrap_or_default().unwrap_or_default()}
                                                         ai_available={*ai_available}
+                                                        downloaded={*download_status}
                                                     />
                                                 },
                                                 EpisodeTab::People => html! {

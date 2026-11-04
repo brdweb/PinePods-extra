@@ -6,7 +6,7 @@
     "license": {
       "name": "GPL-3.0-or-later"
     },
-    "version": "0.9.0"
+    "version": "0.9.1"
   },
   "servers": [
     {
@@ -5155,6 +5155,19 @@
               "type": "integer",
               "format": "int32"
             }
+          },
+          {
+            "name": "podcast_id",
+            "in": "query",
+            "description": "Return a key that only covers this podcast's feed.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -6584,6 +6597,48 @@
           },
           "403": {
             "description": "Not authorized for this user"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/oidc_discovery": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Discover oidc provider endpoints",
+        "operationId": "discover_oidc_provider",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcDiscoveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcDiscovery"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Discovery document could not be fetched or parsed"
+          },
+          "401": {
+            "description": "Invalid or missing API key"
           }
         },
         "security": [
@@ -11014,6 +11069,43 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SetThemeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/api/data/user/set_use_gravatar": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Set whether the user's Gravatar is shown",
+        "operationId": "set_use_gravatar",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUseGravatar"
               }
             }
           },
@@ -18010,6 +18102,56 @@
           }
         }
       },
+      "OidcDiscovery": {
+        "type": "object",
+        "description": "The parts of an OpenID Provider configuration document that PinePods uses.",
+        "required": [
+          "authorization_endpoint",
+          "token_endpoint",
+          "userinfo_endpoint"
+        ],
+        "properties": {
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "token_endpoint": {
+            "type": "string"
+          },
+          "userinfo_endpoint": {
+            "type": "string"
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "claims_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "OidcDiscoveryRequest": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Issuer URL or full .well-known/openid-configuration URL"
+          }
+        }
+      },
       "OidcProviderRequest": {
         "type": "object",
         "required": [
@@ -18757,7 +18899,8 @@
           "feedurl",
           "explicit",
           "is_favorite",
-          "is_video"
+          "is_video",
+          "play_count"
         ],
         "properties": {
           "podcastid": {
@@ -18828,6 +18971,22 @@
           },
           "is_video": {
             "type": "boolean"
+          },
+          "oldest_episode_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "newest_episode_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "play_count": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -20355,6 +20514,22 @@
           }
         }
       },
+      "SetUseGravatar": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "enabled"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "SetUsernameRequest": {
         "type": "object",
         "required": [
@@ -20574,6 +20749,12 @@
             ]
           },
           "code_verifier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uri": {
             "type": [
               "string",
               "null"
@@ -21755,7 +21936,8 @@
       "UserDetails": {
         "type": "object",
         "required": [
-          "UserID"
+          "UserID",
+          "UseGravatar"
         ],
         "properties": {
           "UserID": {
@@ -21793,6 +21975,10 @@
               "null"
             ],
             "description": "Always null; kept for response compatibility."
+          },
+          "UseGravatar": {
+            "type": "boolean",
+            "description": "Whether the clients show the user's Gravatar. Off by default."
           }
         }
       },

@@ -33,8 +33,13 @@ if (keystorePropertiesFile.exists()) {
 def forkTest = project.findProperty("pinepodsForkTest")?.toString() == "true"
 
 android {
-    compileSdk 36
+    compileSdk 37
     ndkVersion flutter.ndkVersion
+
+    buildFeatures {
+        // AGP 9 turns resValues off by default; defaultConfig sets the launcher name with resValue.
+        resValues true
+    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -86,7 +91,7 @@ android {
             // needs no upload keystore. Official release builds are unchanged.
             signingConfig forkTest ? signingConfigs.debug : signingConfigs.release
             shrinkResources false
-            proguardFiles getDefaultProguardFile('proguard-android.txt')
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 

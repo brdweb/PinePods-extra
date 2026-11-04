@@ -6,21 +6,19 @@ Personal or machine-specific notes never go in tracked files. Claude Code auto-l
 
 ## Project
 
-This repository is a fork of [madeofpendletonwool/PinePods](https://github.com/madeofpendletonwool/PinePods) (GPL-3.0). Pull requests here target `main`. PinePods is a self-hosted podcast server (Postgres or MySQL/MariaDB, and Valkey or Redis). Package manifests are version 0.9.0.
+This repository is a fork of [madeofpendletonwool/PinePods](https://github.com/madeofpendletonwool/PinePods) (GPL-3.0). Pull requests here target `main`. PinePods is a self-hosted podcast server (Postgres or MySQL/MariaDB, and Valkey or Redis). Package manifests are version 0.9.1.
 
-- `rust-api/` — Rust 2021 Axum API (`pinepods-api`, `rust-version` 1.99). `Cargo.lock` is committed. `gpodder-api/` is the Go gpodder sync service. Schema SQL is `database_functions/`, applied by `startup/setup_database_new.py`.
+- `rust-api/` — Rust 2021 Axum API (`pinepods-api`, `rust-version` 1.99). `Cargo.lock` is committed. Schema SQL is `database_functions/`, applied by `startup/setup_database_new.py`.
 - `web/` — Yew frontend, Trunk, feature `server_build`. The Tauri shell is `web/src-tauri/`.
-- `mobile/` — Flutter app. CI pins Flutter 3.44.5. The mobile app has no Music Assistant features.
+- `mobile/` — Flutter app. CI pins Flutter 3.47.9. The mobile app has no Music Assistant features.
 
 This fork adds Podcasting 2.0 on web and mobile (`docs/podcasting2-api.md`) and Music Assistant output on the web only (`docs/music-assistant.md`). Music Assistant targets do not offer playback speed. The web UI hides speed while it is following a Music Assistant speaker. Features are contributed upstream later as separate squashed pull requests. Those upstream pull requests must not include `AGENTS.md`, `CLAUDE.md`, `docs/agent-mistakes.md`, or the `.gitignore` lines for `AGENTS.local.md` and `CLAUDE.local.md`.
 
 ## Commands
 
-**API tests.** `.github/workflows/rust-api-tests.yml`, on pull requests that change `rust-api/**`, `database_functions/**`, `startup/setup_database_new.py`, `gpodder-api/**`, or that workflow. Stable Rust, Python 3.12, one job per database. Comments are the working directory. CI does not run `cargo fmt` or `cargo clippy`. Without `PINEPODS_TEST_EXTERNAL_SERVICES`, `scripts/integration-tests.sh` starts Postgres, MariaDB, and Valkey (`rust-api/tests/README.md`); `--db postgres` and `--db postgresql` are the same backend.
+**API tests.** `.github/workflows/rust-api-tests.yml`, on pull requests that change `rust-api/**`, `database_functions/**`, `startup/setup_database_new.py`, or that workflow. Stable Rust, Python 3.12, one job per database. Comments are the working directory. CI does not run `cargo fmt` or `cargo clippy`. Without `PINEPODS_TEST_EXTERNAL_SERVICES`, `scripts/integration-tests.sh` starts Postgres, MariaDB, and Valkey (`rust-api/tests/README.md`); `--db postgres` and `--db postgresql` are the same backend.
 
 ```sh
-# gpodder-api/
-go build -o "$RUNNER_TEMP/gpodder-api" ./cmd/server
 # repo root
 sudo apt-get update -qq
 sudo apt-get install -qy libmariadb-dev
@@ -28,8 +26,8 @@ python -m pip install -q -r rust-api/tests/requirements.txt
 python -m pip install -q mariadb
 # rust-api/
 cargo test --lib --bins
-PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python PINEPODS_TEST_GPODDER_BIN="$RUNNER_TEMP/gpodder-api" scripts/integration-tests.sh --db postgresql
-PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python PINEPODS_TEST_GPODDER_BIN="$RUNNER_TEMP/gpodder-api" scripts/integration-tests.sh --db mariadb
+PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python scripts/integration-tests.sh --db postgresql
+PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python scripts/integration-tests.sh --db mariadb
 ```
 
 **OpenAPI.** `.github/workflows/openapi.yml` when `rust-api/**` changes. In `rust-api/`, then the repo root. The job fails unless `git diff --exit-code rust-api/openapi.json` is clean:
@@ -70,7 +68,7 @@ cargo build --release
 
 Release-only `.github/workflows/build-tauri-clients.yml` is not a pull-request check. On Unix, in `web/`: `RUSTFLAGS="--cfg=web_sys_unstable_apis --cfg getrandom_backend=\"wasm_js\"" trunk build --features server_build` (`web/Trunk.toml` sets `release = true`), then `cargo tauri build` in `web/src-tauri`. Windows runs `powershell -ExecutionPolicy Bypass -File .\build.ps1` in `web/` instead of that `trunk` line. `web/dev-info.md` documents `trunk serve --open`. CI does not run it.
 
-**Mobile tests.** `.github/workflows/mobile-tests.yml`, pull requests that change `mobile/**` or that workflow. Flutter 3.44.5. In `mobile/`:
+**Mobile tests.** `.github/workflows/mobile-tests.yml`, pull requests that change `mobile/**` or that workflow. Flutter 3.47.9. In `mobile/`:
 
 ```sh
 flutter pub get

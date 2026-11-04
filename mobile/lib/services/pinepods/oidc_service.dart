@@ -45,6 +45,21 @@ class OidcService {
     );
   }
   
+  /// State of the login this app started and hasn't finished. A callback link carrying any other
+  /// state (or arriving with no login in progress) must not sign the app in.
+  static String? _pendingState;
+
+  /// Whether [state] belongs to the login in progress. Clears it either way.
+  static bool takePendingState(String? state) {
+    final expected = _pendingState;
+    _pendingState = null;
+    return expected != null && state == expected;
+  }
+
+  static void rememberPendingState(String state) => _pendingState = state;
+
+  static void clearPendingState() => _pendingState = null;
+
   /// Generate random state parameter
   static String generateState() {
     final random = Random.secure();
@@ -59,6 +74,7 @@ class OidcService {
     required String clientId,
     String? originUrl,
     String? codeVerifier,
+    String? redirectUri,
   }) async {
     try {
       final normalizedUrl = serverUrl.trim().replaceAll(RegExp(r'/$'), '');
@@ -69,6 +85,8 @@ class OidcService {
         'client_id': clientId,
         'origin_url': originUrl,
         'code_verifier': codeVerifier,
+        // The server repeats this exact value in the token request.
+        'redirect_uri': ?redirectUri,
       });
       
       final response = await http.post(
@@ -94,6 +112,9 @@ class OidcService {
     OidcPkce? pkce,
   }) async {
     try {
+      final redirectUri =
+          '${serverUrl.trim().replaceAll(RegExp(r'/$'), '')}/api/auth/callback';
+
       // Store state on server first - use the app deep link as the origin so the
       // backend redirects the result back to the native auth session via the
       // custom scheme (captured by flutter_web_auth_2).
@@ -103,11 +124,13 @@ class OidcService {
         clientId: provider.clientId,
         originUrl: '$callbackUrlScheme:/$callbackPath', // pinepods://auth/callback
         codeVerifier: pkce?.codeVerifier, // Include PKCE code verifier
+        redirectUri: redirectUri,
       );
       
       if (!stateStored) {
         return null;
       }
+      rememberPendingState(state);
       
       // Build authorization URL
       final authUri = Uri.parse(provider.authorizationUrl);
@@ -115,7 +138,7 @@ class OidcService {
         'client_id': provider.clientId,
         'response_type': 'code',
         'scope': provider.scope,
-        'redirect_uri': '$serverUrl/api/auth/callback',
+        'redirect_uri': redirectUri,
         'state': state,
       };
       
