@@ -40,10 +40,21 @@ pub struct FallbackImageProps {
 pub const DEFAULT_PODCAST_ART: &str = "/static/assets/default-podcast.png";
 pub const DEFAULT_EPISODE_ART: &str = "/static/assets/default-episode.png";
 
+/// What the image shows after `current` fails to load: the proxied copy of `src`
+/// first, then `fallback`. `None` once the fallback itself has failed.
+fn src_after_load_error<'a>(current: &str, src: &str, proxied: &'a str, fallback: &'a str) -> Option<&'a str> {
+    if current == fallback {
+        None
+    } else if current == src {
+        Some(proxied)
+    } else {
+        Some(fallback)
+    }
+}
+
 #[function_component(FallbackImage)]
 pub fn fallback_image(props: &FallbackImageProps) -> Html {
     let image_ref = use_node_ref();
-    let has_error = use_state(|| false);
     let server_name_sel = use_selector(|state: &AppState| {
         state.auth_details.as_ref().map(|ud| ud.server_name.clone()).unwrap_or_default()
     });
@@ -91,21 +102,18 @@ pub fn fallback_image(props: &FallbackImageProps) -> Html {
 
     // Handle image load error
     let on_error = {
-        let has_error = has_error.clone();
         let image_src = image_src.clone();
         let proxied_url = proxied_url.clone();
         let fallback = fallback.clone();
+        let src = props.src.clone();
         Callback::from(move |_: Event| {
-            if !*has_error {
-                // First error - switch to proxied URL
-                has_error.set(true);
-                image_src.set(proxied_url.clone());
-                web_sys::console::log_1(
-                    &format!("Image load failed, switching to proxy: {}", proxied_url).into(),
-                );
-            } else if *image_src != fallback {
-                // The proxy couldn't load it either
-                image_src.set(fallback.clone());
+            if let Some(next) = src_after_load_error(&image_src, &src, &proxied_url, &fallback) {
+                if next == proxied_url {
+                    web_sys::console::log_1(
+                        &format!("Image load failed, switching to proxy: {}", proxied_url).into(),
+                    );
+                }
+                image_src.set(next.to_string());
             }
         })
     };
@@ -1379,5 +1387,41 @@ pub fn image_picker(props: &ImagePickerProps) -> Html {
                 <div class="settings-row-desc" style="margin-top:6px;">{ types }</div>
             }
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const F: &str = DEFAULT_PODCAST_ART;
+
+    #[wasm_bindgen_test]
+    fn fallback_image_retries_the_proxy_after_src_changes() {
+        let src = "https://a.example.invalid/1.jpg";
+        let pa = "/api/proxy/image?url=a";
+        assert_eq!(src_after_load_error(src, src, pa, F), Some(pa));
+        assert_eq!(src_after_load_error(pa, src, pa, F), Some(F));
+
+        let src2 = "https://b.example.invalid/2.jpg";
+        let pb = "/api/proxy/image?url=b";
+        // Before the fix, the error flag was still true here and showed the fallback.
+        assert_eq!(src_after_load_error(src2, src2, pb, F), Some(pb));
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_image_stops_once_the_fallback_fails() {
+        assert_eq!(
+            src_after_load_error(
+                F,
+                "https://a.example.invalid/1.jpg",
+                "/api/proxy/image?url=a",
+                F,
+            ),
+            None,
+        );
+        assert_eq!(src_after_load_error(F, F, "/api/proxy/image?url=x", F), None);
+        assert_eq!(src_after_load_error(F, "", F, F), None);
     }
 }
