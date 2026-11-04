@@ -87,18 +87,20 @@ flutter build apk --release --target-platform android-arm64
 
 Tag and release workflows, not pull requests, run `flutter build apk --release --split-per-abi`, `flutter build appbundle --release`, and `flutter build ios --release --no-codesign`.
 
+**iOS tests.** `.github/workflows/ios-playback-intent-tests.yml` runs `swift test --package-path mobile/ios/PlaybackSupport` on macOS, only in `madeofpendletonwool/PinePods`. The fork gets no hosted macOS runner, so the job reports skipped here.
+
 ## Definition of done
 
-- Start from a GitHub Issue that states the goal, non-goals, acceptance criteria, and how to prove them.
+- A change may start from a GitHub Issue, but does not have to. The Issue, or the PR body when there is no Issue, states the goal, non-goals, acceptance criteria, and how to prove them.
 - The pull-request commands for every surface the change touches pass locally. Paste that output in the PR body. If a command could not be run, name it and why.
 - Every bug fix adds a regression test that fails before the fix.
 - A change visible in the web or mobile UI includes a screenshot.
-- The PR links the Issue and states what was not done.
+- The PR links the Issue, if there is one, and states what was not done.
 
 ## Boundaries
 
 - Never push to `main`. Never force-push a shared branch, delete branches or tags, or create tags or releases.
-- No major dependency bumps. No edits to `.github/`, release config, auth, `database_functions/` migrations, or secrets, unless the Issue asks.
+- No major dependency bumps. No edits to `.github/`, release config, auth, `database_functions/` migrations, or secrets, unless the Issue or the maintainer asks.
 - Never edit the workflows that publish to DockerHub, the AUR, or Discord: `.github/workflows/docker-publish.yml`, `.github/workflows/nightly-docker-publish.yml`, `.github/workflows/backend-docker-publish.yml`, `.github/workflows/update-aur-package.yml`, and `.github/workflows/notification.yml`.
 - Never weaken or delete a test to make CI pass.
 - Keep a pull request to about 400 changed lines. Split work that would exceed that.
@@ -108,6 +110,8 @@ Tag and release workflows, not pull requests, run `flutter build apk --release -
 ## Commits and PRs
 
 Use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build(deps):`, `chore:`). The PR title uses the same form, because squash merges take the title as the commit subject. Never add `Co-Authored-By` or any other AI co-author or attribution trailer to a commit message or a PR body.
+
+Pass `--repo brdweb/PinePods-extra` to every `gh` command so nothing targets upstream. Upstream syncs: fetch `upstream` (`madeofpendletonwool/PinePods`), branch `sync/upstream-YYYY-MM-DD`, `git merge upstream/main`, resolve, run the pull-request commands for every surface the merge touches, and open `chore: sync with upstream PinePods main` against the fork's `main`. Merge it with a merge commit, not a squash, so upstream history stays reachable.
 
 ## Review guidance
 
@@ -120,7 +124,7 @@ Codex (`chatgpt-codex-connector`) is the only automatic PR reviewer. It should f
 - Every merge here needs the maintainer's explicit approval.
 - Bots and agents merge only work the maintainer has explicitly approved.
 - Major version bumps, auth, payments, database migrations, CI or release configuration, secrets, and large or ambiguous PRs wait for the maintainer.
-- Squash merge. Commits carry no Co-Authored-By or other AI co-author trailers.
+- Squash merge, except upstream syncs, which use a merge commit. Commits carry no Co-Authored-By or other AI co-author trailers.
 
 ## Learning
 
