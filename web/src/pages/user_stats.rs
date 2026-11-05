@@ -1,6 +1,6 @@
 use crate::components::gen_components::Search_nav;
-use crate::components::audio::AudioPlayer;
-use crate::components::context::{AppState, UIState, UserStatsStore};
+use crate::components::audio_player_bar::AudioPlayerBar;
+use crate::components::context::{AppState, UserStatsStore};
 use crate::components::gen_funcs::{format_date, format_time, format_time_mins};
 use crate::requests::pod_req::call_get_pinepods_version;
 use crate::requests::stat_reqs::{self, TopPodcastStat, CategoryStat};
@@ -103,7 +103,6 @@ pub fn user_stats() -> Html {
     let pinepods_version = stat_state.pinepods_version.as_ref();
 
     let (post_state, _post_dispatch) = use_store::<AppState>();
-    let (audio_state, _audio_dispatch) = use_store::<UIState>();
 
     {
         let api_key = post_state
@@ -399,30 +398,7 @@ pub fn user_stats() -> Html {
                 </div>
             </div>
 
-            {
-                if let Some(audio_props) = &audio_state.currently_playing {
-                    html! {
-                        <AudioPlayer
-                            episode={audio_props.episode.clone()}
-                            src={audio_props.src.clone()}
-                            title={audio_props.title.clone()}
-                            description={audio_props.description.clone()}
-                            release_date={audio_props.release_date.clone()}
-                            artwork_url={audio_props.artwork_url.clone()}
-                            duration={audio_props.duration.clone()}
-                            episode_id={audio_props.episode_id.clone()}
-                            duration_sec={audio_props.duration_sec.clone()}
-                            start_pos_sec={audio_props.start_pos_sec.clone()}
-                            end_pos_sec={audio_props.end_pos_sec.clone()}
-                            offline={audio_props.offline.clone()}
-                            is_youtube={audio_props.is_youtube.clone()}
-                            is_video={audio_props.is_video.clone()}
-                        />
-                    }
-                } else {
-                    html! {}
-                }
-            }
+            <AudioPlayerBar />
         </div>
         <App_drawer />
         </>

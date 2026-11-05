@@ -1,5 +1,5 @@
 use crate::components::app_drawer::App_drawer;
-use crate::components::audio::AudioPlayer;
+use crate::components::audio_player_bar::AudioPlayerBar;
 use crate::components::context::{AppState, EpisodeStatusState, ExpandedDescriptions, NotificationState, PodcastFeedState, UIState};
 use crate::components::context_menu_button::PageType;
 use crate::components::gen_components::{empty_message, FallbackImage, Search_nav, UseScrollToTop};
@@ -906,30 +906,7 @@ pub fn downloads() -> Html {
                     }
                 }
             }
-        {
-            if let Some(audio_props) = &audio_state.currently_playing {
-                html! {
-                    <AudioPlayer
-                        episode={audio_props.episode.clone()}
-                        src={audio_props.src.clone()}
-                        title={audio_props.title.clone()}
-                        description={audio_props.description.clone()}
-                        release_date={audio_props.release_date.clone()}
-                        artwork_url={audio_props.artwork_url.clone()}
-                        duration={audio_props.duration.clone()}
-                        episode_id={audio_props.episode_id.clone()}
-                        duration_sec={audio_props.duration_sec.clone()}
-                        start_pos_sec={audio_props.start_pos_sec.clone()}
-                        end_pos_sec={audio_props.end_pos_sec.clone()}
-                        offline={audio_props.offline.clone()}
-                        is_youtube={audio_props.is_youtube.clone()}
-                        is_video={audio_props.is_video.clone()}
-                    />
-                }
-            } else {
-                html! {}
-            }
-        }
+        <AudioPlayerBar />
         </div>
         {drawer_options}
         </>

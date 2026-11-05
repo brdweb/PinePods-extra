@@ -10,30 +10,22 @@ use yewdux::prelude::*;
 
 /// Isolated AudioPlayer wrapper — owns the UIState subscription so that
 /// audio state changes never cause parent page components to re-render.
-/// When this device is idle (or paused) and a Music Assistant player has an
-/// episode, the bar follows that player instead.
+/// While this browser is not playing, the bar follows a Music Assistant
+/// speaker when `show_ma_now_playing` says so (see `PlaybackFocus`).
 #[function_component(AudioPlayerBar)]
 pub fn audio_player_bar() -> Html {
     let (audio_state, _) = use_store::<UIState>();
     let (ma, _) = use_store::<MusicAssistantState>();
     let (np, _) = use_store::<NowPlayingState>();
-    let candidates: Vec<PlaybackCandidate> = np
-        .ma_devices
-        .iter()
-        .map(|d| PlaybackCandidate {
-            device_id: d.device_id.clone(),
-            device_type: d.device_type.clone(),
-            episode_id: d.episode_id,
-            playing: d.playing,
-            updated_at: d.updated_at,
-        })
-        .collect();
+    let candidates: Vec<PlaybackCandidate> =
+        np.ma_devices.iter().map(PlaybackCandidate::from).collect();
     let local_playing = audio_state.audio_playing == Some(true);
     if show_ma_now_playing(
         ma.enabled,
         local_playing,
+        audio_state.currently_playing.is_some(),
         &candidates,
-        ma.focus_device_id.as_deref(),
+        &ma.focus,
     ) {
         return html! { <MaNowPlayingBar /> };
     }

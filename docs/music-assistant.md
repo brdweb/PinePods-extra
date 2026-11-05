@@ -232,6 +232,8 @@ PinePods, not Music Assistant, picks what plays next, in the same order as local
 
 The web now-playing bar shows a Next button when the device advertises `next`; the 15 second skips use rewind and fast-forward icons. Sending an episode to a speaker adds `playlist_id` only when that episode is the one loaded locally and that playback came from a playlist. When nothing is up next, the bar shows an info message instead of an error.
 
+The web bar follows whichever player started last. Starting playback in this browser makes it the bar's player. Sending an episode to a speaker, or a speaker starting to play from any device, makes that speaker the bar's player. While this browser is playing, the bar is always the local player. A paused local episode keeps the bar after a speaker was stopped, so Play resumes it here. Until something starts after a page load, a paused local episode gives way to a speaker that has an episode loaded. Every web page shows the bar this way.
+
 While the bar follows a speaker, the keyboard controls the speaker with the same keys as local web: Space plays or pauses, and the left and right arrows skip 15 seconds. Keys typed into a text field, and keys held with Alt, Ctrl or Meta, are left alone. The local player's own key handler ignores these keys while the bar follows a speaker, so one key press acts on the speaker only.
 
 The bar expands into the same fullscreen view as the local player. For the speaker's episode it shows chapters (tap to seek the speaker), show notes, people, a sleep timer, and the transcript. The transcript follows playback and keeps the current line in view; scrolling it pauses that so you can read, and Follow playback or tapping a timestamp resumes it.
