@@ -1,7 +1,7 @@
 use crate::components::app_drawer::App_drawer;
-use crate::components::audio::AudioPlayer;
+use crate::components::audio_player_bar::AudioPlayerBar;
 use crate::components::click_events::create_on_title_click;
-use crate::components::context::{AppState, UIState};
+use crate::components::context::AppState;
 use crate::components::episode_list_view::EpisodeListView;
 use crate::components::gen_components::{FallbackImage, Search_nav, UseScrollToTop};
 use crate::components::loading::Loading;
@@ -65,7 +65,6 @@ pub fn person(props: &PersonProps) -> Html {
     let auth = use_auth();
     let user_id = use_selector(|s: &AppState| s.user_details.as_ref().map(|u| u.UserID)).as_ref().clone();
     let api_key_opt = use_selector(|s: &AppState| s.auth_details.as_ref().map(|a| a.api_key.clone())).as_ref().clone();
-    let (audio_state, _) = use_store::<UIState>();
 
     let load = use_state(|| Load::Loading);
     let profile = use_state(|| None::<PersonProfile>);
@@ -343,30 +342,7 @@ pub fn person(props: &PersonProps) -> Html {
                 <Search_nav />
                 <UseScrollToTop />
                 <div class="pp-page">{ body }</div>
-                {
-                    if let Some(audio_props) = &audio_state.currently_playing {
-                        html! {
-                            <AudioPlayer
-                                episode={audio_props.episode.clone()}
-                                src={audio_props.src.clone()}
-                                title={audio_props.title.clone()}
-                                description={audio_props.description.clone()}
-                                release_date={audio_props.release_date.clone()}
-                                artwork_url={audio_props.artwork_url.clone()}
-                                duration={audio_props.duration.clone()}
-                                episode_id={audio_props.episode_id.clone()}
-                                duration_sec={audio_props.duration_sec.clone()}
-                                start_pos_sec={audio_props.start_pos_sec.clone()}
-                                end_pos_sec={audio_props.end_pos_sec.clone()}
-                                offline={audio_props.offline.clone()}
-                                is_youtube={audio_props.is_youtube.clone()}
-                                is_video={audio_props.is_video.clone()}
-                            />
-                        }
-                    } else {
-                        html! {}
-                    }
-                }
+                <AudioPlayerBar />
             </div>
             <App_drawer />
         </>

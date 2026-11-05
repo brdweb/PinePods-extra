@@ -29,7 +29,7 @@ use crate::requests::music_assistant::{
     SleepChoice, SLEEP_CHOICES, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
     transport_shown, unix_now,
     GroupPlanError, MaPlayer,
-    MusicAssistantState, PlaybackCandidate,
+    MusicAssistantState, PlaybackCandidate, PlaybackFocus, playing_speakers, started_speaker,
 };
 use crate::requests::notify::{toast_error, toast_info};
 use crate::requests::now_playing::{send_command, NowPlayingDevice, NowPlayingState, SleepTimer};
@@ -315,19 +315,10 @@ pub fn ma_now_playing_bar() -> Html {
     // Show notes are fetched when asked for, for the episode then playing.
     let notes = use_state(|| None::<Episode>);
 
-    let candidates: Vec<PlaybackCandidate> = np
-        .ma_devices
-        .iter()
-        .map(|d| PlaybackCandidate {
-            device_id: d.device_id.clone(),
-            device_type: d.device_type.clone(),
-            episode_id: d.episode_id,
-            playing: d.playing,
-            updated_at: d.updated_at,
-        })
-        .collect();
+    let candidates: Vec<PlaybackCandidate> =
+        np.ma_devices.iter().map(PlaybackCandidate::from).collect();
     let device: Option<NowPlayingDevice> = if ma.enabled {
-        choose_playback(&candidates, ma.focus_device_id.as_deref()).and_then(|c| {
+        choose_playback(&candidates, ma.focus.speaker_id()).and_then(|c| {
             np.ma_devices
                 .iter()
                 .find(|d| d.device_id == c.device_id)
@@ -860,6 +851,11 @@ pub fn ma_now_playing_bar() -> Html {
                     <div class="player-fs-scrub-area">{ scrub("player-range") }</div>
                     <div class="player-fs-controls">
                         <div class="player-fs-side-btns player-fs-side-btns--left">
+                            if device.supports("stop") {
+                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop.clone()}>
+                                    <i class="ph ph-stop"></i>
+                                </button>
+                            }
                             if device.supports("skip_back") {
                                 <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.skip_back").to_string()} onclick={on_back.clone()}>
                                     <i class="ph ph-rewind"></i>
@@ -880,11 +876,6 @@ pub fn ma_now_playing_bar() -> Html {
                             if device.supports("next") {
                                 <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.next").to_string()} onclick={on_next.clone()}>
                                     <i class="ph ph-skip-forward"></i>
-                                </button>
-                            }
-                            if device.supports("stop") {
-                                <button type="button" class="player-fs-ctrl" title={i18n.t("music_assistant.stop").to_string()} onclick={on_stop.clone()}>
-                                    <i class="ph ph-stop"></i>
                                 </button>
                             }
                         </div>
@@ -1012,6 +1003,34 @@ pub fn music_assistant_host() -> Html {
     }
 }
 
+/// Keeps `MusicAssistantState::focus` on the player that started last.
+/// Mounted once at the app root: `MusicAssistantHost` remounts with every
+/// page, which would re-report speakers that were already playing as new
+/// starts.
+#[function_component(PlaybackFocusTracker)]
+pub fn playback_focus_tracker() -> Html {
+    let local_playing = use_selector(|s: &UIState| s.audio_playing == Some(true));
+    use_effect_with(*local_playing, |playing| {
+        if *playing {
+            Dispatch::<MusicAssistantState>::global()
+                .reduce_mut(|s| s.focus = PlaybackFocus::Local);
+        }
+        || ()
+    });
+    let speakers_playing = use_selector(|s: &NowPlayingState| playing_speakers(&s.ma_devices));
+    let seen = use_mut_ref(Vec::<String>::new);
+    use_effect_with((*speakers_playing).clone(), move |now| {
+        let started = started_speaker(&seen.borrow(), now).map(str::to_string);
+        if let Some(id) = started {
+            Dispatch::<MusicAssistantState>::global()
+                .reduce_mut(|s| s.focus = PlaybackFocus::Speaker(id));
+        }
+        *seen.borrow_mut() = now.clone();
+        || ()
+    });
+    html! {}
+}
+
 #[derive(Clone, PartialEq)]
 struct ResumePrompt {
     player_id: String,
@@ -1051,7 +1070,7 @@ fn send_episode(
         args["playlist_id"] = json!(pid);
     }
     Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
-        s.focus_device_id = Some(device_id);
+        s.focus = PlaybackFocus::Speaker(device_id);
         s.picker_open = false;
         s.pending_episode = None;
     });

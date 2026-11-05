@@ -1,8 +1,8 @@
 use crate::components::app_drawer::App_drawer;
-use crate::components::audio::AudioPlayer;
+use crate::components::audio_player_bar::AudioPlayerBar;
 use crate::components::click_events::create_on_title_click;
 use crate::components::context::{
-    AppState, EpisodeStatusState, HomePageState, PlaylistDataState, UIState,
+    AppState, EpisodeStatusState, HomePageState, PlaylistDataState,
 };
 use crate::components::episode_list_item::EpisodeListItem;
 use crate::components::gen_components::{empty_message, FallbackImage, Search_nav, UseScrollToTop};
@@ -325,7 +325,6 @@ pub fn home() -> Html {
     let (state, dispatch) = use_store::<AppState>();
     let (home_state, home_dispatch) = use_store::<HomePageState>();
     let (playlist_state, playlist_dispatch) = use_store::<PlaylistDataState>();
-    let (audio_state, _audio_dispatch) = use_store::<UIState>();
     let loading = use_state(|| true);
     let history = BrowserHistory::new();
     let api_key = state.auth_details.as_ref().map(|ud| ud.api_key.clone());
@@ -635,24 +634,7 @@ pub fn home() -> Html {
             }
 
             // Audio Player
-            if let Some(audio_props) = &audio_state.currently_playing {
-                <AudioPlayer
-                    episode={audio_props.episode.clone()}
-                    src={audio_props.src.clone()}
-                    title={audio_props.title.clone()}
-                    description={audio_props.description.clone()}
-                    release_date={audio_props.release_date.clone()}
-                    artwork_url={audio_props.artwork_url.clone()}
-                    duration={audio_props.duration.clone()}
-                    episode_id={audio_props.episode_id.clone()}
-                    duration_sec={audio_props.duration_sec.clone()}
-                    start_pos_sec={audio_props.start_pos_sec.clone()}
-                    end_pos_sec={audio_props.end_pos_sec.clone()}
-                    offline={audio_props.offline.clone()}
-                    is_youtube={audio_props.is_youtube.clone()}
-                        is_video={audio_props.is_video.clone()}
-                />
-            }
+            <AudioPlayerBar />
         </div>
         <App_drawer />
         </>

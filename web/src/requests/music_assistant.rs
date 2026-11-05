@@ -106,6 +106,28 @@ pub struct PendingEpisode {
     pub is_youtube: bool,
 }
 
+/// Who the bottom bar follows while this browser is not playing. The last
+/// start wins: this browser starting playback, the user sending audio to a
+/// speaker, or a speaker starting to play.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum PlaybackFocus {
+    /// Nothing has started this session.
+    #[default]
+    Unset,
+    Local,
+    /// Now-playing `device_id` of the speaker.
+    Speaker(String),
+}
+
+impl PlaybackFocus {
+    pub fn speaker_id(&self) -> Option<&str> {
+        match self {
+            PlaybackFocus::Speaker(id) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// Shared by the settings page, the speaker picker, and the now-playing bar.
 /// Speaker controls read `enabled` and stay hidden until it is true.
 #[derive(Default, Clone, PartialEq, Store)]
@@ -120,8 +142,8 @@ pub struct MusicAssistantState {
     pub picker_open: bool,
     /// Set when an episode menu asks the picker to start that episode.
     pub pending_episode: Option<PendingEpisode>,
-    /// Speaker the user last sent audio to. The now-playing bar prefers it.
-    pub focus_device_id: Option<String>,
+    /// Which player the bottom bar follows while this browser is not playing.
+    pub focus: PlaybackFocus,
     /// Unix seconds when a player last had transport, a loaded episode, or
     /// relay playback. A later idle or unavailable poll still shows controls.
     pub recent_transport: HashMap<String, i64>,
@@ -223,12 +245,6 @@ pub fn open_speaker_picker(episode_id: i32, is_youtube: bool) {
             is_youtube,
         });
         s.picker_open = true;
-    });
-}
-
-pub fn focus_player(device_id: &str) {
-    Dispatch::<MusicAssistantState>::global().reduce_mut(|s| {
-        s.focus_device_id = Some(device_id.to_string());
     });
 }
 
@@ -525,6 +541,18 @@ pub struct PlaybackCandidate {
     pub updated_at: i64,
 }
 
+impl From<&crate::requests::now_playing::NowPlayingDevice> for PlaybackCandidate {
+    fn from(d: &crate::requests::now_playing::NowPlayingDevice) -> Self {
+        PlaybackCandidate {
+            device_id: d.device_id.clone(),
+            device_type: d.device_type.clone(),
+            episode_id: d.episode_id,
+            playing: d.playing,
+            updated_at: d.updated_at,
+        }
+    }
+}
+
 pub fn is_music_assistant(device_type: &str) -> bool {
     device_type.eq_ignore_ascii_case("music_assistant")
 }
@@ -580,33 +608,41 @@ pub fn playback_state_for<'a>(player: &'a MaPlayer, players: &'a [MaPlayer]) -> 
     player.state.as_str()
 }
 
-/// Which MA device the now-playing bar should show.
-/// Prefers the speaker the user last targeted, then one that is playing,
-/// then the freshest snapshot that has an episode loaded.
-/// The now-playing bar follows Music Assistant when the bridge is on, this
-/// device is not the one playing, and some MA player has an episode loaded.
+/// The bar follows a Music Assistant speaker when the bridge is on, this
+/// browser is not playing, a speaker has an episode loaded, and this
+/// browser did not start the episode it still has loaded more recently.
 pub fn show_ma_now_playing(
     enabled: bool,
     local_playing: bool,
+    local_loaded: bool,
     devices: &[PlaybackCandidate],
-    focus_device_id: Option<&str>,
+    focus: &PlaybackFocus,
 ) -> bool {
-    enabled && !local_playing && choose_playback(devices, focus_device_id).is_some()
+    enabled
+        && !local_playing
+        && !(local_loaded && *focus == PlaybackFocus::Local)
+        && choose_playback(devices, focus.speaker_id()).is_some()
 }
 
-/// Playback speed stays available for this browser and for other remote
-/// devices. It is hidden while the UI is following a Music Assistant speaker:
-/// those episodes are sent as tracks, and Music Assistant only tempo-shifts
-/// podcast episodes and audiobooks.
-pub fn show_playback_speed(
-    enabled: bool,
-    local_playing: bool,
-    devices: &[PlaybackCandidate],
-    focus_device_id: Option<&str>,
-) -> bool {
-    !show_ma_now_playing(enabled, local_playing, devices, focus_device_id)
+/// Device ids of speakers the relay reports playing an episode, sorted.
+pub fn playing_speakers(devices: &[crate::requests::now_playing::NowPlayingDevice]) -> Vec<String> {
+    let mut ids: Vec<String> = devices
+        .iter()
+        .filter(|d| is_music_assistant(&d.device_type) && d.episode_id != 0 && d.playing)
+        .map(|d| d.device_id.clone())
+        .collect();
+    ids.sort();
+    ids
 }
 
+/// A speaker playing in `now` that was not playing in `before`: it just started.
+pub fn started_speaker<'a>(before: &[String], now: &'a [String]) -> Option<&'a str> {
+    now.iter().find(|id| !before.contains(id)).map(String::as_str)
+}
+
+/// Which MA device the now-playing bar should show.
+/// Prefers the speaker the user last targeted, then one that is playing,
+/// then the freshest snapshot that has an episode loaded.
 pub fn choose_playback<'a>(
     devices: &'a [PlaybackCandidate],
     focus_device_id: Option<&str>,
@@ -1335,13 +1371,61 @@ mod tests {
             "ma:1:den"
         );
         assert!(choose_playback(&[], None).is_none());
-        assert!(show_ma_now_playing(true, false, &devices, None));
-        assert!(!show_ma_now_playing(true, true, &devices, None));
-        assert!(!show_ma_now_playing(false, false, &devices, None));
-        assert!(!show_playback_speed(true, false, &devices, None));
-        assert!(show_playback_speed(true, true, &devices, None));
-        assert!(show_playback_speed(false, false, &devices, None));
-        assert!(show_playback_speed(true, false, &[], None));
+        assert!(show_ma_now_playing(true, false, false, &devices, &PlaybackFocus::Unset));
+        assert!(!show_ma_now_playing(true, true, false, &devices, &PlaybackFocus::Unset));
+        assert!(!show_ma_now_playing(false, false, false, &devices, &PlaybackFocus::Unset));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn bar_follows_the_last_started_player() {
+        // A stopped speaker keeps its episode loaded.
+        let stopped = vec![candidate("ma:1:kitchen", 4, false, 10)];
+        let kitchen = PlaybackFocus::Speaker("ma:1:kitchen".into());
+        // Local started after the speaker and is now paused: stay local.
+        assert!(!show_ma_now_playing(true, false, true, &stopped, &PlaybackFocus::Local));
+        assert!(show_ma_now_playing(true, false, false, &stopped, &PlaybackFocus::Local));
+        assert!(show_ma_now_playing(true, false, true, &stopped, &kitchen));
+        assert!(show_ma_now_playing(true, false, true, &stopped, &PlaybackFocus::Unset));
+        assert!(!show_ma_now_playing(true, true, true, &stopped, &kitchen));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn speaker_start_is_a_new_playing_id() {
+        use crate::requests::now_playing::NowPlayingDevice;
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(started_speaker(&[], &ids(&["ma:1:kitchen"])), Some("ma:1:kitchen"));
+        assert_eq!(
+            started_speaker(&ids(&["ma:1:kitchen"]), &ids(&["ma:1:kitchen"])),
+            None
+        );
+        assert_eq!(
+            started_speaker(&ids(&["ma:1:kitchen"]), &ids(&["ma:1:den", "ma:1:kitchen"])),
+            Some("ma:1:den")
+        );
+        assert_eq!(
+            started_speaker(&ids(&["ma:1:den", "ma:1:kitchen"]), &ids(&["ma:1:kitchen"])),
+            None
+        );
+        assert_eq!(started_speaker(&ids(&["ma:1:kitchen"]), &[]), None);
+
+        let device = |id: &str, kind: &str, episode: i32, playing: bool| NowPlayingDevice {
+            device_id: id.into(),
+            device_type: kind.into(),
+            episode_id: episode,
+            playing,
+            ..Default::default()
+        };
+        let mut devices = vec![
+            device("ma:1:den", "music_assistant", 3, true),
+            device("ma:1:bed", "music_assistant", 0, true),
+            device("ma:1:attic", "music_assistant", 5, false),
+            device("web-1", "Web", 2, true),
+        ];
+        assert_eq!(playing_speakers(&devices), ids(&["ma:1:den"]));
+        devices.push(device("ma:1:bath", "music_assistant", 7, true));
+        assert_eq!(playing_speakers(&devices), ids(&["ma:1:bath", "ma:1:den"]));
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]

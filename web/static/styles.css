@@ -6516,7 +6516,7 @@ input:checked + .notification-toggle-slider:before {
   font-size: 11px; color: var(--text-secondary-color);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ma-sleep-btn { display: inline-flex; align-items: center; gap: 4px; }
+.player-btn.ma-sleep-btn { display: inline-flex; align-items: center; gap: 4px; width: auto; min-width: 36px; padding: 0 6px; }
 .ma-sleep-label { font-size: 12px; font-variant-numeric: tabular-nums; }
 .ma-sleep-choice {
   display: block; width: 100%; text-align: left;
@@ -6527,6 +6527,10 @@ input:checked + .notification-toggle-slider:before {
 .ma-now .player-fs-footer.ma-fs-footer {
   flex-direction: column; align-items: stretch; gap: 4px;
   width: 100%; max-width: 480px; margin: 0 auto;
+}
+.ma-fs-footer .ma-volume > .ma-volume-label {
+  flex: 0 0 96px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ma-members { display: flex; flex-direction: column; gap: 2px; }
 .ma-member-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
@@ -6543,7 +6547,7 @@ input:checked + .notification-toggle-slider:before {
    to set z-index: 80, which put this drawer under its own scrim: the dim overlay
    covered the speaker list, clicks hit the scrim, and the list could not scroll. */
 .nc-panel.ma-picker { z-index: 1302; }
-.player-fs-topbar-right { display: flex; align-items: center; gap: 4px; }
+.player-fs-topbar-right { display: flex; align-items: center; gap: 4px; justify-self: end; }
 
 @keyframes spinner-rotate {
     0% {
@@ -8093,6 +8097,8 @@ body.search-takeover-open .drawer-icon { display: none; }
         transform 280ms cubic-bezier(.22,1,.36,1) 100ms;
     z-index: 3;
     overflow-y: auto;
+    /* Keep content centered on the viewport when a scrollbar appears. */
+    scrollbar-gutter: stable both-edges;
 }
 .audio-player.expanded .player-fs {
     opacity: 1; transform: translateY(0);
@@ -8106,13 +8112,19 @@ body.search-takeover-open .drawer-icon { display: none; }
 }
 
 .player-fs-topbar {
-    display: flex; align-items: center; justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr minmax(0, auto) 1fr;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 6px;
     flex-shrink: 0;
 }
+.player-fs-topbar > :first-child { justify-self: start; }
 .player-fs-eyebrow {
     font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
     color: var(--text-secondary-color);
+    min-width: 0; text-align: center;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 .player-fs-main {
@@ -8193,6 +8205,12 @@ body.search-takeover-open .drawer-icon { display: none; }
     min-width: 120px; /* matches 2×56px + 8px gap on right side */
 }
 .player-fs-side-btns--left { justify-content: flex-end; }
+/* `.audio-player button` (legacy) adds margin-right: 20px to every button,
+   which pushes each centered row of the fullscreen player to the left. Rows
+   here space their buttons with `gap`. */
+.audio-player .player-fs .player-btn,
+.audio-player .player-fs .player-fs-ctrl,
+.audio-player .player-fs .iconbtn { margin-right: 0; }
 
 .player-fs-footer {
     display: flex; align-items: center; justify-content: center; gap: 14px;
