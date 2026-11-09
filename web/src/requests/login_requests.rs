@@ -411,6 +411,13 @@ pub async fn login_new_server(
 }
 
 #[allow(dead_code)]
+/// The route the auth check stores and returns to: the path and query only, never the full URL.
+/// In the desktop app the URL is "tauri://localhost" (no trailing "/"), which is not a route; its
+/// path is "/", so nothing is stored and the start page logic runs (upstream #1093).
+pub(crate) fn route_from_location(pathname: &str, search: &str) -> String {
+    format!("{pathname}{search}")
+}
+
 pub(crate) fn use_check_authentication(_dispatch: Dispatch<AppState>, current_route: &str) {
     let window = web_sys::window().expect("no global `window` exists");
     let session_storage = window.session_storage().unwrap().unwrap();
@@ -1035,5 +1042,26 @@ mod store_state_error_tests {
         assert_eq!(store_state_error(502, ""), fallback);
         assert_eq!(store_state_error(502, "<html>Bad Gateway</html>"), fallback);
         assert_eq!(store_state_error(502, r#"{"detail":"nope"}"#), fallback);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn desktop_start_url_is_the_root_route() {
+        // WebKitGTK reports pathname "/" and an empty search for "tauri://localhost". The auth
+        // check stores a route only when it does not end with "/".
+        let route = route_from_location("/", "");
+        assert_eq!(route, "/");
+        assert!(route.ends_with('/'), "the desktop start page must not be stored as requested_route");
+    }
+
+    #[wasm_bindgen_test]
+    fn deep_links_keep_their_path_and_query() {
+        assert_eq!(route_from_location("/episode", "?episode_id=7&podcast_id=2"), "/episode?episode_id=7&podcast_id=2");
+        assert_eq!(route_from_location("/podcasts", ""), "/podcasts");
     }
 }

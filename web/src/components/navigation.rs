@@ -3,7 +3,7 @@ use crate::components::context::{AppState, NotificationState, UserPreferencesSta
 use crate::components::gen_funcs::generate_gravatar_url;
 use crate::components::loading::Loading;
 use crate::requests::login_requests::{
-    call_get_time_info, call_verify_key, use_check_authentication,
+    call_get_time_info, call_verify_key, route_from_location, use_check_authentication,
 };
 use crate::requests::setting_reqs::{call_get_theme, call_get_unmatched_podcasts};
 use i18nrs::yew::use_translation;
@@ -39,13 +39,10 @@ pub fn navigation_handler(props: &NavigationHandlerProps) -> Html {
 
         use_effect_with((), move |_| {
             if let Some(window) = web_sys::window() {
-                // Use the path (and query) only, not the full URL: in the desktop app the URL is
-                // "tauri://localhost" (no trailing "/"), which is not a route.
                 let location = window.location();
-                let current_route = format!(
-                    "{}{}",
-                    location.pathname().unwrap_or_default(),
-                    location.search().unwrap_or_default()
+                let current_route = route_from_location(
+                    &location.pathname().unwrap_or_default(),
+                    &location.search().unwrap_or_default(),
                 );
 
                 // First check local storage for saved state
