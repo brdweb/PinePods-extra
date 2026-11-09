@@ -6,9 +6,9 @@ Personal or machine-specific notes never go in tracked files. Claude Code auto-l
 
 ## Project
 
-This repository is a fork of [madeofpendletonwool/PinePods](https://github.com/madeofpendletonwool/PinePods) (GPL-3.0). Pull requests here target `main`. PinePods is a self-hosted podcast server (Postgres or MySQL/MariaDB, and Valkey or Redis). Package manifests are version 0.9.1.
+This repository is a fork of [madeofpendletonwool/PinePods](https://github.com/madeofpendletonwool/PinePods) (GPL-3.0). Pull requests here target `main`. PinePods is a self-hosted podcast server (Postgres, MySQL/MariaDB or SQLite; Valkey or Redis is optional). Package manifests are version 0.9.2.
 
-- `rust-api/` — Rust 2021 Axum API (`pinepods-api`, `rust-version` 1.99). `Cargo.lock` is committed. Schema SQL is `database_functions/`, applied by `startup/setup_database_new.py`.
+- `rust-api/` — Rust 2021 Axum API (`pinepods-api`, `rust-version` 1.99). `Cargo.lock` is committed. Schema SQL is `database_functions/`, applied by `startup/setup_database_new.py`. A new SQLite database starts from the generated `database_functions/sqlite_baseline.sql`; a migration that is not in the baseline runs on SQLite only when it is registered with `sqlite=True` and handles `db_type == "sqlite"`. Code outside `database/` reaches all three backends through `dialect_match!`, whose `pg` arm also runs on SQLite.
 - `web/` — Yew frontend, Trunk, feature `server_build`. The Tauri shell is `web/src-tauri/`.
 - `mobile/` — Flutter app. CI pins Flutter 3.47.9. The mobile app has no Music Assistant features.
 
@@ -16,7 +16,7 @@ This fork adds Podcasting 2.0 on web and mobile (`docs/podcasting2-api.md`) and 
 
 ## Commands
 
-**API tests.** `.github/workflows/rust-api-tests.yml`, on pull requests that change `rust-api/**`, `database_functions/**`, `startup/setup_database_new.py`, or that workflow. Stable Rust, Python 3.12, one job per database. Comments are the working directory. CI does not run `cargo fmt` or `cargo clippy`. Without `PINEPODS_TEST_EXTERNAL_SERVICES`, `scripts/integration-tests.sh` starts Postgres, MariaDB, and Valkey (`rust-api/tests/README.md`); `--db postgres` and `--db postgresql` are the same backend.
+**API tests.** `.github/workflows/rust-api-tests.yml`, on pull requests that change `rust-api/**`, `database_functions/**`, `startup/setup_database_new.py`, or that workflow. Stable Rust, Python 3.12, one job per database (Postgres, MariaDB, SQLite). Comments are the working directory. CI does not run `cargo fmt` or `cargo clippy`. Without `PINEPODS_TEST_EXTERNAL_SERVICES`, `scripts/integration-tests.sh` starts Postgres, MariaDB, and Valkey (`rust-api/tests/README.md`); `--db postgres` and `--db postgresql` are the same backend.
 
 ```sh
 # repo root
@@ -28,6 +28,7 @@ python -m pip install -q mariadb
 cargo test --lib --bins
 PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python scripts/integration-tests.sh --db postgresql
 PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python scripts/integration-tests.sh --db mariadb
+PINEPODS_TEST_EXTERNAL_SERVICES=1 PINEPODS_TEST_PYTHON=python scripts/integration-tests.sh --db sqlite
 ```
 
 **OpenAPI.** `.github/workflows/openapi.yml` when `rust-api/**` changes. In `rust-api/`, then the repo root. The job fails unless `git diff --exit-code rust-api/openapi.json` is clean:
@@ -111,7 +112,7 @@ Tag and release workflows, not pull requests, run `flutter build apk --release -
 
 Use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build(deps):`, `chore:`). The PR title uses the same form, because squash merges take the title as the commit subject. Never add `Co-Authored-By` or any other AI co-author or attribution trailer to a commit message or a PR body.
 
-Pass `--repo brdweb/PinePods-extra` to every `gh` command so nothing targets upstream. Upstream syncs: fetch `upstream` (`madeofpendletonwool/PinePods`), branch `sync/upstream-YYYY-MM-DD`, `git merge upstream/main`, resolve, run the pull-request commands for every surface the merge touches, and open `chore: sync with upstream PinePods main` against the fork's `main`. Merge it with a merge commit, not a squash, so upstream history stays reachable.
+Pass `--repo brdweb/PinePods-extra` to every `gh` command so nothing targets upstream. Upstream syncs: fetch `upstream` (`madeofpendletonwool/PinePods`), branch `sync/upstream-YYYY-MM-DD`, `git merge upstream/main`, resolve, run the pull-request commands for every surface the merge touches, and open `chore: sync with upstream PinePods main` against the fork's `main`. Merge it with a merge commit, not a squash, so upstream history stays reachable. Never hand-resolve `database_functions/sqlite_baseline.sql`: take either side, then regenerate it from a freshly migrated Postgres with `python -m database_functions.sqlite_baseline <postgresql dsn>`. The Postgres integration test `sqlite_baseline_matches_the_migrations` fails until it matches. Take either side of `rust-api/openapi.json` and regenerate it the same way.
 
 ## Review guidance
 

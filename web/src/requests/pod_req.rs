@@ -296,6 +296,75 @@ pub async fn call_refresh_podcast_details(
     }
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize, Debug, Clone)]
+pub struct PodcastRefreshResult {
+    /// `refreshed`, `throttled` or `failed`.
+    pub status: String,
+    pub detail: Option<String>,
+    pub new_episodes: Vec<serde_json::Value>,
+}
+
+#[allow(dead_code)]
+async fn error_detail(response: gloo_net::http::Response) -> Error {
+    let status = response.status_text();
+    let message = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v["detail"].as_str().or(v["message"].as_str()).map(str::to_string))
+        .unwrap_or(status);
+    Error::msg(message)
+}
+
+#[allow(dead_code)]
+/// Check one podcast for new episodes now (feed, YouTube channel or local folder).
+pub async fn call_refresh_podcast(server_name: &str, api_key: &str, podcast_id: i32) -> Result<PodcastRefreshResult, Error> {
+    let url = format!("{}/api/data/podcast/{}/refresh", server_name, podcast_id);
+    let response = Request::post(&url).header("Api-Key", api_key).send().await?;
+    cache::invalidate_prefix(&format!("{}/api/data/get_podcast_details", server_name));
+    cache::invalidate_prefix(&format!("{}/api/data/return_pods", server_name));
+    if response.ok() {
+        Ok(response.json().await?)
+    } else {
+        Err(error_detail(response).await)
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Serialize, Deserialize)]
+struct AutoRefresh {
+    auto_refresh: bool,
+}
+
+#[allow(dead_code)]
+/// Whether the scheduled refresh and Refresh all check this podcast.
+pub async fn call_get_auto_refresh(server_name: &str, api_key: &str, podcast_id: i32) -> Result<bool, Error> {
+    let url = format!("{}/api/data/podcast/{}/auto_refresh", server_name, podcast_id);
+    let response = Request::get(&url).header("Api-Key", api_key).send().await?;
+    if response.ok() {
+        Ok(response.json::<AutoRefresh>().await?.auto_refresh)
+    } else {
+        Err(error_detail(response).await)
+    }
+}
+
+#[allow(dead_code)]
+pub async fn call_set_auto_refresh(server_name: &str, api_key: &str, podcast_id: i32, auto_refresh: bool) -> Result<(), Error> {
+    let url = format!("{}/api/data/podcast/{}/auto_refresh", server_name, podcast_id);
+    let response = Request::put(&url)
+        .header("Api-Key", api_key)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&AutoRefresh { auto_refresh })?)?
+        .send()
+        .await?;
+    if response.ok() {
+        Ok(())
+    } else {
+        Err(error_detail(response).await)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RemovePodcastValues {
     pub podcast_id: i32,
@@ -769,6 +838,9 @@ pub struct QueuePodcastRequest {
     pub playing_episode_id: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playing_is_youtube: Option<bool>,
+    /// "top" or "bottom"; absent uses the user's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
 }
 
 // Define a struct to match the response JSON structure
@@ -2479,6 +2551,9 @@ pub struct BulkEpisodeActionRequest {
     pub episode_ids: Vec<i32>,
     pub user_id: i32,
     pub is_youtube: Option<bool>,
+    /// bulk_queue only: "top" or "bottom"; absent uses the user's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -3836,6 +3911,25 @@ pub async fn call_get_episode_transcript(
     } else {
         Ok(None)
     }
+}
+
+/// The generated transcript as a file: format is "srt", "vtt" or "txt".
+pub async fn call_export_episode_transcript(
+    server_name: &str,
+    api_key: &str,
+    user_id: i32,
+    episode_id: i32,
+    format: &str,
+) -> Result<String, Error> {
+    let url = format!(
+        "{}/api/data/episode_transcript_export?episode_id={}&user_id={}&format={}",
+        server_name, episode_id, user_id, format
+    );
+    let response = Request::get(&url).header("Api-Key", api_key).send().await?;
+    if !response.ok() {
+        return Err(Error::msg(format!("Transcript download failed: {}", response.status_text())));
+    }
+    Ok(response.text().await?)
 }
 
 #[derive(Serialize, Debug)]

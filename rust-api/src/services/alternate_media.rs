@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use sqlx::Row;
 
+use crate::database::dialect::dialect_match;
 use crate::database::DatabasePool;
 use crate::error::{AppError, AppResult};
 use crate::services::podcasting2::AlternateEnclosure;
@@ -164,9 +165,9 @@ pub async fn plan_for_episode(
 }
 
 async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppResult<(String, bool)> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            let row = sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            let row = q::query(
                 r#"SELECT e.episodeurl AS episodeurl, COALESCE(e.is_video, FALSE) AS is_video
                    FROM "Episodes" e
                    JOIN "Podcasts" p ON p.feedid = e.feedid
@@ -181,8 +182,8 @@ async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppRe
             let url: String = row.try_get("episodeurl")?;
             let is_video: bool = row.try_get("is_video").unwrap_or(false);
             Ok((url, is_video))
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let row = sqlx::query(
                 "SELECT e.EpisodeURL AS episodeurl, COALESCE(e.IsVideo, 0) AS is_video
                  FROM Episodes e
@@ -201,8 +202,8 @@ async fn load_primary(db: &DatabasePool, episode_id: i32, user_id: i32) -> AppRe
                 .or_else(|_| row.try_get::<i8, _>("is_video").map(|n| n != 0))
                 .unwrap_or(false);
             Ok((url, is_video))
-        }
-    }
+        },
+    })
 }
 
 fn primary_option(primary: &PrimaryEnclosure) -> MediaOption {

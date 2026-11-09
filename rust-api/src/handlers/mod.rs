@@ -10,6 +10,7 @@ pub mod notifications;
 // pub mod async_tasks_examples;  // File was deleted
 pub mod refresh;
 pub mod feed_problems;
+pub mod podcast_refresh;
 pub mod update_services;
 pub mod proxy;
 pub mod settings;
@@ -23,6 +24,7 @@ pub mod nowplaying;
 pub mod music_assistant;
 pub mod value4value;
 pub mod people;
+pub mod transcript_search;
 
 // Common handler utilities
 use axum::http::HeaderMap;

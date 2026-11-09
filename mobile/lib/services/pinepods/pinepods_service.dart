@@ -454,6 +454,8 @@ class PinepodsService {
     bool isYoutube, {
     int? playingEpisodeId,
     bool? playingIsYoutube,
+    /// 'top' or 'bottom'; null uses the user's default.
+    String? position,
   }) async {
     if (_server == null || _apiKey == null) {
       throw Exception('Not authenticated');
@@ -469,6 +471,7 @@ class PinepodsService {
         'is_youtube': isYoutube,
         if (playingEpisodeId != null) 'playing_episode_id': playingEpisodeId,
         if (playingIsYoutube != null) 'playing_is_youtube': playingIsYoutube,
+        if (position != null) 'position': position,
       });
 
       final response = await _post(
@@ -590,6 +593,56 @@ class PinepodsService {
         message = (jsonDecode(response.body) as Map<String, dynamic>)['message'] as String? ?? message;
       } catch (_) {}
       throw Exception(message);
+    }
+  }
+
+  // Check one podcast for new episodes now: its feed, YouTube channel or
+  // local folder. Returns how many episodes it added (YouTube channels
+  // report none; reload the list). Throws with the server's reason when the
+  // check failed or the host asked Pinepods to wait.
+  Future<int> refreshPodcast(int podcastId) async {
+    if (_server == null || _apiKey == null) {
+      throw Exception('Not authenticated');
+    }
+    final url = Uri.parse('$_server/api/data/podcast/$podcastId/refresh');
+    final response = await _client
+        .post(url, headers: {'Api-Key': _apiKey!})
+        .timeout(const Duration(seconds: 90));
+    final body = response.body.isEmpty ? <String, dynamic>{} : jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw Exception(body['detail'] ?? body['message'] ?? 'HTTP ${response.statusCode}');
+    }
+    if (body['status'] != 'refreshed') {
+      throw Exception(body['detail'] ?? body['status']);
+    }
+    return (body['new_episodes'] as List?)?.length ?? 0;
+  }
+
+  // Whether the scheduled refresh and Refresh all check this podcast.
+  Future<bool> getAutoRefresh(int podcastId) async {
+    if (_server == null || _apiKey == null) {
+      throw Exception('Not authenticated');
+    }
+    final url = Uri.parse('$_server/api/data/podcast/$podcastId/auto_refresh');
+    final response = await _client.get(url, headers: {'Api-Key': _apiKey!});
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['auto_refresh'] as bool? ?? true;
+  }
+
+  Future<void> setAutoRefresh(int podcastId, bool enabled) async {
+    if (_server == null || _apiKey == null) {
+      throw Exception('Not authenticated');
+    }
+    final url = Uri.parse('$_server/api/data/podcast/$podcastId/auto_refresh');
+    final response = await _client.put(
+      url,
+      headers: {'Api-Key': _apiKey!, 'Content-Type': 'application/json'},
+      body: jsonEncode({'auto_refresh': enabled}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('HTTP ${response.statusCode}');
     }
   }
 
@@ -877,6 +930,23 @@ class PinepodsService {
       _devLog('Error getting episode transcript: $e');
     }
     return null;
+  }
+
+  /// The generated transcript as a file body: [format] is 'srt', 'vtt' or 'txt'.
+  Future<String> exportEpisodeTranscript(int episodeId, int userId, String format) async {
+    if (_server == null || _apiKey == null) {
+      throw Exception('Not authenticated');
+    }
+    final url = Uri.parse('$_server/api/data/episode_transcript_export').replace(queryParameters: {
+      'episode_id': '$episodeId',
+      'user_id': '$userId',
+      'format': format,
+    });
+    final response = await _get(url, headers: {'Api-Key': _apiKey!});
+    if (response.statusCode != 200) {
+      throw Exception('Transcript download failed (${response.statusCode})');
+    }
+    return utf8.decode(response.bodyBytes);
   }
 
   // POST /api/data/transcribe_episode — trigger transcription (async).
@@ -2159,6 +2229,28 @@ class PinepodsService {
   }
 
   /// How many days of videos a channel keeps; 0 is no limit.
+  /// Where Add to queue puts an episode by default: 'top' or 'bottom'.
+  Future<String> getQueueAddPosition(int userId) async {
+    final url = Uri.parse('$_server/api/data/get_queue_add_position/$userId');
+    final response = await _get(url, headers: {'Api-Key': _apiKey!});
+    if (response.statusCode != 200) {
+      throw Exception('Failed to get queue position: ${response.statusCode}');
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['position'] as String? ?? 'bottom';
+  }
+
+  Future<void> setQueueAddPosition(int userId, String position) async {
+    final url = Uri.parse('$_server/api/data/update_queue_add_position');
+    final response = await _put(
+      url,
+      headers: {'Api-Key': _apiKey!, 'Content-Type': 'application/json'},
+      body: jsonEncode({'user_id': userId, 'position': position}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save queue position: ${response.statusCode}');
+    }
+  }
+
   Future<int?> getFeedCutoffDays(int podcastId, int userId) async {
     final url = Uri.parse('$_server/api/data/get_feed_cutoff_days').replace(
       queryParameters: {'podcast_id': podcastId.toString(), 'user_id': userId.toString()},
@@ -2803,6 +2895,23 @@ class PinepodsService {
       _devLog('Error searching episodes: $e');
       rethrow;
     }
+  }
+
+  /// Search inside the transcripts of the user's episodes. Throws
+  /// [TranscriptSearchUnsupported] when the server predates transcript search.
+  Future<TranscriptSearchPage> searchTranscripts(String query, {int limit = 20, int offset = 0}) async {
+    if (_server == null || _apiKey == null) {
+      throw Exception('Not authenticated');
+    }
+    final url = Uri.parse('$_server/api/data/transcripts/search').replace(
+      queryParameters: {'q': query, 'limit': '$limit', 'offset': '$offset'},
+    );
+    final response = await _get(url, headers: {'Api-Key': _apiKey!});
+    if (response.statusCode == 404) throw TranscriptSearchUnsupported();
+    if (response.statusCode != 200) {
+      throw Exception('Failed to search transcripts: ${response.statusCode}');
+    }
+    return TranscriptSearchPage.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   // Fetch podcast 2.0 data for a specific episode
@@ -3658,6 +3767,64 @@ class SearchResultPage {
   final int total;
 
   SearchResultPage({required this.results, required this.total});
+}
+
+class TranscriptSearchUnsupported implements Exception {}
+
+/// A place in a transcript where the search was said.
+class TranscriptMoment {
+  /// Seconds into the episode; null for transcripts without timings.
+  final double? start;
+  final String text;
+
+  TranscriptMoment({this.start, required this.text});
+
+  factory TranscriptMoment.fromJson(Map<String, dynamic> json) => TranscriptMoment(
+        start: (json['start'] as num?)?.toDouble(),
+        text: json['text'] as String? ?? '',
+      );
+}
+
+class TranscriptHit {
+  final SearchEpisodeResult episode;
+
+  /// `generated` (AI, made on the server) or `feed` (published by the podcast).
+  final String source;
+  final int mentions;
+  final List<TranscriptMoment> moments;
+
+  TranscriptHit({required this.episode, required this.source, required this.mentions, required this.moments});
+
+  factory TranscriptHit.fromJson(Map<String, dynamic> json) => TranscriptHit(
+        episode: SearchEpisodeResult.fromJson(json['episode'] as Map<String, dynamic>),
+        source: json['source'] as String? ?? 'feed',
+        mentions: (json['mentions'] as num?)?.toInt() ?? 0,
+        moments: (json['moments'] as List<dynamic>? ?? [])
+            .map((m) => TranscriptMoment.fromJson(m as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+class TranscriptSearchPage {
+  final List<TranscriptHit> results;
+  final int total;
+
+  /// Lowercased words and phrases to highlight.
+  final List<String> terms;
+
+  /// How many of the user's episodes have a searchable transcript.
+  final int searchableEpisodes;
+
+  TranscriptSearchPage({required this.results, required this.total, required this.terms, required this.searchableEpisodes});
+
+  factory TranscriptSearchPage.fromJson(Map<String, dynamic> json) => TranscriptSearchPage(
+        results: (json['results'] as List<dynamic>? ?? [])
+            .map((r) => TranscriptHit.fromJson(r as Map<String, dynamic>))
+            .toList(),
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        terms: (json['terms'] as List<dynamic>? ?? []).map((t) => t.toString()).toList(),
+        searchableEpisodes: (json['searchable_episodes'] as num?)?.toInt() ?? 0,
+      );
 }
 
 class DownloadTask {
