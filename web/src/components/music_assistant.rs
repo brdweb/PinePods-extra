@@ -505,7 +505,7 @@ pub fn ma_now_playing_bar() -> Html {
                                 server_name={server}
                                 api_key={api_key}
                                 position={Some(shown)}
-                                on_seek={can_seek.then(|| Callback::from(move |t: f64| {
+                                on_seek={can_seek.then(|| Callback::from(move |(t, _): (f64, MouseEvent)| {
                                     send_command(&seek_id, "seek", json!({ "position_sec": integer_position(t) }));
                                 }))}
                             />

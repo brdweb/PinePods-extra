@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sqlx::Row;
 
+use crate::database::dialect::dialect_match;
 use crate::database::DatabasePool;
 use crate::error::{AppError, AppResult};
 use crate::services::podcasting2::{ValueBlock, ValueRecipient, ValueTimeSplit};
@@ -1225,9 +1226,9 @@ impl LnurlHttp for GuardedHttp {
 }
 
 async fn load_episode(db: &DatabasePool, user_id: i32, episode_id: i32) -> AppResult<Option<EpisodeRow>> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            let row = sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            let row = q::query(
                 r#"SELECT p.podcastid AS podcast_id,
                           e.episodetitle AS episode,
                           COALESCE(e.episodeguid, '') AS episode_guid,
@@ -1243,9 +1244,19 @@ async fn load_episode(db: &DatabasePool, user_id: i32, episode_id: i32) -> AppRe
             .bind(user_id)
             .fetch_optional(pool)
             .await?;
+            let map_episode_row = |row: &q::Row| -> AppResult<EpisodeRow> {
+                Ok(EpisodeRow {
+                    podcast_id: row.try_get::<i32, _>("podcast_id")?,
+                    episode: row.try_get("episode")?,
+                    episode_guid: row.try_get("episode_guid")?,
+                    podcast: row.try_get("podcast")?,
+                    feed_id: row.try_get("feed_id")?,
+                    feed_url: row.try_get("feed_url")?,
+                })
+            };
             Ok(row.map(|row| map_episode_row(&row)).transpose()?)
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let row = sqlx::query(
                 r#"SELECT p.PodcastID AS podcast_id,
                           e.EpisodeTitle AS episode,
@@ -1263,18 +1274,7 @@ async fn load_episode(db: &DatabasePool, user_id: i32, episode_id: i32) -> AppRe
             .fetch_optional(pool)
             .await?;
             Ok(row.map(|row| map_episode_mysql(&row)).transpose()?)
-        }
-    }
-}
-
-fn map_episode_row(row: &sqlx::postgres::PgRow) -> AppResult<EpisodeRow> {
-    Ok(EpisodeRow {
-        podcast_id: row.try_get::<i32, _>("podcast_id")?,
-        episode: row.try_get("episode")?,
-        episode_guid: row.try_get("episode_guid")?,
-        podcast: row.try_get("podcast")?,
-        feed_id: row.try_get("feed_id")?,
-        feed_url: row.try_get("feed_url")?,
+        },
     })
 }
 
@@ -1335,9 +1335,9 @@ fn map_wallet(
 }
 
 async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredWallet> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            let row = sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            let row = q::query(
                 r#"SELECT CASE WHEN enabled THEN 1 ELSE 0 END AS enabled,
                           nwcencrypted AS secret,
                           maxboostsats AS max_boost,
@@ -1362,8 +1362,8 @@ async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredWalle
                 ),
                 None => disabled_wallet(),
             })
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let row = sqlx::query(
                 r#"SELECT IF(Enabled, 1, 0) AS enabled,
                           NwcEncrypted AS secret,
@@ -1398,14 +1398,14 @@ async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredWalle
                 }
                 None => disabled_wallet(),
             })
-        }
-    }
+        },
+    })
 }
 
 async fn write_settings(db: &DatabasePool, user_id: i32, stored: &StoredWallet) -> AppResult<()> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"INSERT INTO "ValueWallet"
                      (userid, enabled, nwcencrypted, maxboostsats, streampersats, dailylimitsats, spentdaysats, spentday, updatedat)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -1427,8 +1427,8 @@ async fn write_settings(db: &DatabasePool, user_id: i32, stored: &StoredWallet) 
             .bind(stored.spent_day)
             .execute(pool)
             .await?;
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"INSERT INTO ValueWallet
                      (UserID, Enabled, NwcEncrypted, MaxBoostSats, StreamPerSats, DailyLimitSats, SpentDaySats, SpentDay, UpdatedAt)
@@ -1451,8 +1451,8 @@ async fn write_settings(db: &DatabasePool, user_id: i32, stored: &StoredWallet) 
             .bind(stored.spent_day)
             .execute(pool)
             .await?;
-        }
-    }
+        },
+    });
     Ok(())
 }
 
@@ -1460,9 +1460,9 @@ async fn reserve_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
     if amount <= 0 {
         return Ok(false);
     }
-    let changed = match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    let changed = dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"UPDATE "ValueWallet"
                    SET spentdaysats = CASE
                          WHEN spentday IS DISTINCT FROM (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date THEN $1
@@ -1485,8 +1485,8 @@ async fn reserve_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
             .execute(pool)
             .await?
             .rows_affected()
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"UPDATE ValueWallet
                    SET SpentDaySats = IF(SpentDay IS NULL OR SpentDay <> UTC_DATE(), ?, SpentDaySats + ?),
@@ -1505,8 +1505,8 @@ async fn reserve_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
             .execute(pool)
             .await?
             .rows_affected()
-        }
-    };
+        },
+    });
     Ok(changed > 0)
 }
 
@@ -1514,9 +1514,9 @@ async fn release_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
     if amount <= 0 {
         return Ok(());
     }
-    match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"UPDATE "ValueWallet"
                    SET spentdaysats = GREATEST(spentdaysats - $1, 0),
                        updatedat = CURRENT_TIMESTAMP
@@ -1527,8 +1527,8 @@ async fn release_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
             .bind(user_id)
             .execute(pool)
             .await?;
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"UPDATE ValueWallet
                    SET SpentDaySats = GREATEST(SpentDaySats - ?, 0),
@@ -1540,15 +1540,15 @@ async fn release_budget(db: &DatabasePool, user_id: i32, amount: i64) -> AppResu
             .bind(user_id)
             .execute(pool)
             .await?;
-        }
-    }
+        },
+    });
     Ok(())
 }
 
 async fn claim_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute: i32) -> AppResult<bool> {
-    let changed = match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    let changed = dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"INSERT INTO "ValueStreamMinute" (userid, episodeid, minute)
                    VALUES ($1, $2, $3)
                    ON CONFLICT DO NOTHING"#,
@@ -1559,8 +1559,8 @@ async fn claim_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute: 
             .execute(pool)
             .await?
             .rows_affected()
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"INSERT IGNORE INTO ValueStreamMinute (UserID, EpisodeID, Minute)
                    VALUES (?, ?, ?)"#,
@@ -1571,15 +1571,15 @@ async fn claim_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute: 
             .execute(pool)
             .await?
             .rows_affected()
-        }
-    };
+        },
+    });
     Ok(changed > 0)
 }
 
 async fn release_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute: i32) -> AppResult<()> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"DELETE FROM "ValueStreamMinute" WHERE userid = $1 AND episodeid = $2 AND minute = $3"#,
             )
             .bind(user_id)
@@ -1587,8 +1587,8 @@ async fn release_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute
             .bind(minute)
             .execute(pool)
             .await?;
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"DELETE FROM ValueStreamMinute WHERE UserID = ? AND EpisodeID = ? AND Minute = ?"#,
             )
@@ -1597,8 +1597,8 @@ async fn release_minute(db: &DatabasePool, user_id: i32, episode_id: i32, minute
             .bind(minute)
             .execute(pool)
             .await?;
-        }
-    }
+        },
+    });
     Ok(())
 }
 

@@ -24,6 +24,7 @@ use sqlx::Row;
 use tokio::sync::{mpsc, oneshot, watch, Notify, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::database::dialect::dialect_match;
 use crate::database::DatabasePool;
 use crate::error::{AppError, AppResult};
 use crate::handlers::nowplaying::notify_devices_changed;
@@ -2445,9 +2446,9 @@ pub async fn test_connection(
 }
 
 async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredSettings> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            let row = sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            let row = q::query(
                 r#"SELECT CASE WHEN enabled THEN 1 ELSE 0 END AS enabled,
                           serverurl AS server_url,
                           tokenencrypted AS token_encrypted,
@@ -2466,8 +2467,8 @@ async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredSetti
                 ),
                 None => StoredSettings::disabled(),
             })
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let row = sqlx::query(
                 r#"SELECT IF(Enabled, 1, 0) AS enabled,
                           ServerUrl AS server_url,
@@ -2492,8 +2493,8 @@ async fn read_settings(db: &DatabasePool, user_id: i32) -> AppResult<StoredSetti
                 }
                 None => StoredSettings::disabled(),
             })
-        }
-    }
+        },
+    })
 }
 
 impl StoredSettings {
@@ -2523,9 +2524,9 @@ fn map_stored(
 }
 
 async fn write_settings(db: &DatabasePool, user_id: i32, stored: StoredSettings) -> AppResult<()> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            q::query(
                 r#"INSERT INTO "MusicAssistant" (userid, enabled, serverurl, tokenencrypted, externalbaseurl, updatedat)
                    VALUES ($1, $2, $3, $4, $5, NOW())
                    ON CONFLICT (userid) DO UPDATE SET
@@ -2542,8 +2543,8 @@ async fn write_settings(db: &DatabasePool, user_id: i32, stored: StoredSettings)
             .bind(&stored.external_base_url)
             .execute(pool)
             .await?;
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query(
                 r#"INSERT INTO MusicAssistant (UserID, Enabled, ServerUrl, TokenEncrypted, ExternalBaseUrl, UpdatedAt)
                    VALUES (?, ?, ?, ?, ?, NOW())
@@ -2561,15 +2562,15 @@ async fn write_settings(db: &DatabasePool, user_id: i32, stored: StoredSettings)
             .bind(&stored.external_base_url)
             .execute(pool)
             .await?;
-        }
-    }
+        },
+    });
     Ok(())
 }
 
 async fn list_enabled(db: &DatabasePool) -> AppResult<Vec<(i32, StoredSettings)>> {
-    match db {
-        DatabasePool::Postgres(pool) => {
-            let rows = sqlx::query(
+    dialect_match!(db, {
+        pg(pool) => {
+            let rows = q::query(
                 r#"SELECT userid AS user_id,
                           CASE WHEN enabled THEN 1 ELSE 0 END AS enabled,
                           serverurl AS server_url,
@@ -2598,8 +2599,8 @@ async fn list_enabled(db: &DatabasePool) -> AppResult<Vec<(i32, StoredSettings)>
                 ));
             }
             Ok(out)
-        }
-        DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let rows = sqlx::query(
                 r#"SELECT UserID AS user_id,
                           IF(Enabled, 1, 0) AS enabled,
@@ -2634,8 +2635,8 @@ async fn list_enabled(db: &DatabasePool) -> AppResult<Vec<(i32, StoredSettings)>
                 ));
             }
             Ok(out)
-        }
-    }
+        },
+    })
 }
 
 // ============================ Hub and session ============================

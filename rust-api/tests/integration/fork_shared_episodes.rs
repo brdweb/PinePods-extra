@@ -35,6 +35,9 @@ async fn the_second_subscriber_gets_guids_and_a_media_plan_for_shared_episodes()
 #[tokio::test(flavor = "multi_thread")]
 async fn fork_migrations_under_their_old_numbers_are_relabelled() {
     let app = TestApp::new().await;
+    if app.upgrade_tests_unsupported() {
+        return;
+    }
     exec(&app, "DELETE FROM schema_migrations WHERE version IN ('063', '064', '065', '900', '901', '902')").await;
     for (version, name) in [("063", "podcasting2_full"), ("064", "music_assistant_settings"), ("065", "value_wallet")] {
         exec(

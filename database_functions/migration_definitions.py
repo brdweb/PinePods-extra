@@ -7891,6 +7891,115 @@ def migration_087_reread_feeds_for_episode_urls(conn, db_type: str) -> None:
         cursor.close()
 
 
+@register_migration("088", "in_app_notifications", "InAppNotifications: in-app notifications are kept in the database, not in Valkey", requires=["001"], sqlite=True)
+def migration_088_in_app_notifications(conn, db_type: str) -> None:
+    """InAppNotifications: one row per in-app notification, the notification as JSON in Payload.
+    They used to live in Valkey, which a server can now run without. Notifications already in
+    Valkey aren't moved; they're short-lived.
+    """
+    cursor = conn.cursor()
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "InAppNotifications" (
+                    NotificationID VARCHAR(64) PRIMARY KEY,
+                    UserID INT NOT NULL REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    Payload TEXT NOT NULL,
+                    IsRead BOOLEAN NOT NULL DEFAULT FALSE,
+                    CreatedAt TIMESTAMP NOT NULL,
+                    ExpiresAt TIMESTAMP NOT NULL
+                )
+            """)
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inappnotifications_user ON "InAppNotifications"(UserID, ExpiresAt)')
+        elif db_type == "sqlite":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "InAppNotifications" (
+                    notificationid TEXT PRIMARY KEY,
+                    userid INTEGER NOT NULL REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    payload TEXT NOT NULL,
+                    isread BOOLEAN NOT NULL DEFAULT 0,
+                    createdat TIMESTAMP NOT NULL,
+                    expiresat TIMESTAMP NOT NULL
+                )
+            """)
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inappnotifications_user ON "InAppNotifications"(userid, expiresat)')
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS InAppNotifications (
+                    NotificationID VARCHAR(64) NOT NULL PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    Payload TEXT NOT NULL,
+                    IsRead TINYINT(1) NOT NULL DEFAULT 0,
+                    CreatedAt DATETIME NOT NULL,
+                    ExpiresAt DATETIME NOT NULL,
+                    KEY idx_inappnotifications_user (UserID, ExpiresAt),
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+            """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+@register_migration("089", "transcript_search_index", "Full-text index over transcript text, for searching inside transcripts", requires=["051"], sqlite=True)
+def migration_089_transcript_search_index(conn, db_type: str) -> None:
+    """A full-text index on EpisodeTranscripts.TranscriptText: GIN over to_tsvector('simple', ...)
+    on PostgreSQL (the search query repeats that expression exactly), FULLTEXT on MariaDB/MySQL.
+    SQLite searches the text without an index."""
+    if db_type == "sqlite":
+        return
+    cursor = conn.cursor()
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_episode_transcripts_fts ON "EpisodeTranscripts"
+                USING GIN (to_tsvector('simple', COALESCE(transcripttext, '')))
+            """)
+        else:
+            cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'EpisodeTranscripts'
+                  AND INDEX_NAME = 'idx_episode_transcripts_fts'
+            """)
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("ALTER TABLE EpisodeTranscripts ADD FULLTEXT INDEX idx_episode_transcripts_fts (TranscriptText)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
+@register_migration("090", "user_queue_add_position", "UserSettings.QueueAddPosition: where Add to queue puts an episode, top or bottom", requires=["001"], sqlite=True)
+def migration_090_user_queue_add_position(conn, db_type: str) -> None:
+    """'top' puts an added episode next in line, under whatever is playing; 'bottom' puts it last.
+    Bottom by default."""
+    cursor = conn.cursor()
+    try:
+        if db_type == "sqlite":
+            cursor.execute('PRAGMA table_info("UserSettings")')
+            exists = any(row[1].lower() == "queueaddposition" for row in cursor.fetchall())
+        else:
+            exists = _column_exists(cursor, db_type, "UserSettings", "QueueAddPosition")
+        if not exists:
+            # SQLite reports a column by its declared name, and its schema is all lowercase.
+            table, column = {
+                "postgresql": ('"UserSettings"', "QueueAddPosition"),
+                "sqlite": ('"UserSettings"', "queueaddposition"),
+            }.get(db_type, ("UserSettings", "QueueAddPosition"))
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(10) NOT NULL DEFAULT 'bottom'")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+
+
 @register_migration("118", "gpodder_actions_follow_merged_episodes", "Episode actions point at the shared episode their merged copy became; the copies are deleted", requires=["082", "111"])
 def migration_118_gpodder_actions_follow_merged_episodes(conn, db_type: str) -> None:
     """GpodderSyncEpisodeActions.EpisodeID of actions on an episode copy merged by 082 now points
@@ -8195,6 +8304,7 @@ def migration_116_gpodder_session_app_password(conn, db_type: str) -> None:
     "podcasting2_full",
     "Full Podcasting 2.0 namespace: item JSON and updateFrequency schedule",
     requires=["062"],
+    sqlite=True,
 )
 def migration_900_podcasting2_full(conn, db_type: str) -> None:
     """Store the rest of the Podcasting 2.0 namespace and the refresh schedule it implies.
@@ -8210,6 +8320,18 @@ def migration_900_podcasting2_full(conn, db_type: str) -> None:
     cursor = conn.cursor()
     pg = db_type == "postgresql"
     try:
+        if db_type == "sqlite":
+            # The SQLite schema keeps PostgreSQL's lowercase column names.
+            for table, column, definition in [
+                ("Episodes", "podcasting2itemjson", "TEXT"),
+                ("Podcasts", "p20refreshintervalminutes", "INTEGER"),
+                ("Podcasts", "p20nextrefreshat", "TIMESTAMP"),
+            ]:
+                cursor.execute(f'PRAGMA table_info("{table}")')
+                if not any(row[1].lower() == column for row in cursor.fetchall()):
+                    cursor.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {definition}')
+            logger.info("Migration 900 completed")
+            return
         podcasts = '"Podcasts"' if pg else "Podcasts"
         episodes = '"Episodes"' if pg else "Episodes"
         item_json = "TEXT" if pg else "MEDIUMTEXT"
@@ -8232,6 +8354,7 @@ def migration_900_podcasting2_full(conn, db_type: str) -> None:
     "music_assistant_settings",
     "Per-user Music Assistant server URL, Fernet-encrypted token, and external PinePods base URL",
     requires=["003"],
+    sqlite=True,
 )
 def migration_901_music_assistant(conn, db_type: str) -> None:
     """Opt-in Music Assistant output. No row means the feature is off for that user.
@@ -8248,6 +8371,19 @@ def migration_901_music_assistant(conn, db_type: str) -> None:
                 CREATE TABLE IF NOT EXISTS "MusicAssistant" (
                     userid INT PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
                     enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    serverurl TEXT,
+                    tokenencrypted TEXT,
+                    externalbaseurl TEXT,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        elif db_type == "sqlite":
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "MusicAssistant" (
+                    userid INTEGER PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT 0,
                     serverurl TEXT,
                     tokenencrypted TEXT,
                     externalbaseurl TEXT,
@@ -8279,6 +8415,7 @@ def migration_901_music_assistant(conn, db_type: str) -> None:
     "value_wallet",
     "Per-user Value4Value wallet (Fernet-encrypted NWC string, budgets, stream-minute dedupe)",
     requires=["003"],
+    sqlite=True,
 )
 def migration_902_value_wallet(conn, db_type: str) -> None:
     """Opt-in Lightning payments. No row means the feature is off for that user.
@@ -8313,6 +8450,32 @@ def migration_902_value_wallet(conn, db_type: str) -> None:
                     userid INT NOT NULL REFERENCES "Users"(userid) ON DELETE CASCADE,
                     episodeid INT NOT NULL,
                     minute INT NOT NULL,
+                    PRIMARY KEY (userid, episodeid, minute)
+                )
+                """
+            )
+        elif db_type == "sqlite":
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "ValueWallet" (
+                    userid INTEGER PRIMARY KEY REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT 0,
+                    nwcencrypted TEXT,
+                    maxboostsats BIGINT NOT NULL DEFAULT 1000,
+                    streampersats BIGINT NOT NULL DEFAULT 0,
+                    dailylimitsats BIGINT NOT NULL DEFAULT 0,
+                    spentdaysats BIGINT NOT NULL DEFAULT 0,
+                    spentday DATE,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS "ValueStreamMinute" (
+                    userid INTEGER NOT NULL REFERENCES "Users"(userid) ON DELETE CASCADE,
+                    episodeid INTEGER NOT NULL,
+                    minute INTEGER NOT NULL,
                     PRIMARY KEY (userid, episodeid, minute)
                 )
                 """

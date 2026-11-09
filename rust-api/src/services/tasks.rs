@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use sqlx::Row;
 use tracing::{debug, warn};
+use crate::database::dialect::dialect_match;
 
 /// Fetch one progressive source, hashing as the bytes land when the enclosure has an SRI.
 /// A hash mismatch deletes nothing itself; the caller removes the partial file and tries
@@ -94,9 +95,9 @@ async fn download_episode_and_wait(
     tracing::info!("Starting actual download for episode {} for user {}", episode_id, user_id);
     
     // Get episode metadata from database
-    let episode_info = match db_pool {
-        crate::database::DatabasePool::Postgres(pool) => {
-            let row = sqlx::query(r#"
+    let episode_info = dialect_match!(db_pool, {
+        pg(pool) => {
+            let row = q::query(r#"
                 SELECT e.episodeurl, e.episodetitle, p.podcastname, 
                        e.episodepubdate
                 FROM "Episodes" e
@@ -114,8 +115,8 @@ async fn download_episode_and_wait(
                 row.try_get::<String, _>("podcastname")?,
                 row.try_get::<Option<chrono::NaiveDateTime>, _>("episodepubdate")?,
             )
-        }
-        crate::database::DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             let row = sqlx::query("
                 SELECT e.EpisodeURL, e.EpisodeTitle, p.PodcastName, e.EpisodePubDate
                 FROM Episodes e
@@ -133,8 +134,8 @@ async fn download_episode_and_wait(
                 row.try_get::<String, _>("PodcastName")?,
                 row.try_get::<Option<chrono::NaiveDateTime>, _>("EpisodePubDate")?,
             )
-        }
-    };
+        },
+    });
     
     let (episode_url, episode_title, podcast_name, pub_date) = episode_info;
     
@@ -220,17 +221,17 @@ async fn download_episode_and_wait(
         .map(|m| m.len() as i64)
         .unwrap_or(0);
         
-    match db_pool {
-        crate::database::DatabasePool::Postgres(pool) => {
-            sqlx::query(r#"INSERT INTO "DownloadedEpisodes" (userid, episodeid, downloadedsize, downloadedlocation) VALUES ($1, $2, $3, $4)"#)
+    dialect_match!(db_pool, {
+        pg(pool) => {
+            q::query(r#"INSERT INTO "DownloadedEpisodes" (userid, episodeid, downloadedsize, downloadedlocation) VALUES ($1, $2, $3, $4)"#)
                 .bind(user_id)
                 .bind(episode_id)
                 .bind(file_size)
                 .bind(file_path.to_string_lossy().to_string())
                 .execute(pool)
                 .await?;
-        }
-        crate::database::DatabasePool::MySQL(pool) => {
+        },
+        mysql(pool) => {
             sqlx::query("INSERT INTO DownloadedEpisodes (UserID, EpisodeID, DownloadedSize, DownloadedLocation) VALUES (?, ?, ?, ?)")
                 .bind(user_id)
                 .bind(episode_id)
@@ -238,8 +239,8 @@ async fn download_episode_and_wait(
                 .bind(file_path.to_string_lossy().to_string())
                 .execute(pool)
                 .await?;
-        }
-    }
+        },
+    });
     
     let fingerprint = match reused {
         Some((_, fp)) => fp,
@@ -402,9 +403,9 @@ impl TaskSpawner {
                 task_manager.update_task_progress_with_details(&task_id_clone, 0.0, Some("Starting download...".to_string()), Some(episode_id), Some("podcast_download".to_string()), None).await?;
                 
                 // Get complete episode metadata from database
-                let episode_info = match &db_pool {
-                    crate::database::DatabasePool::Postgres(pool) => {
-                        let row = sqlx::query(r#"
+                let episode_info = dialect_match!(&db_pool, {
+                    pg(pool) => {
+                        let row = q::query(r#"
                             SELECT e."episodeurl", e."episodetitle", p."podcastname",
                                    e."episodepubdate", p."author", e."episodeartwork", p."artworkurl",
                                    e."episodedescription", p."username", p."password",
@@ -433,8 +434,8 @@ impl TaskSpawner {
                             row.try_get::<Option<String>, _>("episodeguid")?,
                             row.try_get::<Option<i32>, _>("episodeduration")?
                         )
-                    }
-                    crate::database::DatabasePool::MySQL(pool) => {
+                    },
+                    mysql(pool) => {
                         let row = sqlx::query("
                             SELECT e.EpisodeURL, e.EpisodeTitle, p.PodcastName,
                                    e.EpisodePubDate, p.Author, e.EpisodeArtwork, p.ArtworkURL,
@@ -464,8 +465,8 @@ impl TaskSpawner {
                             row.try_get::<Option<String>, _>("EpisodeGUID")?,
                             row.try_get::<Option<i32>, _>("EpisodeDuration")?
                         )
-                    }
-                };
+                    },
+                });
 
                 let (mut episode_url, episode_title, podcast_name, pub_date, author, episode_artwork, artwork_url, description, feed_username, feed_password, feed_url, episode_guid, episode_duration) = episode_info;
                 let original_episode_url = episode_url.clone();
@@ -646,9 +647,9 @@ impl TaskSpawner {
                 task_manager.update_task_progress_with_details(&task_id_clone, 90.0, Some(status_message), Some(episode_id), Some("podcast_download".to_string()), Some(episode_title.clone())).await?;
                 
                 // Update database with download info
-                match &db_pool {
-                    crate::database::DatabasePool::Postgres(pool) => {
-                        sqlx::query(r#"
+                dialect_match!(&db_pool, {
+                    pg(pool) => {
+                        q::query(r#"
                             INSERT INTO "DownloadedEpisodes" (userid, episodeid, downloadedsize, downloadedlocation)
                             VALUES ($1, $2, $3, $4)
                         "#)
@@ -660,14 +661,14 @@ impl TaskSpawner {
                         .await?;
 
                         // Update UserStats table to increment EpisodesDownloaded count
-                        sqlx::query(r#"
+                        q::query(r#"
                             UPDATE "UserStats" SET episodesdownloaded = episodesdownloaded + 1 WHERE userid = $1
                         "#)
                         .bind(user_id)
                         .execute(pool)
                         .await?;
-                    }
-                    crate::database::DatabasePool::MySQL(pool) => {
+                    },
+                    mysql(pool) => {
                         sqlx::query("
                             INSERT INTO DownloadedEpisodes (UserID, EpisodeID, DownloadedSize, DownloadedLocation)
                             VALUES (?, ?, ?, ?)
@@ -686,8 +687,8 @@ impl TaskSpawner {
                         .bind(user_id)
                         .execute(pool)
                         .await?;
-                    }
-                }
+                    },
+                });
                 
                 let status_message = format!("Downloaded {}", episode_title);
                 task_manager.update_task_progress_with_details(&task_id_clone, 100.0, Some(status_message), Some(episode_id), Some("podcast_download".to_string()), Some(episode_title.clone())).await?;
@@ -960,9 +961,9 @@ impl TaskSpawner {
                 tracing::info!("Downloading YouTube video {} for user {}", video_id, user_id);
                 
                 // Get the video from database using the video ID
-                let (youtube_video_id, video_title) = match &db_pool {
-                    crate::database::DatabasePool::Postgres(pool) => {
-                        let row = sqlx::query(r#"SELECT youtubevideoid, videotitle FROM "YouTubeVideos" WHERE videoid = $1"#)
+                let (youtube_video_id, video_title) = dialect_match!(&db_pool, {
+                    pg(pool) => {
+                        let row = q::query(r#"SELECT youtubevideoid, videotitle FROM "YouTubeVideos" WHERE videoid = $1"#)
                             .bind(video_id)
                             .fetch_one(pool)
                             .await
@@ -974,8 +975,8 @@ impl TaskSpawner {
                             .map_err(|e| crate::error::AppError::internal(&format!("Failed to get video title: {}", e)))?;
                         
                         (youtube_video_id, video_title)
-                    }
-                    crate::database::DatabasePool::MySQL(pool) => {
+                    },
+                    mysql(pool) => {
                         let row = sqlx::query("SELECT YouTubeVideoID, VideoTitle FROM YouTubeVideos WHERE VideoID = ?")
                             .bind(video_id)
                             .fetch_one(pool)
@@ -988,8 +989,8 @@ impl TaskSpawner {
                             .map_err(|e| crate::error::AppError::internal(&format!("Failed to get video title: {}", e)))?;
                         
                         (youtube_video_id, video_title)
-                    }
-                };
+                    },
+                });
                 
                 task_manager.set_task_metadata(&task_id, Some(video_title.clone()), Some("YouTube".to_string())).await?;
 
@@ -1056,9 +1057,9 @@ impl TaskSpawner {
                 task_manager.update_task_progress_with_details(&task_id_clone, 0.0, Some("Getting episode list...".to_string()), None, Some("bulk_download".to_string()), None).await?;
                 
                 // Get episode IDs that are NOT already downloaded (replicating check_downloaded logic)
-                let episode_ids = match &db_pool {
-                    crate::database::DatabasePool::Postgres(pool) => {
-                        let rows = sqlx::query(r#"
+                let episode_ids = dialect_match!(&db_pool, {
+                    pg(pool) => {
+                        let rows = q::query(r#"
                             SELECT e.episodeid 
                             FROM "Episodes" e
                             LEFT JOIN "DownloadedEpisodes" de ON e.episodeid = de.episodeid AND de.userid = $2
@@ -1073,8 +1074,8 @@ impl TaskSpawner {
                         rows.into_iter()
                             .map(|row| row.try_get::<i32, _>("episodeid"))
                             .collect::<Result<Vec<i32>, _>>()?
-                    }
-                    crate::database::DatabasePool::MySQL(pool) => {
+                    },
+                    mysql(pool) => {
                         let rows = sqlx::query("
                             SELECT e.EpisodeID 
                             FROM Episodes e
@@ -1090,8 +1091,8 @@ impl TaskSpawner {
                         rows.into_iter()
                             .map(|row| row.try_get::<i32, _>("EpisodeID"))
                             .collect::<Result<Vec<i32>, _>>()?
-                    }
-                };
+                    },
+                });
                 
                 let total_episodes = episode_ids.len();
                 tracing::info!("Found {} episodes for podcast {} to download", total_episodes, podcast_id);
@@ -1193,9 +1194,9 @@ impl TaskSpawner {
                 tracing::info!("Downloading all videos for channel {} for user {}", channel_id, user_id);
                 
                 // Get all videos for the channel from database
-                let videos_data = match &db_pool {
-                    crate::database::DatabasePool::Postgres(pool) => {
-                        let rows = sqlx::query(r#"SELECT videoid, youtubevideoid, videotitle FROM "YouTubeVideos" WHERE podcastid = $1"#)
+                let videos_data = dialect_match!(&db_pool, {
+                    pg(pool) => {
+                        let rows = q::query(r#"SELECT videoid, youtubevideoid, videotitle FROM "YouTubeVideos" WHERE podcastid = $1"#)
                             .bind(channel_id)
                             .fetch_all(pool)
                             .await
@@ -1208,8 +1209,8 @@ impl TaskSpawner {
                                 .map_err(|e| crate::error::AppError::internal(&format!("Failed to get video title: {}", e)))?;
                             Ok((youtube_video_id, video_title))
                         }).collect::<Result<Vec<(String, String)>, crate::error::AppError>>()?
-                    }
-                    crate::database::DatabasePool::MySQL(pool) => {
+                    },
+                    mysql(pool) => {
                         let rows = sqlx::query("SELECT VideoID, YouTubeVideoID, VideoTitle FROM YouTubeVideos WHERE PodcastID = ?")
                             .bind(channel_id)
                             .fetch_all(pool)
@@ -1223,8 +1224,8 @@ impl TaskSpawner {
                                 .map_err(|e| crate::error::AppError::internal(&format!("Failed to get video title: {}", e)))?;
                             Ok((youtube_video_id, video_title))
                         }).collect::<Result<Vec<(String, String)>, crate::error::AppError>>()?
-                    }
-                };
+                    },
+                });
                 
                 let total_videos = videos_data.len();
                 let mut downloaded = 0;
@@ -1327,20 +1328,20 @@ impl TaskSpawner {
                             task_manager.update_task_progress(&task_id, 80.0, Some("Counting episodes...".to_string())).await?;
                             
                             // Count episodes for logging and notification
-                            let episode_count: i64 = match &db_pool {
-                                crate::database::DatabasePool::Postgres(pool) => {
-                                    sqlx::query_scalar(r#"SELECT COUNT(*) FROM "Episodes" WHERE feedid = (SELECT feedid FROM "Podcasts" WHERE podcastid = $1)"#)
+                            let episode_count: i64 = dialect_match!(&db_pool, {
+                                pg(pool) => {
+                                    q::query_scalar(r#"SELECT COUNT(*) FROM "Episodes" WHERE feedid = (SELECT feedid FROM "Podcasts" WHERE podcastid = $1)"#)
                                         .bind(podcast_id)
                                         .fetch_one(pool)
                                         .await?
-                                }
-                                crate::database::DatabasePool::MySQL(pool) => {
+                                },
+                                mysql(pool) => {
                                     sqlx::query_scalar("SELECT COUNT(*) FROM Episodes WHERE FeedID = (SELECT FeedID FROM Podcasts WHERE PodcastID = ?)")
                                         .bind(podcast_id)
                                         .fetch_one(pool)
                                         .await?
-                                }
-                            };
+                                },
+                            });
                             
                             // Final progress update
                             task_manager.update_task_progress(&task_id, 100.0, Some(format!("Added {} episodes", episode_count))).await?;

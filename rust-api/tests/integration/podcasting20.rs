@@ -234,6 +234,13 @@ async fn refresh_interval(app: &TestApp, podcast_id: i32) -> Option<i32> {
                 .await
                 .unwrap()
         }
+        DatabasePool::Sqlite(pool) => {
+            sqlx::query_scalar(r#"SELECT p20refreshintervalminutes FROM "Podcasts" WHERE podcastid = ?"#)
+                .bind(podcast_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+        }
         DatabasePool::MySQL(pool) => sqlx::query_scalar("SELECT P20RefreshIntervalMinutes FROM Podcasts WHERE PodcastID = ?")
             .bind(podcast_id)
             .fetch_one(pool)
