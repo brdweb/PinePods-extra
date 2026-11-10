@@ -1,3 +1,6 @@
+mod request_headers;
+mod trunk_config;
+
 use wasm_bindgen_test::*;
 use crate::components::context::{AppState, PageLoadState};
 use crate::pages::routes::Route;
