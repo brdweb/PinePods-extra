@@ -116,6 +116,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
   bool _showInProgress = false;
   bool _isAutoDownloadEnabled = false;
   bool _isAutoPlayNextEnabled = false;
+  bool _isAutoQueueEnabled = false;
   StreamSubscription<({int episodeId, bool isYoutube})>? _completedSub;
   // The scheduled refresh and Refresh all check this podcast.
   bool _isAutoRefreshEnabled = true;
@@ -146,6 +147,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
     _loadSortPreference();
     _loadAutoDownloadPreference();
     _loadAutoPlayNextPreference();
+    _loadAutoQueuePreference();
     _loadAutoRefreshPreference();
     _loadAiPreferences();
     _checkFollowStatus();
@@ -255,6 +257,61 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       }
     } catch (e) {
       debugPrint('Error loading auto-play-next preference: $e');
+    }
+  }
+
+  // Whether the server queues this podcast's new episodes on refresh (#648).
+  Future<void> _loadAutoQueuePreference() async {
+    final podcastId = _podcast.id;
+    if (podcastId <= 0) return;
+
+    try {
+      final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+      if (settings.pinepodsServer != null && settings.pinepodsApiKey != null && settings.pinepodsUserId != null) {
+        _pinepodsService.setCredentials(settings.pinepodsServer!, settings.pinepodsApiKey!);
+        final status = await _pinepodsService.getAutoQueueStatus(podcastId, settings.pinepodsUserId!);
+        if (mounted) {
+          setState(() {
+            _isAutoQueueEnabled = status;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading auto-queue preference: $e');
+    }
+  }
+
+  Future<void> _toggleAutoQueue() async {
+    final podcastId = _podcast.id;
+    if (podcastId <= 0) return;
+
+    final newValue = !_isAutoQueueEnabled;
+
+    try {
+      final settings = Provider.of<SettingsBloc>(context, listen: false).currentSettings;
+      if (settings.pinepodsServer == null || settings.pinepodsApiKey == null || settings.pinepodsUserId == null) {
+        return;
+      }
+      _pinepodsService.setCredentials(settings.pinepodsServer!, settings.pinepodsApiKey!);
+      final saved = await _pinepodsService.setAutoQueue(podcastId, settings.pinepodsUserId!, newValue);
+      if (!mounted) return;
+      if (saved) {
+        setState(() {
+          _isAutoQueueEnabled = newValue;
+        });
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(!saved
+              ? 'Could not change auto-queue'
+              : newValue
+                  ? 'New episodes will be added to your queue'
+                  : 'New episodes will no longer be added to your queue'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (e) {
+      debugPrint('Error toggling auto-queue: $e');
     }
   }
 
@@ -2335,6 +2392,9 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           case 'autoplay':
             _toggleAutoPlayNext();
             break;
+          case 'autoqueue':
+            _toggleAutoQueue();
+            break;
           case 'ai':
             _showAiSettingsSheet();
             break;
@@ -2380,6 +2440,11 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
             value: 'autoplay',
             checked: _isAutoPlayNextEnabled,
             child: const Text('Auto-play next'),
+          ),
+          CheckedPopupMenuItem<String>(
+            value: 'autoqueue',
+            checked: _isAutoQueueEnabled,
+            child: const Text('Add new episodes to queue'),
           ),
           if (_isYoutube)
             const PopupMenuItem<String>(
