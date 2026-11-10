@@ -88,6 +88,12 @@ flutter build apk --release --target-platform android-arm64
 
 Tag and release workflows, not pull requests, run `flutter build apk --release --split-per-abi`, `flutter build appbundle --release`, and `flutter build ios --release --no-codesign`.
 
+**Startup tests.** `.github/workflows/startup-tests.yml`, on pull requests that change `startup/**`, `dockerfile`, `dockerfile-arm`, or that workflow. It runs every `startup/tests/*.sh`; each starts its own container, so it needs only Docker. From the repo root:
+
+```sh
+bash startup/tests/ytdlp-root-squash.sh
+```
+
 **iOS tests.** `.github/workflows/ios-playback-intent-tests.yml` runs `swift test --package-path mobile/ios/PlaybackSupport` on macOS, only in `madeofpendletonwool/PinePods`. The fork gets no hosted macOS runner, so the job reports skipped here.
 
 ## Definition of done
@@ -116,12 +122,12 @@ Pass `--repo brdweb/PinePods-extra` to every `gh` command so nothing targets ups
 
 ## Review guidance
 
-Codex (`chatgpt-codex-connector`) is the only automatic PR reviewer. It should focus on Axum handlers staying in sync with `rust-api/openapi.json`, Postgres and MariaDB differences, Podcasting 2.0 on both web and mobile, and Music Assistant on the web only (no mobile UI, no playback speed while a Music Assistant speaker is the target, tokens never returned). Claude Code is optional: someone calls it in with `@claude`, where configured, for risky PRs only, and it never runs automatically. The agent that opened the PR fixes review findings. The maintainer merges.
+No reviewer runs automatically: Codex (`chatgpt-codex-connector`) reviews are turned off. A reviewer should focus on Axum handlers staying in sync with `rust-api/openapi.json`, Postgres and MariaDB differences, Podcasting 2.0 on both web and mobile, and Music Assistant on the web only (no mobile UI, no playback speed while a Music Assistant speaker is the target, tokens never returned). Claude Code is optional: someone calls it in with `@claude`, where configured, for risky PRs only, and it never runs automatically. The agent that opened the PR fixes review findings. The maintainer merges.
 
 ## Review and merge policy
 
 - Bots never post GitHub approvals.
-- A PR merges only after CI is green and every Codex review thread is fixed and resolved.
+- A PR merges only after CI is green and every review thread is fixed and resolved.
 - Every merge here needs the maintainer's explicit approval.
 - Bots and agents merge only work the maintainer has explicitly approved.
 - Major version bumps, auth, payments, database migrations, CI or release configuration, secrets, and large or ambiguous PRs wait for the maintainer.
