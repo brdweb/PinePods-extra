@@ -2251,6 +2251,28 @@ class PinepodsService {
     }
   }
 
+  /// Whether a podcast the user subscribes to starts with auto-queue on (#648).
+  Future<bool> getAutoQueueNewPodcasts(int userId) async {
+    final url = Uri.parse('$_server/api/data/get_auto_queue_new_podcasts/$userId');
+    final response = await _get(url, headers: {'Api-Key': _apiKey!});
+    if (response.statusCode != 200) {
+      throw Exception('Failed to get the auto-queue default: ${response.statusCode}');
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['enabled'] == true;
+  }
+
+  Future<void> setAutoQueueNewPodcasts(int userId, bool enabled) async {
+    final url = Uri.parse('$_server/api/data/update_auto_queue_new_podcasts');
+    final response = await _put(
+      url,
+      headers: {'Api-Key': _apiKey!, 'Content-Type': 'application/json'},
+      body: jsonEncode({'user_id': userId, 'enabled': enabled}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save the auto-queue default: ${response.statusCode}');
+    }
+  }
+
   Future<int?> getFeedCutoffDays(int podcastId, int userId) async {
     final url = Uri.parse('$_server/api/data/get_feed_cutoff_days').replace(
       queryParameters: {'podcast_id': podcastId.toString(), 'user_id': userId.toString()},
