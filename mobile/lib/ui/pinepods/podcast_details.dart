@@ -311,10 +311,10 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(!saved
-              ? 'Could not change auto-queue'
+              ? L.of(context)!.auto_queue_failed
               : newValue
-                  ? 'New episodes will be added to your queue'
-                  : 'New episodes will no longer be added to your queue'),
+                  ? L.of(context)!.auto_queue_enabled
+                  : L.of(context)!.auto_queue_disabled),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -2590,7 +2590,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
           CheckedPopupMenuItem<String>(
             value: 'autoqueue',
             checked: _isAutoQueueEnabled,
-            child: const Text('Add new episodes to queue'),
+            child: Text(L.of(context)!.auto_queue_new_episodes),
           ),
           if (_isYoutube)
             PopupMenuItem<String>(
@@ -2741,7 +2741,7 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
         EpisodeSortDirection.longestFirst: L.of(context)!.sort_longest_first,
         EpisodeSortDirection.titleAZ: L.of(context)!.sort_title_az,
         EpisodeSortDirection.titleZA: L.of(context)!.sort_title_za,
-        EpisodeSortDirection.season: 'Season',
+        EpisodeSortDirection.season: L.of(context)!.p2_sort_season,
       },
       sortValue: _sortDirection,
       onSort: (value) {
@@ -2807,7 +2807,9 @@ class _PinepodsPodcastDetailsState extends State<PinepodsPodcastDetails> {
       if (!havePrevious || seasonNumber != previousSeason) {
         havePrevious = true;
         previousSeason = seasonNumber;
-        final label = seasonNumber == null ? 'Other episodes' : 'Season $seasonNumber';
+        final label = seasonNumber == null
+            ? L.of(context)!.p2_other_episodes
+            : L.of(context)!.p2_season_group(seasonNumber.toString());
         children.add(
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),

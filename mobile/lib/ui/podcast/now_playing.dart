@@ -1136,7 +1136,7 @@ class _ChapterListState extends State<_ChapterList> {
                     // Podcasting 2.0 chapter link.
                     if (httpLink(chapter.url) != null)
                       IconButton(
-                        tooltip: 'Open chapter link',
+                        tooltip: L.of(context)!.p2_chapter_link,
                         icon: const Icon(Icons.open_in_new, size: 18),
                         onPressed: () {
                           final uri = Uri.tryParse(httpLink(chapter.url)!);
