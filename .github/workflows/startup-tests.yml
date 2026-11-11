@@ -1,0 +1,44 @@
+name: Startup Script Tests
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "startup/**"
+      - "dockerfile"
+      - "dockerfile-arm"
+      - ".github/workflows/startup-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "startup/**"
+      - ".github/workflows/startup-tests.yml"
+  workflow_dispatch:
+
+jobs:
+  startup-tests:
+    name: startup-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Each test runs the startup scripts in a throwaway container, so it only needs Docker.
+      - name: Run startup/tests
+        run: |
+          shopt -s nullglob
+          tests=(startup/tests/*.sh)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "no startup tests found" >&2
+            exit 1
+          fi
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
