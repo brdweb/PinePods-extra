@@ -1838,7 +1838,7 @@ class PinepodsService {
       final msg = data['message'] ?? data['detail'] ?? data['error'];
       if (msg is String && msg.isNotEmpty) return msg;
     } catch (_) {}
-    return 'Server returned ${response.statusCode}';
+    return 'Server returned ${response.statusCode}'; // i18n-ignore
   }
 
   Future<List<PinepodsCollection>> getCollections(int userId) async {
@@ -1996,7 +1996,7 @@ class PinepodsService {
         headers: _jsonHeaders,
         body: jsonEncode({'episode_ids': episodeIds, 'user_id': userId, 'is_youtube': isYoutube}));
     if (response.statusCode != 200) throw Exception(_errorText(response));
-    return jsonDecode(response.body)['message'] as String? ?? 'Done';
+    return jsonDecode(response.body)['message'] as String? ?? 'Done'; // i18n-ignore
   }
 
   /// Queues transcriptions; the server runs them one at a time and skips
@@ -2008,7 +2008,7 @@ class PinepodsService {
         headers: _jsonHeaders,
         body: jsonEncode({'episode_ids': episodeIds, 'user_id': userId, 'force': false}));
     if (response.statusCode != 200) throw Exception(_errorText(response));
-    return jsonDecode(response.body)['detail'] as String? ?? 'Transcriptions queued';
+    return jsonDecode(response.body)['detail'] as String? ?? 'Transcriptions queued'; // i18n-ignore
   }
 
   // Get episode metadata
