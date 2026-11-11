@@ -17,6 +17,7 @@ mod gpodder_server;
 mod in_app_notifications;
 mod library;
 mod music_assistant;
+mod fork_auto_queue;
 mod fork_shared_episodes;
 mod moved_feeds;
 mod oidc;
