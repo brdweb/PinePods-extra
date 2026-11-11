@@ -23,6 +23,7 @@ import 'package:pinepods_mobile/core/alternate_media.dart';
 import 'package:pinepods_mobile/services/audio/audio_player_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_audio_service.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
+import 'package:pinepods_mobile/l10n/L.dart';
 
 /// Mirror of the server's `NowPlayingSnapshot` (see rust-api models.rs).
 class NowPlayingDevice {
@@ -157,7 +158,7 @@ class NowPlayingService {
 
   String? _deviceId;
   String? _deviceName;
-  String _deviceType = 'Mobile';
+  String _deviceType = 'Mobile'; // i18n-ignore
 
   /// The actions [_applyCommand] handles, announced on connect.
   static const _capabilities =
@@ -224,7 +225,7 @@ class NowPlayingService {
   }
 
   Future<void> _resolveDeviceInfo() async {
-    _deviceType = Platform.isIOS ? 'iOS' : 'Android';
+    _deviceType = Platform.isIOS ? 'iOS' : 'Android'; // i18n-ignore
     if (_deviceName != null) return;
     try {
       final info = DeviceInfoPlugin();
@@ -233,7 +234,7 @@ class NowPlayingService {
         _deviceName = ios.name.isNotEmpty ? ios.name : ios.utsname.machine;
       } else {
         final android = await info.androidInfo;
-        _deviceName = android.model.isNotEmpty ? android.model : 'Android';
+        _deviceName = android.model.isNotEmpty ? android.model : 'Android'; // i18n-ignore
       }
     } catch (e) {
       log.fine('Could not read device info (continuing): $e');
@@ -505,8 +506,8 @@ class NowPlayingService {
           final match = devices.value.where((d) => d.deviceId == targetId);
           final name = match.isNotEmpty && match.first.deviceName.isNotEmpty
               ? match.first.deviceName
-              : 'That device';
-          lastCommandError.value = '$name is offline — command not delivered';
+              : L.current.that_device;
+          lastCommandError.value = L.current.device_offline_not_delivered(name);
         }
         break;
     }

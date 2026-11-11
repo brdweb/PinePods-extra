@@ -954,7 +954,14 @@ pub async fn save_email_settings(
         return Err(AppError::forbidden("Admin access required"));
     }
 
-    state.db_pool.save_email_settings(&request.email_settings).await?;
+    // The settings page never receives the stored password, so a blank one means "keep it".
+    let mut settings = request.email_settings;
+    if settings.email_password.is_empty() && settings.auth_required != 0 {
+        if let Some(current) = state.db_pool.get_email_settings().await? {
+            settings.email_password = current.password;
+        }
+    }
+    state.db_pool.save_email_settings(&settings).await?;
     Ok(Json(serde_json::json!({ "detail": "Email settings saved." })))
 }
 
@@ -1010,7 +1017,10 @@ pub async fn get_email_settings(
 
     let settings = state.db_pool.get_email_settings().await?;
     match settings {
-        Some(settings) => Ok(Json(settings)),
+        Some(mut settings) => {
+            settings.password = String::new();
+            Ok(Json(settings))
+        }
         None => Err(AppError::not_found("Email settings not found")),
     }
 }
@@ -1067,7 +1077,8 @@ async fn read_logo_as_base64() -> Result<String, AppError> {
     use std::path::Path;
     use tokio::fs;
     
-    let logo_path = Path::new("/var/www/html/static/assets/favicon.png");
+    let logo_file = crate::paths::logo_file();
+    let logo_path = Path::new(&logo_file);
     
     if !logo_path.exists() {
         return Err(AppError::internal("Logo file not found"));
@@ -1736,7 +1747,9 @@ pub struct BackupServerRequest {
     security(("api_key" = [])),
     responses(
         (status = 200, description = "Backup file download", content_type = "application/octet-stream"),
+        (status = 400, description = "Incorrect database password"),
         (status = 401, description = "Invalid or missing API key"),
+        (status = 500, description = "Database dump failed"),
     ),
 )]
 pub async fn backup_server(
@@ -1757,19 +1770,18 @@ pub async fn backup_server(
 
     // For large databases, we'll implement streaming export instead of subprocess
     // This avoids loading the entire database into memory at once
-    match backup_server_streaming(&state, &request.database_pass).await {
-        Ok(response) => Ok(response),
-        Err(e) => Err(AppError::internal(&format!("Backup failed: {}", e))),
-    }
+    backup_server_streaming(&state, &request.database_pass).await
 }
 
 // Use actual pg_dump/mysqldump for reliable backups
 async fn backup_server_streaming(
     state: &AppState,
     database_pass: &str,
-) -> Result<axum::response::Response, String> {
+) -> Result<axum::response::Response, AppError> {
     use axum::response::Response;
     use axum::body::Body;
+    use futures::StreamExt;
+    use tokio::io::AsyncReadExt;
     use tokio::process::Command;
     use tokio_util::io::ReaderStream;
 
@@ -1788,8 +1800,8 @@ async fn backup_server_streaming(
             .status(200)
             .header("content-type", "text/plain; charset=utf-8")
             .header("content-disposition", "attachment; filename=\"pinepods_backup.sql\"")
-            .body(Body::from_stream(ReaderStream::new(file?)))
-            .map_err(|e| format!("Failed to build response: {}", e));
+            .body(Body::from_stream(ReaderStream::new(file.map_err(|e| AppError::internal(format!("Backup failed: {}", e)))?)))
+            .map_err(|e| AppError::internal(format!("Failed to build response: {}", e)));
     }
 
     // Get database connection info from config
@@ -1852,53 +1864,80 @@ async fn backup_server_streaming(
     let mut child = cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start backup process: {}", e))?;
+        .map_err(|e| AppError::internal(format!("Failed to start backup process: {}", e)))?;
 
-    let stdout = child.stdout.take()
-        .ok_or("Failed to get stdout from backup process")?;
-    
-    let stderr = child.stderr.take()
-        .ok_or("Failed to get stderr from backup process")?;
+    let mut stdout = child.stdout.take()
+        .ok_or_else(|| AppError::internal("Failed to get stdout from backup process"))?;
+    let mut stderr = child.stderr.take()
+        .ok_or_else(|| AppError::internal("Failed to get stderr from backup process"))?;
 
-    let stream = ReaderStream::new(stdout);
-    let body = Body::from_stream(stream);
+    // Drain stderr concurrently so a chatty dump (pg_dump --verbose) can't block on a full pipe.
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let _ = stderr.read_to_string(&mut buf).await;
+        buf
+    });
 
-    // Spawn a task to wait for the process and handle errors
+    // Hold the response until the dump produces output: a bad password or unreachable
+    // database exits before writing anything, and must surface as an error, not an empty file.
+    let mut first = vec![0u8; 64 * 1024];
+    let n = stdout.read(&mut first).await
+        .map_err(|e| AppError::internal(format!("Failed to read backup output: {}", e)))?;
+
+    if n == 0 {
+        let status = child.wait().await
+            .map_err(|e| AppError::internal(format!("Failed to wait for backup process: {}", e)))?;
+        let stderr_output = stderr_task.await.unwrap_or_default();
+        return Err(backup_failure_error(status.success(), &stderr_output));
+    }
+    first.truncate(n);
+
+    let first_chunk = futures::stream::once(async move { Ok::<_, std::io::Error>(axum::body::Bytes::from(first)) });
+    let body = Body::from_stream(first_chunk.chain(ReaderStream::new(stdout)));
+
     tokio::spawn(async move {
-        // Read stderr to capture error messages
-        let stderr_reader = tokio::io::BufReader::new(stderr);
-        let mut stderr_output = String::new();
-        use tokio::io::AsyncBufReadExt;
-        
-        // Read stderr line by line
-        let mut lines = stderr_reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            stderr_output.push_str(&line);
-            stderr_output.push('\n');
-        }
-        
-        match child.wait().await {
-            Ok(status) if status.success() => {
-                info!("Backup process completed successfully");
-            }
-            Ok(status) => {
-                warn!("Backup process failed with status: {}", status);
-                if !stderr_output.is_empty() {
-                    info!("Mysqldump stderr output: {}", stderr_output);
-                }
-            }
-            Err(e) => {
-                warn!("Failed to wait for backup process: {}", e);
-            }
+        let status = child.wait().await;
+        let stderr_output = stderr_task.await.unwrap_or_default();
+        match status {
+            Ok(status) if status.success() => info!("Backup process completed successfully"),
+            Ok(status) => warn!("Backup process failed with status {}: {}", status, last_error_line(&stderr_output)),
+            Err(e) => warn!("Failed to wait for backup process: {}", e),
         }
     });
 
-    Ok(Response::builder()
+    Response::builder()
         .status(200)
         .header("content-type", "text/plain; charset=utf-8")
         .header("content-disposition", "attachment; filename=\"pinepods_backup.sql\"")
         .body(body)
-        .map_err(|e| format!("Failed to build response: {}", e))?)
+        .map_err(|e| AppError::internal(format!("Failed to build response: {}", e)))
+}
+
+/// Last meaningful stderr line from pg_dump/mysqldump (verbose progress lines are noise).
+fn last_error_line(stderr: &str) -> &str {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines.iter().rev()
+        .find(|l| l.to_lowercase().contains("error"))
+        .or(lines.last())
+        .copied()
+        .unwrap_or("")
+}
+
+/// Map a dump that produced no output to a user-facing error.
+fn backup_failure_error(exited_ok: bool, stderr: &str) -> AppError {
+    let lower = stderr.to_lowercase();
+    if lower.contains("password authentication failed")
+        || lower.contains("access denied")
+        || lower.contains("no password supplied")
+    {
+        return AppError::bad_request("Incorrect database password");
+    }
+    let detail = last_error_line(stderr);
+    if exited_ok || detail.is_empty() {
+        AppError::internal("Backup failed: the database dump produced no output")
+    } else {
+        AppError::internal(format!("Backup failed: {}", detail))
+    }
 }
 
 /// RAII guard for the global "restore in progress" flag. Resets the flag on drop so a
@@ -1957,7 +1996,8 @@ pub async fn restore_server(
     // Stream the uploaded file to a temp file on the backups volume so memory usage
     // stays bounded for large dumps (a real instance backup can be hundreds of MB).
     // A ".tmp" extension keeps it out of list_backup_files (which only lists ".sql").
-    let backup_dir = std::path::Path::new("/opt/pinepods/backups");
+    let backup_dir = crate::paths::backups_dir();
+    let backup_dir = std::path::Path::new(&backup_dir);
     tokio::fs::create_dir_all(backup_dir).await
         .map_err(|e| AppError::internal(&format!("Failed to create backup directory: {}", e)))?;
     let tmp_path = backup_dir.join(format!(".restore_upload_{}.tmp", uuid::Uuid::new_v4()));
@@ -2015,8 +2055,10 @@ pub async fn restore_server(
             let db_pool = db_pool.clone();
             let tmp_path = tmp_path.clone();
             let merged = merged.clone();
-            let _restore_guard = restore_guard;
             async move {
+                // Must live inside the future: it's only captured if used here, and it has
+                // to stay held until the restore ends.
+                let _restore_guard = restore_guard;
                 reporter.update_progress(10.0, Some("Starting restore...".to_string())).await?;
                 reporter.update_progress(50.0, Some("Restoring database...".to_string())).await?;
 
@@ -3943,6 +3985,68 @@ pub async fn transcribe_episode(
     Ok(Json(serde_json::json!({ "task_id": task_id, "detail": "Transcription started." })))
 }
 
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct BulkTranscribeEpisodesRequest {
+    pub episode_ids: Vec<i32>,
+    pub user_id: i32,
+    /// Re-transcribe episodes that already have a transcript.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Queue transcriptions for several episodes. They run one at a time; episodes that already
+/// have a transcript are skipped unless `force` is set.
+#[utoipa::path(
+    post,
+    path = "/bulk_transcribe_episodes",
+    tag = "settings",
+    summary = "Queue transcriptions for several episodes (AI sidecar)",
+    request_body = BulkTranscribeEpisodesRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Queued; one task id per episode", body = serde_json::Value),
+        (status = 400, description = "No episodes given"),
+        (status = 401, description = "Invalid or missing API key"),
+        (status = 404, description = "An episode isn't one of the user's"),
+        (status = 503, description = "AI service unavailable"),
+    ),
+)]
+pub async fn bulk_transcribe_episodes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<BulkTranscribeEpisodesRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    require_valid_api_key(&state, &api_key).await?;
+
+    let key_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+    if key_id != request.user_id && !is_web_key {
+        return Err(AppError::forbidden("You can only process your own episodes."));
+    }
+    let mut episode_ids = request.episode_ids;
+    let mut seen = std::collections::HashSet::new();
+    episode_ids.retain(|id| seen.insert(*id));
+    if episode_ids.is_empty() {
+        return Err(AppError::bad_request("No episodes given."));
+    }
+    crate::handlers::require_episodes_owner(&state, request.user_id, &episode_ids, false).await?;
+    if !state.ai_available.is_available() {
+        return Err(AppError::service_unavailable("AI service is not available."));
+    }
+
+    let count = episode_ids.len();
+    let task_ids = state
+        .task_spawner
+        .spawn_bulk_transcribe(episode_ids, request.user_id, request.force)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "task_ids": task_ids,
+        "detail": format!("Queued {} episode{} for transcription.", count, if count == 1 { "" } else { "s" }),
+    })))
+}
+
 // Read the stored generated transcript for an episode
 #[derive(Deserialize, utoipa::IntoParams)]
 pub struct EpisodeTranscriptQuery {
@@ -5017,7 +5121,7 @@ pub async fn verify_mfa(
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ScheduleBackupRequest {
     pub user_id: i32,
-    pub cron_schedule: String, // e.g., "0 2 * * *" for daily at 2 AM
+    pub cron_schedule: String, // With seconds, e.g. "0 0 2 * * *" for daily at 2 AM
     pub enabled: bool,
     // Number of scheduled backups to keep; None/0 = keep all
     #[serde(default)]
@@ -5153,8 +5257,8 @@ pub async fn list_backup_files(
 
     use std::fs;
     
-    let backup_dir = "/opt/pinepods/backups";
-    let backup_files = match fs::read_dir(backup_dir) {
+    let backup_dir = crate::paths::backups_dir();
+    let backup_files = match fs::read_dir(&backup_dir) {
         Ok(entries) => {
             let mut files = Vec::new();
             for entry in entries {
@@ -5186,6 +5290,8 @@ pub async fn list_backup_files(
             });
             files
         }
+        // No backup volume mounted yet: nothing to list, but the page still needs database_type.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(_) => {
             return Err(AppError::internal("Failed to read backup directory"));
         }
@@ -5238,7 +5344,7 @@ pub async fn restore_from_backup_file(
         return Err(AppError::bad_request("Invalid backup filename"));
     }
 
-    let backup_path = format!("/opt/pinepods/backups/{}", backup_filename);
+    let backup_path = format!("{}/{}", crate::paths::backups_dir(), backup_filename);
 
     // Check if file exists
     if !std::path::Path::new(&backup_path).exists() {
@@ -5257,15 +5363,16 @@ pub async fn restore_from_backup_file(
     // Spawn restoration task
     let task_id = state.task_spawner.spawn_progress_task(
         "restore_from_backup_file".to_string(),
-        0, // System user
+        requesting_user_id,
         move |reporter| {
             let backup_path = backup_path.clone();
             let backup_filename = backup_filename_for_closure;
             let db_pool = db_pool.clone();
             let merged = merged.clone();
-            // Released (via Drop) when the restore task finishes.
-            let _restore_guard = restore_guard;
             async move {
+                // Must live inside the future: it's only captured if used here, and it has
+                // to stay held until the restore ends.
+                let _restore_guard = restore_guard;
                 reporter.update_progress(10.0, Some("Starting restoration from backup file...".to_string())).await?;
                 reporter.update_progress(50.0, Some("Restoring database...".to_string())).await?;
 
@@ -5325,7 +5432,7 @@ pub async fn delete_backup_file(
         return Err(AppError::bad_request("Invalid backup filename"));
     }
 
-    let backup_path = format!("/opt/pinepods/backups/{}", backup_filename);
+    let backup_path = format!("{}/{}", crate::paths::backups_dir(), backup_filename);
 
     if !std::path::Path::new(&backup_path).exists() {
         return Err(AppError::not_found("Backup file not found"));
@@ -5376,10 +5483,10 @@ pub async fn manual_backup_to_directory(
     // Generate filename with timestamp
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let backup_filename = format!("manual_backup_{}.sql", timestamp);
-    let backup_path = format!("/opt/pinepods/backups/{}", backup_filename);
+    let backup_path = format!("{}/{}", crate::paths::backups_dir(), backup_filename);
 
     // Ensure backup directory exists
-    if let Err(e) = std::fs::create_dir_all("/opt/pinepods/backups") {
+    if let Err(e) = std::fs::create_dir_all(crate::paths::backups_dir()) {
         return Err(AppError::internal(&format!("Failed to create backup directory: {}", e)));
     }
     // Ownership is handled by running the process as PUID:PGID (see startup.sh); no chown needed.
@@ -5391,7 +5498,7 @@ pub async fn manual_backup_to_directory(
     // Spawn backup task
     let task_id = state.task_spawner.spawn_progress_task(
         "manual_backup_to_directory".to_string(),
-        0, // System user
+        requesting_user_id,
         move |reporter| {
             let backup_path = backup_path.clone();
             let backup_filename = backup_filename_for_closure;
@@ -5778,7 +5885,8 @@ pub async fn update_user_language(
     ),
 )]
 pub async fn get_available_languages() -> Result<Json<AvailableLanguagesResponse>, AppError> {
-    let translations_dir = std::path::Path::new("/var/www/html/static/translations");
+    let translations_dir = crate::paths::translations_dir();
+    let translations_dir = std::path::Path::new(&translations_dir);
     
     let mut languages = Vec::new();
     
@@ -6272,3 +6380,26 @@ pub async fn delete_custom_theme(
     Ok(Json(serde_json::json!({ "message": "Custom theme deleted successfully" })))
 }
 
+
+#[cfg(test)]
+mod backup_error_tests {
+    use super::*;
+
+    #[test]
+    fn wrong_password_is_a_bad_request() {
+        let pg = "pg_dump: last built-in OID is 16383\npg_dump: error: connection to server at \"db\" (172.18.0.2), port 5432 failed: FATAL:  password authentication failed for user \"postgres\"\n";
+        let my = "mysqldump: Got error: 1045: \"Access denied for user 'root'@'172.18.0.3' (using password: YES)\" when trying to connect\n";
+        for stderr in [pg, my] {
+            let err = backup_failure_error(false, stderr);
+            assert!(matches!(err, AppError::BadRequest(ref m) if m == "Incorrect database password"), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn other_failures_report_the_error_line() {
+        let stderr = "pg_dump: reading extensions\npg_dump: error: connection to server at \"db\", port 5432 failed: Connection refused\npg_dump: detail: Is the server running?\n";
+        let err = backup_failure_error(false, stderr);
+        assert!(matches!(err, AppError::Internal(ref m) if m.contains("Connection refused")), "{err:?}");
+        assert!(matches!(backup_failure_error(true, ""), AppError::Internal(ref m) if m.contains("no output")));
+    }
+}

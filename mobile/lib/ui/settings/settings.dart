@@ -29,6 +29,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dialogs/flutter_dialogs.dart';
 import 'package:provider/provider.dart';
 import 'package:pinepods_mobile/ui/icons/phosphor_icons.dart';
+import 'package:pinepods_mobile/ui/utils/l10n_labels.dart';
+import 'package:pinepods_mobile/l10n/app_locale.dart';
+import 'package:pinepods_mobile/services/language/account_language.dart';
 
 /// This is the settings page and allows the user to select various
 /// options for the app.
@@ -65,12 +68,30 @@ class _SettingsState extends State<Settings> {
             children: [
               SettingsDividerLabel(label: L.of(context)!.settings_personalisation_divider_label),
               const Divider(),
+              MergeSemantics(
+                child: ListTile(
+                  leading: const Icon(PhosphorIconsRegular.globe),
+                  title: Text(L.of(context)!.language),
+                  trailing: DropdownButton<String>(
+                    value: appLanguages.containsKey(snapshot.data!.language) ? snapshot.data!.language : '',
+                    underline: Container(),
+                    items: [
+                      DropdownMenuItem(value: '', child: Text(L.of(context)!.language_system_default)),
+                      for (final entry in appLanguages.entries)
+                        DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) _setLanguage(settingsBloc, snapshot.data!, value);
+                    },
+                  ),
+                ),
+              ),
               if (snapshot.data!.pinepodsUserId != null)
                 MergeSemantics(
                   child: ListTile(
                     leading: const Icon(PhosphorIconsRegular.userCircle),
-                    title: const Text('Show my Gravatar'),
-                    subtitle: const Text('Loads an image from gravatar.com using a hash of your email'),
+                    title: Text(L.of(context)!.show_my_gravatar),
+                    subtitle: Text(L.of(context)!.show_my_gravatar_description),
                     trailing: Switch.adaptive(
                       value: snapshot.data!.pinepodsUseGravatar,
                       onChanged: (value) => _setUseGravatar(settingsBloc, snapshot.data!, value),
@@ -150,17 +171,17 @@ class _SettingsState extends State<Settings> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Play button style', style: Theme.of(context).textTheme.titleMedium),
+                    Text(L.of(context)!.play_button_style, style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 12),
                     SizedBox(
                       width: double.infinity,
                       child: SegmentedButton<String>(
                         showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment(value: 'ring', label: Text('Ring'), icon: Icon(PhosphorIconsRegular.circleNotch)),
-                          ButtonSegment(value: 'outline', label: Text('Outline'), icon: Icon(PhosphorIconsRegular.playCircle)),
-                          ButtonSegment(value: 'bare', label: Text('Bare'), icon: Icon(PhosphorIconsFill.play)),
-                          ButtonSegment(value: 'tinted', label: Text('Tinted'), icon: Icon(PhosphorIconsFill.playCircle)),
+                        segments: [
+                          ButtonSegment(value: 'ring', label: Text(L.of(context)!.play_button_ring), icon: const Icon(PhosphorIconsRegular.circleNotch)),
+                          ButtonSegment(value: 'outline', label: Text(L.of(context)!.play_button_outline), icon: const Icon(PhosphorIconsRegular.playCircle)),
+                          ButtonSegment(value: 'bare', label: Text(L.of(context)!.play_button_bare), icon: const Icon(PhosphorIconsFill.play)),
+                          ButtonSegment(value: 'tinted', label: Text(L.of(context)!.play_button_tinted), icon: const Icon(PhosphorIconsFill.playCircle)),
                         ],
                         selected: {snapshot.data!.playButtonStyle},
                         onSelectionChanged: (s) => settingsBloc.setPlayButtonStyle(s.first),
@@ -172,8 +193,8 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.eyedropper),
-                  title: const Text('Artwork colours'),
-                  subtitle: const Text('Tint episode cards with a colour from each podcast\'s artwork'),
+                  title: Text(L.of(context)!.artwork_colours),
+                  subtitle: Text(L.of(context)!.artwork_colours_description),
                   trailing: Switch.adaptive(
                     value: snapshot.data!.artworkAccentColors,
                     onChanged: (value) => settingsBloc.setArtworkAccentColors(value),
@@ -204,11 +225,11 @@ class _SettingsState extends State<Settings> {
                       height: 0,
                       width: 0,
                     ),
-              SettingsDividerLabel(label: 'Navigation'),
+              SettingsDividerLabel(label: L.of(context)!.settings_navigation),
               const Divider(),
               ListTile(
-                title: const Text('Reorganize Bottom Bar'),
-                subtitle: const Text('Customize the order of bottom navigation items'),
+                title: Text(L.of(context)!.reorganize_bottom_bar),
+                subtitle: Text(L.of(context)!.reorganize_bottom_bar_description),
                 leading: const Icon(PhosphorIconsRegular.list),
                 onTap: () {
                   Navigator.push(
@@ -236,7 +257,7 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsFill.fastForward),
-                  title: const Text('Fast-forward interval'),
+                  title: Text(L.of(context)!.fast_forward_interval),
                   trailing: _buildIntervalDropdown(
                     context: context,
                     value: snapshot.data!.fastForwardInterval,
@@ -248,7 +269,7 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsFill.rewind),
-                  title: const Text('Rewind interval'),
+                  title: Text(L.of(context)!.rewind_interval),
                   trailing: _buildIntervalDropdown(
                     context: context,
                     value: snapshot.data!.rewindInterval,
@@ -260,14 +281,14 @@ class _SettingsState extends State<Settings> {
               const QueuePositionSetting(),
               const AutoQueueDefaultSetting(),
               const SearchProviderWidget(),
-              SettingsDividerLabel(label: 'Download Management'),
+              SettingsDividerLabel(label: L.of(context)!.download_management),
               const Divider(),
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.wifiHigh),
-                  title: const Text('Auto-download on WiFi only'),
-                  subtitle: const Text(
-                      'Only run automatic downloads (auto-download, queue and mirror) while on WiFi'),
+                  title: Text(L.of(context)!.auto_download_wifi_only),
+                  subtitle: Text(
+                      L.of(context)!.auto_download_wifi_only_description),
                   trailing: Switch.adaptive(
                     value: snapshot.data!.autoDownloadWifiOnly,
                     onChanged: (value) => setState(() => settingsBloc.setAutoDownloadWifiOnly(value)),
@@ -277,9 +298,9 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsFill.cloudArrowDown),
-                  title: const Text('Prefer server download source'),
-                  subtitle: const Text(
-                      'Download from the server\'s copy when available, else the original feed'),
+                  title: Text(L.of(context)!.prefer_server_download_source),
+                  subtitle: Text(
+                      L.of(context)!.prefer_server_download_source_description),
                   trailing: Switch.adaptive(
                     value: snapshot.data!.preferServerDownloadSource,
                     onChanged: (value) => setState(() => settingsBloc.setPreferServerDownloadSource(value)),
@@ -289,8 +310,8 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.listChecks),
-                  title: const Text('Auto-download queued episodes'),
-                  subtitle: const Text('Keep the next N queued episodes downloaded'),
+                  title: Text(L.of(context)!.auto_download_queued),
+                  subtitle: Text(L.of(context)!.auto_download_queued_description),
                   trailing: _buildCountDropdown(
                     context: context,
                     value: snapshot.data!.autoDownloadQueueCount,
@@ -302,9 +323,9 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.arrowsClockwise),
-                  title: const Text('Mirror server downloads'),
-                  subtitle: const Text(
-                      'Keep this device in sync with the episodes downloaded on the server'),
+                  title: Text(L.of(context)!.mirror_server_downloads),
+                  subtitle: Text(
+                      L.of(context)!.mirror_server_downloads_description),
                   trailing: Switch.adaptive(
                     value: snapshot.data!.mirrorServerDownloads,
                     onChanged: (value) => setState(() => settingsBloc.setMirrorServerDownloads(value)),
@@ -314,9 +335,9 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.checks),
-                  title: const Text('Delete downloads when finished'),
-                  subtitle: const Text(
-                      "Remove an episode's download from this device about an hour after you finish it"),
+                  title: Text(L.of(context)!.delete_downloads_when_finished),
+                  subtitle: Text(
+                      L.of(context)!.delete_downloads_when_finished_description),
                   trailing: Switch.adaptive(
                     value: snapshot.data!.deleteDownloadedPlayedEpisodes,
                     onChanged: (value) => setState(() => settingsBloc.deleteDownloadedPlayedEpisodes(value)),
@@ -326,14 +347,14 @@ class _SettingsState extends State<Settings> {
               MergeSemantics(
                 child: ListTile(
                   leading: const Icon(PhosphorIconsRegular.clockCountdown),
-                  title: const Text('Delete downloads after'),
-                  subtitle: const Text('Remove downloads on this device older than this'),
+                  title: Text(L.of(context)!.delete_downloads_after),
+                  subtitle: Text(L.of(context)!.delete_downloads_after_description),
                   trailing: DropdownButton<int>(
                     value: snapshot.data!.deleteDownloadsAfterDays,
                     underline: Container(),
                     items: [
                       for (final d in {...deleteAfterDayChoices, snapshot.data!.deleteDownloadsAfterDays})
-                        DropdownMenuItem(value: d, child: Text(deleteAfterDaysLabel(d))),
+                        DropdownMenuItem(value: d, child: Text(deleteAfterDaysLabel(context, d))),
                     ],
                     onChanged: (value) {
                       if (value != null) setState(() => settingsBloc.setDeleteDownloadsAfterDays(value));
@@ -341,14 +362,14 @@ class _SettingsState extends State<Settings> {
                   ),
                 ),
               ),
-              SettingsDividerLabel(label: 'Server Downloads'),
+              SettingsDividerLabel(label: L.of(context)!.server_downloads_title),
               const Divider(),
               const ServerDownloadDefaults(),
-              SettingsDividerLabel(label: 'Debug'),
+              SettingsDividerLabel(label: L.of(context)!.settings_debug),
               const Divider(),
               ListTile(
-                title: const Text('App Logs'),
-                subtitle: const Text('View debug logs and device information'),
+                title: Text(L.of(context)!.app_logs),
+                subtitle: Text(L.of(context)!.app_logs_description),
                 leading: const Icon(PhosphorIconsRegular.bug),
                 onTap: () {
                   Navigator.push(
@@ -359,7 +380,7 @@ class _SettingsState extends State<Settings> {
                   );
                 },
               ),
-              SettingsDividerLabel(label: 'Certificates'),
+              SettingsDividerLabel(label: L.of(context)!.certificates),
               const Divider(),
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16.0),
@@ -375,6 +396,22 @@ class _SettingsState extends State<Settings> {
   /// Dropdown for selecting a skip interval (in seconds). Ensures the
   /// currently-stored value is always selectable even if it isn't one of the
   /// preset options.
+  /// Applies [code] here and saves it to the account, like the web app's
+  /// language setting. Empty means follow the device language.
+  Future<void> _setLanguage(SettingsBloc settingsBloc, AppSettings settings, String code) async {
+    settingsBloc.setLanguage(code);
+    final server = settings.pinepodsServer;
+    final apiKey = settings.pinepodsApiKey;
+    final userId = settings.pinepodsUserId;
+    if (server == null || apiKey == null || userId == null) return;
+    await AccountLanguage.save(
+      server: server,
+      apiKey: apiKey,
+      userId: userId,
+      language: code.isEmpty ? null : code,
+    );
+  }
+
   Future<void> _setUseGravatar(SettingsBloc settingsBloc, AppSettings settings, bool value) async {
     final previous = settings.pinepodsUseGravatar;
     settingsBloc.setPinepodsUseGravatar(value);
@@ -382,7 +419,7 @@ class _SettingsState extends State<Settings> {
     if (!await service.setUseGravatar(settings.pinepodsUserId!, value)) {
       settingsBloc.setPinepodsUseGravatar(previous);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not update the Gravatar setting')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(L.of(context)!.could_not_update_gravatar)));
       }
     }
   }
@@ -553,7 +590,7 @@ class _WebAppInfoWidget extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'Web App Settings',
+                        L.of(context)!.web_app_settings,
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           color: Theme.of(context).primaryColor,
@@ -563,7 +600,7 @@ class _WebAppInfoWidget extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Many more server side and user settings available from the PinePods web app. Please head to $serverUrl to adjust much more',
+                    L.of(context)!.web_app_settings_description(serverUrl),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],

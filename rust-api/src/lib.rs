@@ -26,6 +26,7 @@ pub mod handlers;
 pub mod memory_store;
 pub mod models;
 pub mod openapi;
+pub mod paths;
 pub mod redis_client;
 pub mod redis_manager;
 pub mod services;
@@ -104,7 +105,7 @@ pub fn create_app(state: AppState) -> Router {
         // Routes/services that intentionally stay out of the API spec
         .route("/api/placeholder/{width}/{height}", get(handlers::proxy::placeholder_image))
         .merge(gpodder::router())
-        .nest_service("/api/local-media", ServeDir::new("/opt/pinepods/local-media"))
+        .nest_service("/api/local-media", ServeDir::new(paths::local_media_dir()))
         // Raw spec for tooling/docs builds, plus the interactive Scalar UI at /api/docs
         .route("/api/openapi.json", get(move || {
             let spec = spec.clone();
@@ -423,6 +424,7 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::settings::adjust_skip_times))
         .routes(routes!(handlers::settings::ai_status))
         .routes(routes!(handlers::settings::transcribe_episode))
+        .routes(routes!(handlers::settings::bulk_transcribe_episodes))
         .routes(routes!(handlers::settings::get_episode_transcript))
         .routes(routes!(handlers::settings::export_episode_transcript))
         .routes(routes!(handlers::settings::adjust_auto_transcribe))
