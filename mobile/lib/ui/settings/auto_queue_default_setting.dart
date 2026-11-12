@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
+import 'package:pinepods_mobile/l10n/L.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
 import 'package:pinepods_mobile/ui/icons/phosphor_icons.dart';
 import 'package:provider/provider.dart';
@@ -41,7 +42,7 @@ class _AutoQueueDefaultSettingState extends State<AutoQueueDefaultSetting> {
       if (!mounted) return;
       setState(() => _enabled = previous);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not save the auto-queue setting')),
+        SnackBar(content: Text(L.of(context)!.failed_to_update_auto_queue_new)),
       );
     }
   }
@@ -52,10 +53,8 @@ class _AutoQueueDefaultSettingState extends State<AutoQueueDefaultSetting> {
     return MergeSemantics(
       child: ListTile(
         leading: const Icon(PhosphorIconsRegular.queue),
-        title: const Text('Queue new episodes of new subscriptions'),
-        subtitle: const Text(
-            'Podcasts you subscribe to from now on start with "Add new episodes to queue" on. '
-            'Older episodes are not queued, and podcasts you already have keep their setting.'),
+        title: Text(L.of(context)!.auto_queue_new_podcasts),
+        subtitle: Text(L.of(context)!.auto_queue_new_podcasts_description),
         trailing: _enabled == null
             ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
             : Switch(value: _enabled!, onChanged: _set),
