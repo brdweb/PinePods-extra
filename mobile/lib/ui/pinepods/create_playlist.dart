@@ -3,6 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:pinepods_mobile/bloc/settings/settings_bloc.dart';
 import 'package:pinepods_mobile/services/pinepods/pinepods_service.dart';
 import 'package:provider/provider.dart';
+import 'package:pinepods_mobile/l10n/L.dart';
+
+/// The sort orders the server accepts, in menu order.
+const playlistSortOptions = ['date_desc', 'date_asc', 'duration_asc', 'duration_desc'];
+
+String _playlistSortLabel(BuildContext context, String order) {
+  final l = L.of(context)!;
+  return switch (order) {
+    'date_asc' => l.sort_oldest_first,
+    'duration_asc' => l.sort_shortest_first,
+    'duration_desc' => l.sort_longest_first,
+    _ => l.sort_newest_first,
+  };
+}
 
 class CreatePlaylistPage extends StatefulWidget {
   const CreatePlaylistPage({Key? key}) : super(key: key);
@@ -24,7 +38,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
   bool _includePlayed = false;
   String _minDuration = '';
   String _maxDuration = '';
-  String _sortOrder = 'newest_first';
+  String _sortOrder = 'date_desc';
   bool _groupByPodcast = false;
   String _maxEpisodes = '';
 
@@ -70,7 +84,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
         settings.pinepodsApiKey == null || 
         settings.pinepodsUserId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Not connected to PinePods server')),
+        SnackBar(content: Text(L.of(context)!.not_connected_to_pinepods)),
       );
       return;
     }
@@ -112,20 +126,20 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
         if (mounted) {
           Navigator.of(context).pop(true); // Return true to indicate success
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Playlist created successfully!')),
+            SnackBar(content: Text(L.of(context)!.playlist_created)),
           );
         }
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to create playlist')),
+            SnackBar(content: Text(L.of(context)!.failed_to_create_playlist)),
           );
         }
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error creating playlist: $e')),
+          SnackBar(content: Text(L.of(context)!.error_creating_playlist(e.toString()))),
         );
       }
     } finally {
@@ -141,7 +155,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create Playlist'),
+        title: Text(L.of(context)!.create_playlist_title),
         backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         elevation: 0,
         actions: [
@@ -157,7 +171,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
           else
             TextButton(
               onPressed: _createPlaylist,
-              child: const Text('Create'),
+              child: Text(L.of(context)!.create),
             ),
         ],
       ),
@@ -169,13 +183,13 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             // Name field
             TextFormField(
               controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: 'Playlist Name',
-                hintText: 'Enter playlist name',
+              decoration: InputDecoration(
+                labelText: L.of(context)!.playlist_name,
+                hintText: L.of(context)!.playlist_name_hint,
               ),
               validator: (value) {
                 if (value == null || value.trim().isEmpty) {
-                  return 'Please enter a playlist name';
+                  return L.of(context)!.playlist_name_required;
                 }
                 return null;
               },
@@ -186,9 +200,9 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             // Description field
             TextFormField(
               controller: _descriptionController,
-              decoration: const InputDecoration(
-                labelText: 'Description (Optional)',
-                hintText: 'Enter playlist description',
+              decoration: InputDecoration(
+                labelText: L.of(context)!.description_optional,
+                hintText: L.of(context)!.playlist_description_hint,
               ),
               maxLines: 3,
             ),
@@ -197,7 +211,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             
             // Icon selector
             Text(
-              'Icon',
+              L.of(context)!.icon,
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -253,7 +267,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             const SizedBox(height: 24),
             
             Text(
-              'Episode Filters',
+              L.of(context)!.episode_filters,
               style: Theme.of(context).textTheme.titleMedium,
             ),
             
@@ -261,7 +275,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             
             // Episode filters
             CheckboxListTile(
-              title: const Text('Include Unplayed'),
+              title: Text(L.of(context)!.include_unplayed),
               value: _includeUnplayed,
               onChanged: (value) {
                 setState(() {
@@ -270,7 +284,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
               },
             ),
             CheckboxListTile(
-              title: const Text('Include Partially Played'),
+              title: Text(L.of(context)!.include_partially_played),
               value: _includePartiallyPlayed,
               onChanged: (value) {
                 setState(() {
@@ -279,7 +293,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
               },
             ),
             CheckboxListTile(
-              title: const Text('Include Played'),
+              title: Text(L.of(context)!.include_played),
               value: _includePlayed,
               onChanged: (value) {
                 setState(() {
@@ -292,7 +306,7 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             
             // Duration range
             Text(
-              'Duration Range (minutes)',
+              L.of(context)!.duration_range_minutes,
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -300,9 +314,9 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
               children: [
                 Expanded(
                   child: TextFormField(
-                    decoration: const InputDecoration(
-                      labelText: 'Min',
-                      hintText: 'Any',
+                    decoration: InputDecoration(
+                      labelText: L.of(context)!.min,
+                      hintText: L.of(context)!.any,
                     ),
                     keyboardType: TextInputType.number,
                     onChanged: (value) {
@@ -313,9 +327,9 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
                 const SizedBox(width: 16),
                 Expanded(
                   child: TextFormField(
-                    decoration: const InputDecoration(
-                      labelText: 'Max',
-                      hintText: 'Any',
+                    decoration: InputDecoration(
+                      labelText: L.of(context)!.max,
+                      hintText: L.of(context)!.any,
                     ),
                     keyboardType: TextInputType.number,
                     onChanged: (value) {
@@ -331,14 +345,12 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             // Sort order
             DropdownButtonFormField<String>(
               value: _sortOrder,
-              decoration: const InputDecoration(
-                labelText: 'Sort Order',
+              decoration: InputDecoration(
+                labelText: L.of(context)!.sort_order,
               ),
-              items: const [
-                DropdownMenuItem(value: 'newest_first', child: Text('Newest First')),
-                DropdownMenuItem(value: 'oldest_first', child: Text('Oldest First')),
-                DropdownMenuItem(value: 'shortest_first', child: Text('Shortest First')),
-                DropdownMenuItem(value: 'longest_first', child: Text('Longest First')),
+              items: [
+                for (final order in playlistSortOptions)
+                  DropdownMenuItem(value: order, child: Text(_playlistSortLabel(context, order))),
               ],
               onChanged: (value) {
                 setState(() {
@@ -351,9 +363,9 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             
             // Max episodes
             TextFormField(
-              decoration: const InputDecoration(
-                labelText: 'Max Episodes (Optional)',
-                hintText: 'Leave blank for no limit',
+              decoration: InputDecoration(
+                labelText: L.of(context)!.max_episodes_optional,
+                hintText: L.of(context)!.leave_blank_no_limit,
               ),
               keyboardType: TextInputType.number,
               onChanged: (value) {
@@ -365,8 +377,8 @@ class _CreatePlaylistPageState extends State<CreatePlaylistPage> {
             
             // Group by podcast
             CheckboxListTile(
-              title: const Text('Group by Podcast'),
-              subtitle: const Text('Group episodes by their podcast'),
+              title: Text(L.of(context)!.group_by_podcast),
+              subtitle: Text(L.of(context)!.group_by_podcast_description),
               value: _groupByPodcast,
               onChanged: (value) {
                 setState(() {
