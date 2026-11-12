@@ -92,6 +92,10 @@ tokio-util = { version = "0.7.20", features = ["io"] }
 nwc = "0.45"
 nostr = { version = "0.45", default-features = false, features = ["std", "nip47"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+sd-notify = "0.5.0"
+socket2 = { version = "0.6.5", features = ["all"] }
+
 [features]
 # Test-only hooks (e.g. letting the SSRF guard reach the loopback fixture server).
 # Enabled automatically for `cargo test` via the self dev-dependency below.
