@@ -6511,6 +6511,12 @@ input:checked + .notification-toggle-slider:before {
 .ma-note.is-error { color: var(--error-color, #e11d48); }
 .ma-note.is-ok { color: var(--success-color); }
 .ma-check { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; }
+/* Speaker rows: the status sits under the name, so a long name cannot push it out of the drawer. */
+.ma-speaker-check { align-items: flex-start; min-width: 0; }
+.ma-speaker-check input { margin-top: 4px; flex-shrink: 0; }
+.ma-speaker-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ma-speaker-text .rd-name { max-width: 100%; }
+.ma-speaker-text .rd-state { padding-left: 24px; white-space: normal; }
 .ma-volume { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .ma-volume input[type="range"] { flex: 1; min-width: 80px; }
 .ma-volume-label { font-size: 11px; color: var(--text-secondary-color); min-width: 72px; }
@@ -6552,7 +6558,8 @@ input:checked + .notification-toggle-slider:before {
    to set z-index: 80, which put this drawer under its own scrim: the dim overlay
    covered the speaker list, clicks hit the scrim, and the list could not scroll. */
 .nc-panel.ma-picker { z-index: 1302; }
-.player-fs-topbar-right { display: flex; align-items: center; gap: 4px; justify-self: end; }
+/* Third column: the eyebrow is absolutely centred, so it no longer fills the middle one. */
+.player-fs-topbar-right { display: flex; align-items: center; gap: 4px; grid-column: 3; justify-self: end; }
 
 @keyframes spinner-rotate {
     0% {
@@ -8142,14 +8149,24 @@ body.search-takeover-open .drawer-icon { display: none; }
     padding-bottom: 24px;
 }
 
+/* The artwork is the one part that gives up height, so the whole player
+   fits a short window without scrolling. Its width follows the height. */
 .player-fs-cover-slot {
-    width: 100%;
-    max-width: min(44vh, 360px);
+    height: min(44vh, 360px);
+    min-height: 120px;
+    max-width: 100%;
     aspect-ratio: 1 / 1;
     border-radius: var(--radius-xl);
     overflow: hidden;
-    flex-shrink: 0;
+    flex: 0 1 auto;
     box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.player-fs-cover-slot--video {
+    width: 100%;
+    height: auto;
+    max-width: min(44vh, 360px);
+    min-height: 0;
+    flex-shrink: 0;
 }
 .player-fs-art {
     width: 100%;
@@ -11039,6 +11056,8 @@ body.search-takeover-open .drawer-icon { display: none; }
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
 /* ---- Search inside transcripts ---- */
 .sp-chip-sep {
     width: 1px; align-self: stretch; margin: 4px 2px;

@@ -1497,19 +1497,21 @@ fn speaker_picker() -> Html {
                         html! {
                             <div class="rd-row" key={player.player_id.clone()}>
                                 <div class="rd-row-top">
-                                    <label class="ma-check">
+                                    <label class="ma-check ma-speaker-check">
                                         <input type="checkbox" checked={checked} onchange={on_check} />
-                                        <span class="rd-name">
-                                            <i class={ if show_group_tools { "ph ph-speakers" } else { "ph ph-speaker-high" } }></i>
-                                            { player.name.clone() }
+                                        <span class="ma-speaker-text">
+                                            <span class="rd-name">
+                                                <i class={ if show_group_tools { "ph ph-speakers" } else { "ph ph-speaker-high" } }></i>
+                                                { player.name.clone() }
+                                            </span>
+                                            <span class={classes!("rd-state", (playback_state.eq_ignore_ascii_case("playing") || playback_state.eq_ignore_ascii_case("buffering")).then_some("is-playing"))}>
+                                                { kind }{ " · " }{ state }
+                                                if !unavailable.is_empty() {
+                                                    { format!(" · {unavailable}") }
+                                                }
+                                            </span>
                                         </span>
                                     </label>
-                                    <span class={classes!("rd-state", (playback_state.eq_ignore_ascii_case("playing") || playback_state.eq_ignore_ascii_case("buffering")).then_some("is-playing"))}>
-                                        { kind }{ " · " }{ state }
-                                        if !unavailable.is_empty() {
-                                            { format!(" · {unavailable}") }
-                                        }
-                                    </span>
                                 </div>
                                 if let Some(label) = member_of_group.clone() {
                                     <span class="rd-track">{ label }</span>

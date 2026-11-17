@@ -1,4 +1,5 @@
 mod request_headers;
+mod stylesheet;
 mod trunk_config;
 
 use wasm_bindgen_test::*;
