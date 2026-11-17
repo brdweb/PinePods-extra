@@ -863,6 +863,17 @@ pub fn speaker_start(saved_sec: f64, completed: bool, start_skip: i64) -> Speake
     }
 }
 
+/// Arguments of the `play_episode` command. `position_sec` is left out when the
+/// client does not know the position, so the server resumes from the saved one.
+/// An explicit `0` is honoured and starts the episode from the beginning.
+pub fn play_episode_args(episode_id: i32, is_youtube: bool, position_sec: Option<f64>) -> Value {
+    let mut args = json!({ "episode_id": episode_id, "is_youtube": is_youtube });
+    if let Some(position_sec) = position_sec {
+        args["position_sec"] = json!(position_sec);
+    }
+    args
+}
+
 pub fn format_clock(secs: f64) -> String {
     if !secs.is_finite() || secs < 0.0 {
         return "00:00".to_string();
@@ -1530,5 +1541,12 @@ mod tests {
         let parsed: MaPlayersResponse = serde_json::from_str(raw).unwrap();
         assert!(parsed.players[0].is_group());
         assert_eq!(parsed.players[0].group_members, vec!["living".to_string()]);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn play_episode_args_omit_an_unknown_position() {
+        assert!(play_episode_args(4, false, None).get("position_sec").is_none());
+        assert_eq!(play_episode_args(4, true, Some(0.0))["position_sec"], 0.0);
     }
 }

@@ -23,7 +23,7 @@ use crate::components::context::{
 use crate::components::media_options::preferred_media_option;
 use crate::requests::music_assistant::{
     choose_playback, explain_test, format_clock, is_music_assistant, is_nothing_next,
-    note_relay_transport,
+    note_relay_transport, play_episode_args,
     plan_group, playback_state_for, player_name, refresh_music_assistant, send_player_command,
     for_episode, member_of, progress_percent, send_to_speaker_allowed, sleep_args, sleep_remaining,
     SleepChoice, SLEEP_CHOICES, speaker_key_command, speaker_playlist, speaker_start, transport_is_recent,
@@ -1052,14 +1052,10 @@ fn send_episode(
     device_id: String,
     episode_id: i32,
     is_youtube: bool,
-    position_sec: f64,
+    position_sec: Option<f64>,
     failure: String,
 ) {
-    let mut args = json!({
-        "episode_id": episode_id,
-        "is_youtube": is_youtube,
-        "position_sec": position_sec,
-    });
+    let mut args = play_episode_args(episode_id, is_youtube, position_sec);
     if !is_youtube {
         if let Some(option_id) = preferred_media_option(episode_id) {
             args["media_option_id"] = json!(option_id);
@@ -1186,7 +1182,7 @@ fn speaker_picker() -> Html {
                     player.device_id,
                     episode_id,
                     is_youtube,
-                    position.max(0.0),
+                    Some(position.max(0.0)),
                     failure.clone(),
                 );
                 return;
@@ -1221,14 +1217,14 @@ fn speaker_picker() -> Html {
                             device_id,
                             episode_id,
                             is_youtube,
-                            position_sec,
+                            Some(position_sec),
                             failure,
                         );
                     }
                     SpeakerResolve::Failed(err) => {
                         toast_failure(&failure, &err);
                         prompt.set(None);
-                        send_episode(player_id, device_id, episode_id, is_youtube, 0.0, failure);
+                        send_episode(player_id, device_id, episode_id, is_youtube, None, failure);
                     }
                 }
             });
@@ -1304,7 +1300,7 @@ fn speaker_picker() -> Html {
                     choice.device_id.clone(),
                     choice.episode_id,
                     choice.is_youtube,
-                    choice.resume_sec,
+                    Some(choice.resume_sec),
                     failure.clone(),
                 );
             })
@@ -1319,7 +1315,7 @@ fn speaker_picker() -> Html {
                     choice.device_id.clone(),
                     choice.episode_id,
                     choice.is_youtube,
-                    choice.start_over_sec,
+                    Some(choice.start_over_sec),
                     failure.clone(),
                 );
             })
