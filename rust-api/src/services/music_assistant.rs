@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -907,11 +907,19 @@ pub struct ProgressSample {
 }
 
 /// Throttle history writes: every 10s, on pause, on episode change, or on a seek-sized jump.
+///
+/// Nothing is written while the episode's resume seek is pending: its first
+/// samples are the start of the file and would overwrite the saved position
+/// the seek is about to restore.
 pub fn should_write_progress(
     prev: Option<&ProgressSample>,
     next: &ProgressSample,
     since_write: Duration,
+    resume_pending: bool,
 ) -> bool {
+    if resume_pending {
+        return false;
+    }
     let Some(prev) = prev else {
         return true;
     };
@@ -1311,9 +1319,11 @@ pub fn resume_seek_command(
     })
 }
 
-/// How many times to try the post-load seek. The first try plus a couple of
-/// retries, then the bridge surfaces the warning and stops.
-pub const RESUME_SEEK_ATTEMPTS: u8 = 3;
+/// Inline wait in the command response, then the same wait continues in the background.
+pub const RESUME_SEEK_INLINE: Duration = Duration::from_secs(1);
+/// How long the background wait for the queue's duration lasts before the seek is abandoned.
+pub const RESUME_SEEK_PATIENCE: Duration = Duration::from_secs(30);
+const RESUME_SEEK_POLL: Duration = Duration::from_millis(350);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeekPlan {
@@ -1326,15 +1336,21 @@ pub enum SeekPlan {
 
 /// Decide the next step of the single post-load seek.
 ///
-/// `attempt` is how many waits or failed sends already happened.
-pub fn plan_resume_seek(position_sec: f64, duration_sec: f64, attempt: u8) -> SeekPlan {
+/// `waited` is how long the seek has waited for the queue to report a
+/// duration. Once it reaches `patience` the seek gives up.
+pub fn plan_resume_seek(
+    position_sec: f64,
+    duration_sec: f64,
+    waited: Duration,
+    patience: Duration,
+) -> SeekPlan {
     if position_sec < 1.0 {
         return SeekPlan::Skip;
     }
     if let Some(cmd) = resume_seek_command("queue", position_sec, duration_sec) {
         return SeekPlan::Send(cmd.args["position"].as_i64().unwrap_or(0));
     }
-    if attempt + 1 >= RESUME_SEEK_ATTEMPTS {
+    if waited >= patience {
         return SeekPlan::GiveUp("queue without duration");
     }
     SeekPlan::Wait
@@ -1345,14 +1361,6 @@ pub fn plan_resume_seek(position_sec: f64, duration_sec: f64, attempt: u8) -> Se
 pub fn seek_is_retryable(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("not active") || lower.contains("without duration")
-}
-
-pub fn plan_seek_failure(message: &str, attempt: u8) -> SeekPlan {
-    if seek_is_retryable(message) && attempt + 1 < RESUME_SEEK_ATTEMPTS {
-        SeekPlan::Wait
-    } else {
-        SeekPlan::GiveUp("failed")
-    }
 }
 
 /// Episode `prepare_play_episode` associated with a queue so a remote enclosure
@@ -2656,6 +2664,13 @@ pub struct SessionStatus {
     pub last_error: Option<String>,
 }
 
+/// A resume seek that has not landed yet. `arm` tells a newer `play_episode` from an older one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PendingResume {
+    arm: u64,
+    position_sec: f64,
+}
+
 struct SessionLive {
     connected: AtomicBool,
     players: RwLock<Vec<MaPlayer>>,
@@ -2667,8 +2682,11 @@ struct SessionLive {
     episodes: RwLock<HashMap<String, RememberedEpisode>>,
     /// Duration last reported by a queue event. Metadata duration does not count.
     queue_duration: RwLock<HashMap<String, f64>>,
-    /// Offset to seek once that queue reports a duration.
-    pending_resume: RwLock<HashMap<String, f64>>,
+    /// Offset to seek once that queue reports a duration, until the seek lands
+    /// or a newer episode replaces it. No history is written for the queue meanwhile.
+    pending_resume: RwLock<HashMap<String, PendingResume>>,
+    /// Source of [`PendingResume::arm`].
+    resume_arms: AtomicU64,
     /// Sleep timer per queue. In memory: a restart drops it.
     sleep: RwLock<HashMap<String, SleepTimer>>,
 }
@@ -2685,6 +2703,7 @@ impl SessionLive {
             episodes: RwLock::new(HashMap::new()),
             queue_duration: RwLock::new(HashMap::new()),
             pending_resume: RwLock::new(HashMap::new()),
+            resume_arms: AtomicU64::new(0),
             sleep: RwLock::new(HashMap::new()),
         }
     }
@@ -2751,19 +2770,33 @@ impl SessionLive {
             .unwrap_or(0.0)
     }
 
-    async fn arm_resume(&self, queue_id: &str, position_sec: f64) {
+    /// A new episode is loading on `queue_id`. The previous episode's duration
+    /// must not release its seek, so it is dropped here, and a newer arm
+    /// replaces any seek still waiting. Returns the arm of the seek to land,
+    /// or `None` when the offset is under a second and there is nothing to seek.
+    async fn arm_resume(&self, queue_id: &str, position_sec: f64) -> Option<u64> {
+        self.queue_duration.write().await.remove(queue_id);
+        let mut pending = self.pending_resume.write().await;
         if position_sec >= 1.0 {
-            self.pending_resume
-                .write()
-                .await
-                .insert(queue_id.to_string(), position_sec);
+            let arm = self.resume_arms.fetch_add(1, Ordering::Relaxed) + 1;
+            pending.insert(queue_id.to_string(), PendingResume { arm, position_sec });
+            Some(arm)
         } else {
-            self.pending_resume.write().await.remove(queue_id);
+            pending.remove(queue_id);
+            None
         }
     }
 
-    async fn take_pending_resume(&self, queue_id: &str) -> Option<f64> {
-        self.pending_resume.write().await.remove(queue_id)
+    async fn pending_resume(&self, queue_id: &str) -> Option<PendingResume> {
+        self.pending_resume.read().await.get(queue_id).copied()
+    }
+
+    /// The seek armed as `arm` is over. A newer `play_episode` keeps its own.
+    async fn finish_resume(&self, queue_id: &str, arm: u64) {
+        let mut pending = self.pending_resume.write().await;
+        if pending.get(queue_id).is_some_and(|p| p.arm == arm) {
+            pending.remove(queue_id);
+        }
     }
 }
 
@@ -2915,13 +2948,42 @@ async fn play_on_queue(
     queue_id: &str,
     args: &Value,
 ) -> AppResult<ActionOutcome> {
-    let commands = prepare_play_episode(state, user_id, queue_id, args).await?;
-    let mut outcome = state
-        .music_assistant
-        .send_commands(user_id, commands)
-        .await?;
-    if let Some(warning) = land_resume_seek(state, user_id, queue_id).await {
-        outcome.warnings.push(warning);
+    let (commands, arm) = prepare_play_episode(state, user_id, queue_id, args).await?;
+    let hub = state.music_assistant.clone();
+    let queue_id = queue_id.to_string();
+    // Its own task: a client that hangs up mid-command must neither strand the
+    // resume seek nor leave its history hold armed.
+    tokio::spawn(async move { load_and_seek(&hub, user_id, &queue_id, commands, arm).await })
+        .await
+        .map_err(|e| AppError::internal(format!("play_episode: {e}")))?
+}
+
+/// Send the load commands, then land the resume seek armed for them. A seek
+/// still waiting after the inline second carries on in the background.
+async fn load_and_seek(
+    hub: &MusicAssistantHub,
+    user_id: i32,
+    queue_id: &str,
+    commands: Vec<MaCommand>,
+    arm: Option<u64>,
+) -> AppResult<ActionOutcome> {
+    let mut outcome = match hub.send_commands(user_id, commands).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // Nothing loaded, so no seek follows and history must not wait for one.
+            if let Some(arm) = arm {
+                release_resume(hub, user_id, queue_id, arm).await;
+            }
+            return Err(e);
+        }
+    };
+    let Some(arm) = arm else {
+        return Ok(outcome);
+    };
+    match land_resume_seek(hub, user_id, queue_id, arm, RESUME_SEEK_INLINE).await {
+        ResumeSeek::Landed | ResumeSeek::Superseded => {}
+        ResumeSeek::Failed(warning) => outcome.warnings.push(warning),
+        ResumeSeek::TimedOut => resume_in_background(hub, user_id, queue_id, arm),
     }
     Ok(outcome)
 }
@@ -3079,45 +3141,66 @@ async fn advance_queue(
     }
 }
 
-/// One seek to the leader queue after it reports a duration.
+/// How a resume seek ended.
+#[derive(Debug, PartialEq)]
+enum ResumeSeek {
+    /// The seek was sent, or the offset needed none.
+    Landed,
+    /// A newer `play_episode` or a real stop owns the queue now.
+    Superseded,
+    /// The queue still reported no duration when the patience ran out. The seek
+    /// stays armed; the caller decides whether to keep waiting.
+    TimedOut,
+    Failed(String),
+}
+
+/// One seek to the leader queue once it reports a duration.
 ///
-/// Retries a couple of times when the queue is not active yet or still has no
-/// duration, then returns the warning the command response already surfaces.
-async fn land_resume_seek(state: &AppState, user_id: i32, queue_id: &str) -> Option<String> {
-    let live = state.music_assistant.session_live(user_id).await?;
-    let position = live.take_pending_resume(queue_id).await?;
-    let mut attempt = 0u8;
+/// A speaker can take many seconds to report its duration, so this polls until
+/// `patience` is spent. The seek belongs to the `play_episode` that armed it:
+/// when a newer one or a real stop took the queue over, nothing is sent.
+/// `Landed` and `Failed` end the seek; `TimedOut` leaves it armed.
+async fn land_resume_seek(
+    hub: &MusicAssistantHub,
+    user_id: i32,
+    queue_id: &str,
+    arm: u64,
+    patience: Duration,
+) -> ResumeSeek {
+    let started = Instant::now();
     loop {
+        let Some(live) = hub.session_live(user_id).await else {
+            return ResumeSeek::Superseded;
+        };
+        let pending = live.pending_resume(queue_id).await;
+        let Some(pending) = pending.filter(|p| p.arm == arm) else {
+            return ResumeSeek::Superseded;
+        };
         let duration = live.queue_duration(queue_id).await;
-        match plan_resume_seek(position, duration, attempt) {
-            SeekPlan::Skip => return None,
-            SeekPlan::GiveUp(reason) => {
-                return Some(format!("player_queues/seek: {reason}"));
+        match plan_resume_seek(pending.position_sec, duration, started.elapsed(), patience) {
+            SeekPlan::Skip => {
+                live.finish_resume(queue_id, arm).await;
+                return ResumeSeek::Landed;
             }
-            SeekPlan::Wait => {
-                attempt += 1;
-                tokio::time::sleep(Duration::from_millis(350)).await;
-            }
+            SeekPlan::Wait => tokio::time::sleep(RESUME_SEEK_POLL).await,
+            SeekPlan::GiveUp(_) => return ResumeSeek::TimedOut,
             SeekPlan::Send(seconds) => {
-                let cmd = MaCommand {
+                let seek = MaCommand {
                     command: "player_queues/seek".into(),
                     args: json!({ "queue_id": queue_id, "position": seconds }),
                 };
-                match state
-                    .music_assistant
-                    .send_commands(user_id, vec![cmd])
-                    .await
-                {
-                    Ok(_) => return None,
-                    Err(err) => {
-                        let msg = err.to_string();
-                        match plan_seek_failure(&msg, attempt) {
-                            SeekPlan::Wait => {
-                                attempt += 1;
-                                tokio::time::sleep(Duration::from_millis(350)).await;
-                            }
-                            _ => return Some(format!("player_queues/seek: {msg}")),
+                match hub.send_commands(user_id, vec![seek]).await {
+                    Ok(_) => {
+                        live.finish_resume(queue_id, arm).await;
+                        return ResumeSeek::Landed;
+                    }
+                    Err(e) => {
+                        if seek_is_retryable(&e.to_string()) && started.elapsed() < patience {
+                            tokio::time::sleep(RESUME_SEEK_POLL).await;
+                            continue;
                         }
+                        live.finish_resume(queue_id, arm).await;
+                        return ResumeSeek::Failed(format!("player_queues/seek: {e}"));
                     }
                 }
             }
@@ -3125,12 +3208,41 @@ async fn land_resume_seek(state: &AppState, user_id: i32, queue_id: &str) -> Opt
     }
 }
 
+/// Keep waiting for the queue's duration after the command response went out.
+/// Nobody is left to hear a failure, so it goes to the log.
+fn resume_in_background(hub: &MusicAssistantHub, user_id: i32, queue_id: &str, arm: u64) {
+    let hub = hub.clone();
+    let queue_id = queue_id.to_string();
+    tokio::spawn(async move {
+        let ended = land_resume_seek(&hub, user_id, &queue_id, arm, RESUME_SEEK_PATIENCE).await;
+        let reason = match ended {
+            ResumeSeek::Landed | ResumeSeek::Superseded => return,
+            ResumeSeek::TimedOut => {
+                release_resume(&hub, user_id, &queue_id, arm).await;
+                "queue without duration".to_string()
+            }
+            ResumeSeek::Failed(warning) => warning,
+        };
+        tracing::warn!("music assistant resume seek on {queue_id}: {reason}");
+    });
+}
+
+/// The seek armed as `arm` will not run, so history stops waiting for it.
+async fn release_resume(hub: &MusicAssistantHub, user_id: i32, queue_id: &str, arm: u64) {
+    if let Some(live) = hub.session_live(user_id).await {
+        live.finish_resume(queue_id, arm).await;
+    }
+}
+
+/// The commands that load the episode, and the arm of the resume seek to land
+/// once the queue reports a duration. The arm is `None` when the offset is
+/// under a second or the user has no session.
 async fn prepare_play_episode(
     state: &AppState,
     user_id: i32,
     queue_id: &str,
     args: &Value,
-) -> AppResult<Vec<MaCommand>> {
+) -> AppResult<(Vec<MaCommand>, Option<u64>)> {
     let episode_id = args
         .get("episode_id")
         .and_then(json_i64)
@@ -3248,8 +3360,10 @@ async fn prepare_play_episode(
     // Do not read or forward the local playback speed. A 1.5x web session
     // stays on this browser; the speaker starts at Music Assistant's own rate.
     let display = display_from_meta(&meta, base);
+    let mut arm = None;
     // Remember the episode before play_media returns so a remote enclosure,
-    // which never matches `/api/data/stream/`, still gets a history row.
+    // which never matches `/api/data/stream/`, still gets a history row. Arming
+    // the resume seek here also drops the previous episode's duration.
     if let Some(live) = state.music_assistant.session_live(user_id).await {
         live.remember(
             queue_id,
@@ -3263,9 +3377,9 @@ async fn prepare_play_episode(
             },
         )
         .await;
-        live.arm_resume(queue_id, position).await;
+        arm = live.arm_resume(queue_id, position).await;
     }
-    Ok(play_media_commands(queue_id, &media, Some(&display)))
+    Ok((play_media_commands(queue_id, &media, Some(&display)), arm))
 }
 
 pub fn spawn_supervisor(state: AppState) {
@@ -3872,16 +3986,19 @@ async fn apply_progress(
             track.loaded_episode = Some((stream.episode_id, stream.is_youtube));
         }
     }
-    write_track_progress(state, user_id, track, &stream).await;
+    let resume_pending = live.pending_resume(&queue_id).await.is_some();
+    write_track_progress(state, user_id, track, &stream, resume_pending).await;
     publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
 }
 
 /// History, played count, and listen time for one queue's loaded episode.
+/// `resume_pending` holds the history write, not the counters.
 async fn write_track_progress(
     state: &AppState,
     user_id: i32,
     track: &mut QueueTrack,
     stream: &StreamRef,
+    resume_pending: bool,
 ) {
     let sample = ProgressSample {
         episode_id: stream.episode_id,
@@ -3902,7 +4019,9 @@ async fn write_track_progress(
     {
         track.advanced = false;
     }
-    if !track.advanced && should_write_progress(track.sample.as_ref(), &sample, since) {
+    if !track.advanced
+        && should_write_progress(track.sample.as_ref(), &sample, since, resume_pending)
+    {
         write_listen_progress(
             state,
             user_id,
@@ -4024,7 +4143,8 @@ async fn tick_tracks(
         }
         track.position = projected;
         track.updated_at = now;
-        write_track_progress(state, user_id, track, &stream).await;
+        let resume_pending = live.pending_resume(&queue_id).await.is_some();
+        write_track_progress(state, user_id, track, &stream, resume_pending).await;
         publish_track_snapshot(state, user_id, live, tracks, retained, &queue_id, false).await;
     }
 }
@@ -4883,7 +5003,9 @@ mod tests {
             position_sec: 10.0,
             playing: true,
         };
-        assert!(should_write_progress(None, &first, Duration::from_secs(0)));
+        assert!(should_write_progress(None, &first, Duration::from_secs(0), false));
+        // The first sample of a new episode waits for its resume seek.
+        assert!(!should_write_progress(None, &first, PROGRESS_WRITE_EVERY, true));
         let later = ProgressSample {
             episode_id: 1,
             position_sec: 12.0,
@@ -4892,12 +5014,14 @@ mod tests {
         assert!(!should_write_progress(
             Some(&first),
             &later,
-            Duration::from_secs(3)
+            Duration::from_secs(3),
+            false
         ));
         assert!(should_write_progress(
             Some(&first),
             &later,
-            Duration::from_secs(10)
+            Duration::from_secs(10),
+            false
         ));
         let paused = ProgressSample {
             episode_id: 1,
@@ -4907,7 +5031,8 @@ mod tests {
         assert!(should_write_progress(
             Some(&later),
             &paused,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            false
         ));
         let seek = ProgressSample {
             episode_id: 1,
@@ -4917,7 +5042,8 @@ mod tests {
         assert!(should_write_progress(
             Some(&later),
             &seek,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            false
         ));
     }
 
@@ -4996,30 +5122,118 @@ mod tests {
 
     #[test]
     fn resume_seek_retries_only_while_the_queue_is_not_ready() {
-        assert_eq!(plan_resume_seek(0.0, 0.0, 0), SeekPlan::Skip);
-        assert_eq!(plan_resume_seek(12.5, 0.0, 0), SeekPlan::Wait);
-        assert_eq!(plan_resume_seek(12.5, 0.0, 1), SeekPlan::Wait);
         assert_eq!(
-            plan_resume_seek(12.5, 0.0, 2),
+            plan_resume_seek(0.0, 0.0, Duration::ZERO, RESUME_SEEK_PATIENCE),
+            SeekPlan::Skip
+        );
+        // A speaker can take many seconds to report its duration. The old
+        // planner gave up after 0.7s.
+        assert_eq!(
+            plan_resume_seek(12.5, 0.0, Duration::from_secs(5), RESUME_SEEK_PATIENCE),
+            SeekPlan::Wait
+        );
+        assert_eq!(
+            plan_resume_seek(12.5, 0.0, RESUME_SEEK_PATIENCE, RESUME_SEEK_PATIENCE),
             SeekPlan::GiveUp("queue without duration")
         );
-        assert_eq!(plan_resume_seek(12.5, 3600.0, 0), SeekPlan::Send(12));
+        assert_eq!(
+            plan_resume_seek(12.5, 3600.0, Duration::ZERO, RESUME_SEEK_PATIENCE),
+            SeekPlan::Send(12)
+        );
         assert!(seek_is_retryable("Queue is not active"));
         assert!(seek_is_retryable("cannot seek without duration"));
         assert!(!seek_is_retryable("player offline"));
-        assert_eq!(plan_seek_failure("not active", 0), SeekPlan::Wait);
-        assert_eq!(plan_seek_failure("without duration", 1), SeekPlan::Wait);
-        assert_eq!(
-            plan_seek_failure("not active", 2),
-            SeekPlan::GiveUp("failed")
-        );
-        assert_eq!(
-            plan_seek_failure("player offline", 0),
-            SeekPlan::GiveUp("failed")
-        );
         assert_eq!(integer_seconds(12.5), 12);
         assert_eq!(integer_seconds(-3.0), 0);
         assert_eq!(integer_seconds(f64::NAN), 0);
+    }
+
+    #[tokio::test]
+    async fn a_new_episode_clears_the_old_duration_and_supersedes_the_old_seek() {
+        let live = SessionLive::new();
+        live.note_queue_duration("q", 1800.0).await;
+        let a = live.arm_resume("q", 90.0).await;
+        // The previous episode's length must not release the new episode's seek.
+        assert_eq!(live.queue_duration("q").await, 0.0);
+        let b = live.arm_resume("q", 40.0).await;
+        assert!(a.is_some() && b.is_some() && a != b);
+        // The older seek ending leaves the newer one armed.
+        live.finish_resume("q", a.unwrap()).await;
+        assert_eq!(live.pending_resume("q").await.unwrap().position_sec, 40.0);
+        // An episode with nothing to seek clears whatever was waiting.
+        assert_eq!(live.arm_resume("q", 0.5).await, None);
+        assert_eq!(live.pending_resume("q").await, None);
+    }
+
+    /// A hub with one session whose outbound commands arrive on the receiver.
+    async fn hub_with_session(
+        user_id: i32,
+    ) -> (MusicAssistantHub, Arc<SessionLive>, mpsc::UnboundedReceiver<Outbound>) {
+        let hub = MusicAssistantHub::new();
+        let (outbound, sent) = mpsc::unbounded_channel();
+        let live = Arc::new(SessionLive::new());
+        hub.inner.sessions.write().await.insert(
+            user_id,
+            SessionSlot {
+                outbound,
+                live: live.clone(),
+                fingerprint: String::new(),
+                cancel: watch::channel(false).0,
+            },
+        );
+        (hub, live, sent)
+    }
+
+    #[tokio::test]
+    async fn resume_seek_lands_when_the_duration_arrives_late() {
+        let (hub, live, mut sent) = hub_with_session(1).await;
+        let arm = live.arm_resume("q", 90.0).await.unwrap();
+        let seek = {
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                land_resume_seek(&hub, 1, "q", arm, Duration::from_secs(5)).await
+            })
+        };
+        // The speaker has not reported a duration, so nothing may be sent yet.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(sent.try_recv().is_err());
+        live.note_queue_duration("q", 3600.0).await;
+        let outbound = tokio::time::timeout(Duration::from_secs(2), sent.recv())
+            .await
+            .expect("the seek is sent once the duration is known")
+            .expect("the session is still open");
+        assert_eq!(outbound.command, "player_queues/seek");
+        assert_eq!(outbound.args, json!({ "queue_id": "q", "position": 90 }));
+        outbound
+            .reply
+            .expect("a reply channel")
+            .send(Ok(Value::Null))
+            .unwrap();
+        assert_eq!(seek.await.unwrap(), ResumeSeek::Landed);
+        assert!(live.pending_resume("q").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_seek_yields_to_a_newer_episode_and_times_out_still_armed() {
+        let (hub, live, mut sent) = hub_with_session(1).await;
+        let old = live.arm_resume("q", 90.0).await.unwrap();
+        live.arm_resume("q", 40.0).await.unwrap();
+        live.note_queue_duration("q", 3600.0).await;
+        // The older seek must not act on the newer episode, even with a duration.
+        let ended = land_resume_seek(&hub, 1, "q", old, Duration::from_secs(5)).await;
+        assert_eq!(ended, ResumeSeek::Superseded);
+        assert!(sent.try_recv().is_err());
+        // No session for the user: nothing to seek on.
+        let ended = land_resume_seek(&hub, 2, "q", old, Duration::from_secs(5)).await;
+        assert_eq!(ended, ResumeSeek::Superseded);
+        // No duration and no patience left: the seek times out and stays armed
+        // until the caller releases it.
+        let arm = live.arm_resume("other", 40.0).await.unwrap();
+        let ended = land_resume_seek(&hub, 1, "other", arm, Duration::ZERO).await;
+        assert_eq!(ended, ResumeSeek::TimedOut);
+        assert_eq!(live.pending_resume("other").await.unwrap().arm, arm);
+        release_resume(&hub, 1, "other", arm).await;
+        assert!(live.pending_resume("other").await.is_none());
     }
 
     #[test]
@@ -5458,7 +5672,8 @@ mod tests {
         assert!(!should_write_progress(
             Some(&prev),
             &tick,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            false
         ));
         let backward = ProgressSample {
             episode_id: 15,
@@ -5468,7 +5683,8 @@ mod tests {
         assert!(should_write_progress(
             Some(&prev),
             &backward,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            false
         ));
     }
 
