@@ -61,6 +61,47 @@ pub async fn download_file(url: String, filename: String) -> Result<(), JsValue>
     Ok(())
 }
 
+/// Downloads an episode through the PinePods server so the chosen version,
+/// feed credentials and integrity check apply. Returns the saved file name.
+pub async fn download_episode(
+    url: String,
+    episode_id: i32,
+    api_key: String,
+) -> Result<String, JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window object found"))?;
+
+    let tauri = match js_sys::Reflect::has(&window, &JsValue::from_str("__TAURI__"))? {
+        true => js_sys::Reflect::get(&window, &JsValue::from_str("__TAURI__"))?,
+        false => return Ok(String::new()),
+    };
+
+    let core = js_sys::Reflect::get(&tauri, &JsValue::from_str("core"))?;
+    let invoke = js_sys::Reflect::get(&core, &JsValue::from_str("invoke"))?;
+    let invoke_fn = invoke
+        .dyn_ref::<js_sys::Function>()
+        .ok_or_else(|| JsValue::from_str("invoke is not a function"))?;
+
+    let args = js_sys::Object::new();
+    js_sys::Reflect::set(&args, &JsValue::from_str("url"), &JsValue::from_str(&url))?;
+    js_sys::Reflect::set(
+        &args,
+        &JsValue::from_str("episodeId"),
+        &JsValue::from_f64(episode_id as f64),
+    )?;
+    js_sys::Reflect::set(
+        &args,
+        &JsValue::from_str("apiKey"),
+        &JsValue::from_str(&api_key),
+    )?;
+
+    let command = JsValue::from_str("download_episode");
+    let promise = invoke_fn.call2(&core, &command, &args)?;
+    let result =
+        wasm_bindgen_futures::JsFuture::from(promise.dyn_into::<js_sys::Promise>()?).await?;
+
+    Ok(result.as_string().unwrap_or_default())
+}
+
 pub async fn start_local_file_server(file_path: &str) -> Result<String, JsValue> {
     // Get window object
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window object found"))?;
@@ -98,7 +139,10 @@ pub async fn start_local_file_server(file_path: &str) -> Result<String, JsValue>
     }
 }
 
-pub async fn update_local_database(episode_info: Episode) -> Result<(), JsValue> {
+pub async fn update_local_database(
+    episode_info: Episode,
+    filename: Option<String>,
+) -> Result<(), JsValue> {
     // Get window object
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("No window object found"))?;
 
@@ -130,6 +174,14 @@ pub async fn update_local_database(episode_info: Episode) -> Result<(), JsValue>
         &args,
         &JsValue::from_str("episodeInfo"),
         &episode_info_value,
+    )?;
+    js_sys::Reflect::set(
+        &args,
+        &JsValue::from_str("filename"),
+        &match filename {
+            Some(name) => JsValue::from_str(&name),
+            None => JsValue::NULL,
+        },
     )?;
 
     let command = JsValue::from_str("update_local_db");
