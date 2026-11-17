@@ -203,7 +203,6 @@
   "value_for_value_supported": "Diese Sendung unterstützt Value4Value",
   "value_recipients": "Empfänger",
   "value_suggested": "Vorschlag {amount}",
-  "value_display_only": "Nur zur Anzeige. PinePods sendet keine Zahlungen.",
   "podroll_subscribe_failed": "Abonnieren fehlgeschlagen",
   "media_choose_version": "Version wählen",
   "media_original": "Original",

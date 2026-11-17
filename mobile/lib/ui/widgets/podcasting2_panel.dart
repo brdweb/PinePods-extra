@@ -222,17 +222,36 @@ class ShowPodcasting2Panel extends StatelessWidget {
             Column(
               children: [
                 for (final item in liveItems)
-                  _ClipRow(
-                    title: (item.title ?? '').trim().isEmpty
-                        ? _liveStatusLabel(l10n, item.status)
-                        : item.title!.trim(),
-                    meta: _liveMeta(l10n, item),
-                    tooltip: normalizeLiveStatus(item.status) == 'ended'
-                        ? l10n.p2_play_recording
-                        : l10n.p2_play_live,
-                    onPlay: item.playableUrl == null || onPlayLive == null
-                        ? null
-                        : () => onPlayLive!(item),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _ClipRow(
+                        title: (item.title ?? '').trim().isEmpty
+                            ? _liveStatusLabel(l10n, item.status)
+                            : item.title!.trim(),
+                        meta: _liveMeta(l10n, item),
+                        tooltip: normalizeLiveStatus(item.status) == 'ended'
+                            ? l10n.p2_play_recording
+                            : l10n.p2_play_live,
+                        onPlay: item.playableUrl == null || onPlayLive == null
+                            ? null
+                            : () => onPlayLive!(item),
+                      ),
+                      if (item.people.isNotEmpty) Text(item.people.join(', ')),
+                      if (item.chat?.link != null)
+                        _LinkRow(
+                          url: item.chat!.link!,
+                          text: l10n.p2_join_chat,
+                        ),
+                      for (final social in item.socialInteracts)
+                        if (social.link != null)
+                          _LinkRow(
+                            url: social.link!,
+                            text: social.protocol.trim().isEmpty
+                                ? l10n.p2_comment_thread
+                                : social.protocol,
+                          ),
+                    ],
                   ),
               ],
             ),

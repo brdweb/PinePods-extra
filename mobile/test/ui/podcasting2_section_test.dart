@@ -57,7 +57,7 @@ void main() {
     expect(find.text('Alice'), findsOneWidget);
     expect(find.text('90%'), findsOneWidget);
     expect(find.text('10%'), findsOneWidget);
-    expect(find.text('Display only. PinePods does not send payments.'), findsOneWidget);
+    expect(find.text('Display only. PinePods does not send payments.'), findsNothing);
     expect(find.text('Recommended Show'), findsOneWidget);
     expect(find.text('Ada'), findsOneWidget);
 

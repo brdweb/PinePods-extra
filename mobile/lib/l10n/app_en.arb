@@ -665,10 +665,6 @@
       }
     }
   },
-  "value_display_only": "Display only. PinePods does not send payments.",
-  "@value_display_only": {
-    "description": "Value block is informational and does not start a payment"
-  },
   "podroll_subscribe_failed": "Could not subscribe",
   "@podroll_subscribe_failed": {
     "description": "Shown when subscribing to a recommended podcast fails"

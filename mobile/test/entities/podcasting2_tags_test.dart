@@ -249,4 +249,56 @@ void main() {
     expect(liveStreamIsHls('audio/mpeg', 'https://cdn.example/a.m3u8?t=1'), isTrue);
     expect(liveStreamIsVideo('video/mp4'), isTrue);
   });
+
+  test('live item keeps its chat, social links and credited people', () {
+    final tags = ChannelTags.fromJson({
+      'live_items': [
+        {
+          'status': 'live',
+          'start': '2026-02-01T00:00:00Z',
+          'tags': {
+            'chat': {
+              'server': 'irc.example.com',
+              'protocol': 'irc',
+              'space': '#show',
+            },
+            'social_interacts': [
+              {'protocol': 'activitypub', 'uri': 'https://example.com/thread'},
+              {'protocol': 'disabled', 'uri': 'https://example.com/off'},
+            ],
+            'people': [
+              {'name': ' Ada ', 'role': 'host'},
+              {'name': 'Gus'},
+              {'name': '  ', 'role': 'ghost'},
+            ],
+          },
+        },
+        {'status': 'pending', 'start': '2026-03-01T00:00:00Z', 'tags': {}},
+      ],
+    });
+    final live = tags.liveItems.first;
+    expect(live.chat?.link, 'irc://irc.example.com/show');
+    expect(live.socialInteracts.map((s) => s.link).toList(), [
+      'https://example.com/thread',
+      isNull,
+    ]);
+    expect(live.people, ['Ada (host)', 'Gus']);
+
+    final bare = tags.liveItems.last;
+    expect(bare.chat, isNull);
+    expect(bare.socialInteracts, isEmpty);
+    expect(bare.people, isEmpty);
+  });
+
+  test('chapters marked toc false are left out of the chapter list', () {
+    final chapters = chaptersFromPodcasting2({
+      'chapters': [
+        {'title': 'Intro', 'startTime': 0},
+        {'title': 'Art only', 'startTime': 10, 'toc': false},
+        {'title': 'Art only text', 'startTime': 20, 'toc': 'False'},
+        {'title': 'Kept', 'startTime': 30, 'toc': true},
+      ],
+    });
+    expect(chapters.map((c) => c.title).toList(), ['Intro', 'Kept']);
+  });
 }

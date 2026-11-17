@@ -214,11 +214,6 @@ class _ValueCard extends StatelessWidget {
                   ),
               ],
             ],
-            const SizedBox(height: 8),
-            Text(
-              l10n?.value_display_only ?? 'Display only. PinePods does not send payments.',
-              style: muted,
-            ),
           ],
         ),
       ),
