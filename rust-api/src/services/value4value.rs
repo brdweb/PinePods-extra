@@ -7,13 +7,17 @@
 //! Recipients come from the stored episode value block, or the channel block
 //! when the episode has none. The client cannot supply addresses. Keysend
 //! (`node`) and lightning-address recipients are paid. Other types are skipped
-//! and their split is not given to anyone else. A remote valueTimeSplit is
-//! honored only when its recipients are already in the feed; the remote feed
-//! is not fetched.
+//! and their split is not given to anyone else. A remote valueTimeSplit pays the
+//! recipients inlined on the split. A split that only names a `podcast:remoteItem`
+//! pays the recipients of that item's value block, read from the remote feed (the
+//! public-URL guard applies) and cached. When that block cannot be found the sats
+//! stay with the local recipients.
 //!
 //! Tests use a mock wallet. Nothing in the unit tests dials a relay or pays an invoice.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
@@ -27,7 +31,7 @@ use sqlx::Row;
 use crate::database::dialect::dialect_match;
 use crate::database::DatabasePool;
 use crate::error::{AppError, AppResult};
-use crate::services::podcasting2::{ValueBlock, ValueRecipient, ValueTimeSplit};
+use crate::services::podcasting2::{self, RemoteItem, ValueBlock, ValueRecipient, ValueTimeSplit};
 use crate::services::url_guard::{ensure_safe_public_url_async, guarded_redirect_policy};
 use crate::AppState;
 
@@ -69,7 +73,8 @@ pub struct Allocation {
     pub shares: Vec<Share>,
     pub skipped: Vec<SkippedRecipient>,
     pub unallocated_sats: u64,
-    /// A matching time split named a remote item and did not include recipients.
+    /// A matching time split named a remote item and did not include recipients, and that
+    /// item's value block was not found. The split's sats stayed with the local recipients.
     pub remote_feed_not_loaded: bool,
 }
 
@@ -517,14 +522,35 @@ fn fee_split(total: u64, recipients: &[ValueRecipient]) -> (Vec<Share>, Vec<Skip
     (shares, skipped, paid, withheld)
 }
 
+/// A remote item's value block paid out of `portion`: its own fees first, then the rest by weight.
+/// Returns the shares, the skipped recipients, and the sats that were held back.
+fn remote_block_shares(
+    portion: u64,
+    recipients: &[ValueRecipient],
+) -> (Vec<Share>, Vec<SkippedRecipient>, u64) {
+    let (mut shares, mut skipped, fee_paid, fee_withheld) = fee_split(portion, recipients);
+    let rest = portion.saturating_sub(fee_paid).saturating_sub(fee_withheld);
+    let (paid, other_skipped, unallocated) = split_portion(rest, recipients, false);
+    shares.extend(paid);
+    skipped.extend(other_skipped);
+    (shares, skipped, unallocated.saturating_add(fee_withheld))
+}
+
 /// Split `total_sats` across the value block at `position_seconds`.
 ///
 /// Fees are a percent of the original total and never sum past it. A time split
 /// that contains the playhead takes `remotePercentage` of what remains (100 when
 /// that split lists recipients and omits the percentage). Those sats go to the
-/// inlined recipients. An empty recipient list, including a split that only names
-/// a remote item, leaves the remainder on the local recipients.
-pub fn allocate(total_sats: u64, block: &ValueBlock, position_seconds: Option<i64>) -> Allocation {
+/// inlined recipients. A split that only names a remote item pays `remote`, the
+/// recipients of that item's own value block, out of the same portion: its fees
+/// first, then the rest by weight. Without `remote` (not looked up, or not found)
+/// that remainder stays on the local recipients and `remote_feed_not_loaded` is set.
+pub fn allocate(
+    total_sats: u64,
+    block: &ValueBlock,
+    position_seconds: Option<i64>,
+    remote: Option<&[ValueRecipient]>,
+) -> Allocation {
     let (fee_shares, mut skipped, fee_paid, fee_withheld) = fee_split(total_sats, &block.recipients);
     let mut remainder = total_sats.saturating_sub(fee_paid).saturating_sub(fee_withheld);
     let mut remote_feed_not_loaded = false;
@@ -532,7 +558,13 @@ pub fn allocate(total_sats: u64, block: &ValueBlock, position_seconds: Option<i6
     let mut withheld_remote = 0u64;
     if let Some(position) = position_seconds {
         if let Some(split) = matching_split(block, position) {
-            if split.recipients.is_empty() {
+            let remote_block = match (&split.remote_item, remote) {
+                (Some(_), Some(recipients)) if split.recipients.is_empty() && !recipients.is_empty() => {
+                    Some(recipients)
+                }
+                _ => None,
+            };
+            if split.recipients.is_empty() && remote_block.is_none() {
                 remote_feed_not_loaded = split.remote_item.is_some();
             } else {
                 let pct = split
@@ -543,8 +575,10 @@ pub fn allocate(total_sats: u64, block: &ValueBlock, position_seconds: Option<i6
                     .unwrap_or(FULL_SPLIT)
                     .clamp(0, FULL_SPLIT);
                 let remote_portion = share_of(remainder, pct, FULL_SPLIT);
-                let (shares, remote_skipped, remote_unallocated) =
-                    split_portion(remote_portion, &split.recipients, false);
+                let (shares, remote_skipped, remote_unallocated) = match remote_block {
+                    Some(recipients) => remote_block_shares(remote_portion, recipients),
+                    None => split_portion(remote_portion, &split.recipients, false),
+                };
                 remainder = remainder.saturating_sub(remote_portion);
                 skipped.extend(remote_skipped);
                 remote_shares = shares;
@@ -944,7 +978,7 @@ pub async fn preview_episode(state: &AppState, user_id: i32, episode_id: i32) ->
             remote_feed_not_loaded: false,
         });
     };
-    let probe = allocate(1_000, block, Some(0));
+    let probe = allocate(1_000, block, Some(0), None);
     Ok(Preview {
         payable: block_is_payable(block),
         suggested_sats: suggested_sats(block),
@@ -1051,7 +1085,16 @@ async fn dispatch(
             Err(AppError::bad_request(reason))
         };
     };
-    let allocation = allocate(amount, block, Some(playback_seconds(position_seconds)));
+    let http = GuardedHttp;
+    let position = playback_seconds(position_seconds);
+    let remote_item = matching_split(block, position)
+        .filter(|split| split.recipients.is_empty())
+        .and_then(|split| split.remote_item.as_ref());
+    let remote = match remote_item {
+        Some(item) => remote_recipients(state, &http, user_id, item).await,
+        None => None,
+    };
+    let allocation = allocate(amount, block, Some(position), remote.as_deref());
     let to_pay: u64 = allocation.shares.iter().map(|share| share.sats).sum();
     if to_pay == 0 {
         let mut report = SendReport::quiet("nothing to send for this value block");
@@ -1110,7 +1153,6 @@ async fn dispatch(
         sender_name: clip_text(sender_name, 80),
         message: clip_text(message, 500),
     };
-    let http = GuardedHttp;
     let (paid, failed) = execute_payments(&allocation.shares, &meta, action, amount, &wallet, &http).await;
     let failed_sats: u64 = failed.iter().map(|item| item.sats).sum();
     if failed_sats > 0 {
@@ -1138,6 +1180,158 @@ async fn dispatch(
         unallocated_sats: allocation.unallocated_sats,
         remote_feed_not_loaded: allocation.remote_feed_not_loaded,
     })
+}
+
+/// Remote value blocks by user and `(feedGuid, itemGuid, feedUrl)`, so a stream does not refetch the
+/// remote feed every minute. The user and the `feedUrl` a split names are part of the key, so a feed
+/// one user follows, or a URL one feed names, cannot supply the block that another lookup pays.
+/// A block that was found is reused for 6 hours, a failed lookup for 10 minutes.
+type RemoteValueKey = (i32, String, String, String);
+type RemoteValueCache = HashMap<RemoteValueKey, (Instant, Option<Vec<ValueRecipient>>)>;
+static REMOTE_VALUE: LazyLock<Mutex<RemoteValueCache>> = LazyLock::new(Default::default);
+const REMOTE_VALUE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const REMOTE_VALUE_MISS_TTL: Duration = Duration::from_secs(10 * 60);
+const REMOTE_VALUE_MAX_ENTRIES: usize = 512;
+
+/// `Some` when the lookup was answered recently. The inner `None` is a remembered failure.
+fn cached_remote_value(key: &RemoteValueKey) -> Option<Option<Vec<ValueRecipient>>> {
+    let cache = REMOTE_VALUE.lock().unwrap_or_else(PoisonError::into_inner);
+    let (stored_at, found) = cache.get(key)?;
+    let ttl = if found.is_some() { REMOTE_VALUE_TTL } else { REMOTE_VALUE_MISS_TTL };
+    (stored_at.elapsed() < ttl).then(|| found.clone())
+}
+
+fn store_remote_value(key: RemoteValueKey, found: Option<Vec<ValueRecipient>>) {
+    let mut cache = REMOTE_VALUE.lock().unwrap_or_else(PoisonError::into_inner);
+    if cache.len() > REMOTE_VALUE_MAX_ENTRIES {
+        cache.clear();
+    }
+    cache.insert(key, (Instant::now(), found));
+}
+
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// The recipients of `item_guid`'s value block in a remote feed, else the channel's block, which is
+/// what an item without its own block uses. `None` when the feed declares a different `podcast:guid`
+/// than `feed_guid`, or the block has no recipients. The remote block's own time splits are ignored.
+fn recipients_from_feed(xml: &str, feed_guid: &str, item_guid: Option<&str>) -> Option<Vec<ValueRecipient>> {
+    let tags = podcasting2::parse(xml);
+    if let Some(declared) = tags.podcast_guid.as_deref() {
+        if !declared.trim().eq_ignore_ascii_case(feed_guid.trim()) {
+            return None;
+        }
+    }
+    let item = item_guid
+        .map(str::trim)
+        .filter(|guid| !guid.is_empty())
+        .and_then(|guid| {
+            tags.items
+                .iter()
+                .find(|candidate| candidate.guid.as_deref().map(str::trim) == Some(guid))
+        });
+    let item_value: &[ValueBlock] = match item {
+        Some(item) => &item.value,
+        None => &[],
+    };
+    let block = select_block(item_value, &tags.extras.value)?;
+    (!block.recipients.is_empty()).then(|| block.recipients.clone())
+}
+
+/// The feed URL a search-service answer gives for `feed_guid`: `feed` (a by-GUID lookup), else the
+/// first of `feeds` whose `podcastGuid` matches. A result that does not carry the GUID is not this feed.
+fn feed_url_from_search(body: &serde_json::Value, feed_guid: &str) -> Option<String> {
+    let wanted = feed_guid.trim();
+    let feed = std::iter::once(&body["feed"])
+        .chain(body["feeds"].as_array().into_iter().flatten())
+        .find(|feed| {
+            feed.get("podcastGuid")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|guid| guid.trim().eq_ignore_ascii_case(wanted))
+        })?;
+    let url = feed.get("url")?.as_str()?.trim();
+    is_http_url(url).then(|| url.to_string())
+}
+
+/// Ask the search service (Podcast Index by GUID) where a feed lives. The URL is operator config
+/// and may be an internal host, so it is not run through the public-URL guard.
+async fn search_feed_url(state: &AppState, feed_guid: &str) -> Option<String> {
+    let response = reqwest::Client::new()
+        .get(&state.config.api.search_api_url)
+        .query(&[("query", feed_guid), ("index", "podcastindex"), ("search_type", "guid")])
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = response.json().await.ok()?;
+    feed_url_from_search(&body, feed_guid)
+}
+
+/// Find the remote item's value block: the `feedUrl` its split names, else a podcast this user already
+/// follows with that `feedGuid`, else the search service. Then fetch the feed and read the block.
+async fn fetch_remote_recipients(
+    state: &AppState,
+    http: &dyn LnurlHttp,
+    user_id: i32,
+    feed_guid: &str,
+    item_guid: Option<&str>,
+    feed_url: Option<&str>,
+) -> Option<Vec<ValueRecipient>> {
+    let mut url = feed_url.map(str::to_string);
+    if url.is_none() {
+        url = local_feed_url(&state.db_pool, user_id, feed_guid).await.unwrap_or_else(|err| {
+            tracing::warn!("remote value block: looking up feed {feed_guid} failed: {err}");
+            None
+        });
+    }
+    if url.is_none() {
+        url = search_feed_url(state, feed_guid).await;
+    }
+    let url = url?;
+    let xml = match http.get_text(&url).await {
+        Ok(xml) => xml,
+        Err(err) => {
+            tracing::debug!("remote value block: fetching feed {feed_guid} failed: {err}");
+            return None;
+        }
+    };
+    recipients_from_feed(&xml, feed_guid, item_guid)
+}
+
+/// The recipients a time split's remote item pays, from the cache or looked up now. `None` leaves
+/// the split's sats on the local recipients. A failed lookup never fails the payment, and it is
+/// bounded by the timeouts of the requests it makes.
+async fn remote_recipients(
+    state: &AppState,
+    http: &dyn LnurlHttp,
+    user_id: i32,
+    item: &RemoteItem,
+) -> Option<Vec<ValueRecipient>> {
+    let feed_guid = item.feed_guid.trim();
+    if feed_guid.is_empty() {
+        return None;
+    }
+    let item_guid = item.item_guid.as_deref().map(str::trim).filter(|guid| !guid.is_empty());
+    let feed_url = item.feed_url.as_deref().map(str::trim).filter(|url| is_http_url(url));
+    let key = (
+        user_id,
+        feed_guid.to_ascii_lowercase(),
+        item_guid.unwrap_or_default().to_string(),
+        feed_url.unwrap_or_default().to_string(),
+    );
+    if let Some(cached) = cached_remote_value(&key) {
+        return cached;
+    }
+    let found = fetch_remote_recipients(state, http, user_id, feed_guid, item_guid, feed_url).await;
+    if found.is_none() {
+        tracing::info!("no value block found for remote feed {feed_guid}; its split stays with the local recipients");
+    }
+    store_remote_value(key, found.clone());
+    found
 }
 
 async fn decrypt_secret(state: &AppState, user_id: i32) -> AppResult<String> {
@@ -1206,6 +1400,9 @@ impl LightningWallet for NwcWallet {
     }
 }
 
+/// A feed or lightning lookup larger than this is refused, so a hostile URL cannot fill memory.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct GuardedHttp;
 
 #[async_trait]
@@ -1217,11 +1414,18 @@ impl LnurlHttp for GuardedHttp {
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|err| err.to_string())?;
-        let response = client.get(url).send().await.map_err(|err| err.to_string())?;
+        let mut response = client.get(url).send().await.map_err(|err| err.to_string())?;
         if !response.status().is_success() {
             return Err(format!("lightning address lookup returned HTTP {}", response.status()));
         }
-        response.text().await.map_err(|err| err.to_string())
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
+            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err("response too large".to_string());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(String::from_utf8(body).unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned()))
     }
 }
 
@@ -1289,6 +1493,37 @@ fn map_episode_mysql(row: &sqlx::mysql::MySqlRow) -> AppResult<EpisodeRow> {
         podcast: row.try_get("podcast")?,
         feed_id: row.try_get("feed_id")?,
         feed_url: row.try_get("feed_url")?,
+    })
+}
+
+/// The feed URL of a podcast this user follows, by its `podcast:guid`. Other users' podcasts are not
+/// searched: a feed's GUID is whatever its author wrote, so it only identifies the feeds the user chose.
+async fn local_feed_url(db: &DatabasePool, user_id: i32, feed_guid: &str) -> AppResult<Option<String>> {
+    dialect_match!(db, {
+        pg(pool) => {
+            let row = q::query(
+                r#"SELECT feedurl AS url FROM "Podcasts"
+                   WHERE lower(podcastguid) = lower($1) AND userid = $2 AND feedurl IS NOT NULL
+                   LIMIT 1"#,
+            )
+            .bind(feed_guid)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+            Ok(row.map(|row| row.try_get::<String, _>("url")).transpose()?)
+        },
+        mysql(pool) => {
+            let row = sqlx::query(
+                r#"SELECT FeedURL AS url FROM Podcasts
+                   WHERE LOWER(PodcastGUID) = LOWER(?) AND UserID = ? AND FeedURL IS NOT NULL
+                   LIMIT 1"#,
+            )
+            .bind(feed_guid)
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+            Ok(row.map(|row| row.try_get::<String, _>("url")).transpose()?)
+        },
     })
 }
 
@@ -1638,7 +1873,7 @@ mod tests {
             ],
             vec![],
         );
-        let allocation = allocate(100, &block, None);
+        let allocation = allocate(100, &block, None, None);
         assert_eq!(allocation.shares.len(), 2);
         assert_eq!(allocation.shares[0].name, "app");
         assert_eq!(allocation.shares[0].sats, 10);
@@ -1657,7 +1892,7 @@ mod tests {
             ],
             vec![],
         );
-        let allocation = allocate(100, &block, None);
+        let allocation = allocate(100, &block, None, None);
         assert_eq!(allocation.shares.len(), 1);
         assert_eq!(allocation.shares[0].sats, 90);
         assert_eq!(allocation.unallocated_sats, 10);
@@ -1673,7 +1908,7 @@ mod tests {
             ],
             vec![],
         );
-        let allocation = allocate(100, &block, None);
+        let allocation = allocate(100, &block, None, None);
         let paid: u64 = allocation.shares.iter().map(|s| s.sats).sum();
         assert_eq!(paid, 100);
         assert!(allocation.shares.iter().all(|s| s.fee));
@@ -1693,11 +1928,11 @@ mod tests {
             vec![recipient("host", "node", "02host", "100", false)],
             vec![remote],
         );
-        let inside = allocate(100, &block, Some(10));
+        let inside = allocate(100, &block, Some(10), None);
         assert_eq!(inside.shares.iter().find(|s| s.name == "guest").unwrap().sats, 50);
         assert_eq!(inside.shares.iter().find(|s| s.name == "host").unwrap().sats, 50);
 
-        let outside = allocate(100, &block, Some(40));
+        let outside = allocate(100, &block, Some(40), None);
         assert_eq!(outside.shares.len(), 1);
         assert_eq!(outside.shares[0].name, "host");
         assert_eq!(outside.shares[0].sats, 100);
@@ -1714,10 +1949,169 @@ mod tests {
                 ..ValueTimeSplit::default()
             }],
         );
-        let stayed = allocate(100, &empty_remote, Some(5));
+        let stayed = allocate(100, &empty_remote, Some(5), None);
         assert!(stayed.remote_feed_not_loaded);
         assert_eq!(stayed.shares[0].sats, 100);
         assert_eq!(stayed.shares[0].name, "host");
+        let no_recipients: &[ValueRecipient] = &[];
+        let not_found = allocate(100, &empty_remote, Some(5), Some(no_recipients));
+        assert!(not_found.remote_feed_not_loaded);
+        assert_eq!(not_found.shares[0].sats, 100);
+        assert_eq!(not_found.shares[0].name, "host");
+    }
+
+    fn sats_of(allocation: &Allocation, name: &str) -> u64 {
+        allocation
+            .shares
+            .iter()
+            .find(|share| share.name == name)
+            .unwrap_or_else(|| panic!("no share for {name}"))
+            .sats
+    }
+
+    fn remote_split_block(inline: Vec<ValueRecipient>) -> ValueBlock {
+        lightning_block(
+            vec![
+                recipient("host", "node", "02host", "90", false),
+                recipient("app", "node", "02app", "10", true),
+            ],
+            vec![ValueTimeSplit {
+                start_time: "0".to_string(),
+                duration: "30".to_string(),
+                remote_percentage: Some("50".to_string()),
+                recipients: inline,
+                remote_item: Some(RemoteItem {
+                    feed_guid: "abc".to_string(),
+                    ..Default::default()
+                }),
+                ..ValueTimeSplit::default()
+            }],
+        )
+    }
+
+    #[test]
+    fn remote_item_split_pays_the_remote_block() {
+        let block = remote_split_block(vec![]);
+        let remote = vec![
+            recipient("artist", "node", "02artist", "95", false),
+            recipient("label", "node", "02label", "5", true),
+        ];
+        // 1000 sats: the local fee takes 100 and half of the other 900 goes to the remote block,
+        // whose own fee takes 5% of those 450 (22, rounded down) before the artist gets 428.
+        let inside = allocate(1000, &block, Some(5), Some(&remote));
+        assert_eq!(sats_of(&inside, "app"), 100);
+        assert_eq!(sats_of(&inside, "label"), 22);
+        assert_eq!(sats_of(&inside, "artist"), 428);
+        assert_eq!(sats_of(&inside, "host"), 450);
+        assert_eq!(inside.shares.iter().map(|share| share.sats).sum::<u64>(), 1000);
+        assert_eq!(inside.unallocated_sats, 0);
+        assert!(!inside.remote_feed_not_loaded);
+
+        let outside = allocate(1000, &block, Some(40), Some(&remote));
+        assert_eq!(outside.shares.len(), 2);
+        assert_eq!(sats_of(&outside, "app"), 100);
+        assert_eq!(sats_of(&outside, "host"), 900);
+    }
+
+    #[test]
+    fn unpayable_remote_recipients_are_skipped_and_their_split_is_withheld() {
+        let block = remote_split_block(vec![]);
+        let remote = vec![
+            recipient("artist", "node", "02artist", "90", false),
+            recipient("other", "hive", "abc", "10", false),
+        ];
+        let inside = allocate(1000, &block, Some(5), Some(&remote));
+        assert_eq!(sats_of(&inside, "artist"), 405);
+        assert_eq!(sats_of(&inside, "host"), 450);
+        assert_eq!(inside.unallocated_sats, 45);
+        assert_eq!(inside.skipped.len(), 1);
+        assert_eq!(inside.skipped[0].name, "other");
+    }
+
+    #[test]
+    fn a_split_with_its_own_recipients_ignores_the_remote_block() {
+        let block = remote_split_block(vec![recipient("guest", "node", "02guest", "100", false)]);
+        let remote = vec![recipient("artist", "node", "02artist", "100", false)];
+        let inside = allocate(1000, &block, Some(5), Some(&remote));
+        assert_eq!(sats_of(&inside, "guest"), 450);
+        assert_eq!(sats_of(&inside, "host"), 450);
+        assert!(inside.shares.iter().all(|share| share.name != "artist"));
+    }
+
+    const REMOTE_FEED: &str = r#"<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0"><channel>
+<title>Remote</title>
+<podcast:guid>abc</podcast:guid>
+<podcast:value type="lightning" method="keysend">
+  <podcast:valueRecipient name="chan" type="node" address="02chan" split="100"/>
+</podcast:value>
+<item><title>Track</title><guid>track-1</guid>
+  <podcast:value type="lightning" method="keysend">
+    <podcast:valueRecipient name="artist" type="node" address="02artist" split="100"/>
+    <podcast:valueTimeSplit startTime="0" duration="10">
+      <podcast:valueRecipient name="nested" type="node" address="02nested" split="100"/>
+    </podcast:valueTimeSplit>
+  </podcast:value>
+</item>
+</channel></rss>"#;
+
+    fn names(recipients: Option<Vec<ValueRecipient>>) -> Option<Vec<String>> {
+        recipients.map(|list| list.into_iter().map(|recipient| recipient.name).collect())
+    }
+
+    #[test]
+    fn remote_recipients_come_from_the_item_block_then_the_channel_block() {
+        let item = Some(vec!["artist".to_string()]);
+        let channel = Some(vec!["chan".to_string()]);
+        assert_eq!(names(recipients_from_feed(REMOTE_FEED, "abc", Some("track-1"))), item);
+        assert_eq!(names(recipients_from_feed(REMOTE_FEED, " ABC ", Some(" track-1 "))), item);
+        assert_eq!(names(recipients_from_feed(REMOTE_FEED, "abc", Some("missing"))), channel);
+        assert_eq!(names(recipients_from_feed(REMOTE_FEED, "abc", None)), channel);
+        assert_eq!(names(recipients_from_feed(REMOTE_FEED, "other", Some("track-1"))), None);
+        // A feed that declares no guid cannot contradict the one that was asked for.
+        let unnamed = REMOTE_FEED.replace("<podcast:guid>abc</podcast:guid>", "");
+        assert_eq!(names(recipients_from_feed(&unnamed, "other", None)), channel);
+        // No value block anywhere: nobody to pay.
+        assert_eq!(recipients_from_feed("<rss><channel/></rss>", "abc", None), None);
+    }
+
+    #[test]
+    fn a_search_answer_names_a_feed_url_only_for_the_wanted_guid() {
+        let single = serde_json::json!({"feed": {"podcastGuid": "ABC", "url": "https://x/rss"}});
+        assert_eq!(feed_url_from_search(&single, "abc").as_deref(), Some("https://x/rss"));
+        let other = serde_json::json!({"feeds": [{"podcastGuid": "zzz", "url": "https://y"}]});
+        assert_eq!(feed_url_from_search(&other, "abc"), None);
+        let listed = serde_json::json!({"feeds": [
+            {"podcastGuid": "zzz", "url": "https://y"},
+            {"podcastGuid": "abc", "url": "http://z/rss"}
+        ]});
+        assert_eq!(feed_url_from_search(&listed, "abc").as_deref(), Some("http://z/rss"));
+        let ftp = serde_json::json!({"feed": {"podcastGuid": "abc", "url": "ftp://x/rss"}});
+        assert_eq!(feed_url_from_search(&ftp, "abc"), None);
+        // Podcast Index answers an unknown GUID with an empty list in place of the feed.
+        let missing = serde_json::json!({"status": "false", "feed": []});
+        assert_eq!(feed_url_from_search(&missing, "abc"), None);
+    }
+
+    #[test]
+    fn remote_value_cache_returns_hits_and_misses_and_stays_bounded() {
+        let key = |n: usize| (1, format!("cache-test-{n}"), String::new(), String::new());
+        store_remote_value(key(0), Some(vec![recipient("a", "node", "02a", "100", false)]));
+        store_remote_value(key(1), None);
+        let hit = cached_remote_value(&key(0)).flatten().unwrap();
+        assert_eq!(hit[0].name, "a");
+        assert_eq!(cached_remote_value(&key(1)), Some(None));
+        assert_eq!(cached_remote_value(&key(2)), None);
+        // Another user asking for the same guid, or the same guid with another feedUrl, is another entry.
+        let mut other_user = key(0);
+        other_user.0 = 2;
+        assert_eq!(cached_remote_value(&other_user), None);
+        let mut other_url = key(0);
+        other_url.3 = "https://elsewhere.example/feed.xml".to_string();
+        assert_eq!(cached_remote_value(&other_url), None);
+        for n in 3..(3 + REMOTE_VALUE_MAX_ENTRIES + 2) {
+            store_remote_value(key(n), None);
+        }
+        assert!(REMOTE_VALUE.lock().unwrap().len() <= REMOTE_VALUE_MAX_ENTRIES + 1);
     }
 
     #[test]

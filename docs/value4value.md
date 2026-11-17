@@ -30,10 +30,21 @@ Fees (`fee="true"`) are a percent of the original amount and are capped so
 they cannot exceed it. A `valueTimeSplit` that contains the playhead then
 takes `remotePercentage` of what remains (100 when that split lists recipients
 and omits the percentage). Those sats go to the recipients inlined on the
-split. A split that only names a `remoteItem` keeps the sats on the local
-recipients: the remote feed is not fetched. The other non-fee recipients
-share what is left by weight. Weights that do not sum to 100 are normalized.
-A zero weight leaves that part unsent.
+split. A split that only names a `remoteItem` pays that item's own value block
+instead: its fees first, then the rest by weight. Time splits inside that remote
+block are ignored. The other non-fee recipients share what is left by weight.
+Weights that do not sum to 100 are normalized. A zero weight leaves that part
+unsent.
+
+The remote block is read from the feed named by the split's `feedUrl`, else from
+a podcast you already follow with that `feedGuid`, else from the search service
+(`SEARCH_API_URL`, a Podcast Index lookup by GUID; a search service older than
+this feature finds nothing). The fetch uses the public-URL guard and refuses a
+response over 8 MiB. When the feed declares a different `podcast:guid`, has no
+recipients, or any step fails, the sats stay on the local recipients and the
+response sets `remote_feed_not_loaded`. A lookup never fails a payment. A block
+that was found is reused for 6 hours and a failed lookup is remembered for 10
+minutes.
 
 A boost above the max is rejected. It is not reduced and sent. Streaming uses
 sats per minute, independent of the max boost, and still counts against the
