@@ -92,4 +92,40 @@ void main() {
     );
     expect(find.text('Trailers'), findsNothing);
   });
+
+  testWidgets('live item card shows people, chat and comment links', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _host(
+        const ShowPodcasting2Panel(
+          tags: ChannelTags(
+            liveItems: [
+              LiveItem(
+                status: 'live',
+                start: '2026-02-01T00:00:00Z',
+                title: 'Now',
+                chat: P2Chat(
+                  server: 'https://chat.example.com/room',
+                  protocol: 'irc',
+                ),
+                socialInteracts: [
+                  SocialInteract(
+                    protocol: 'activitypub',
+                    uri: 'https://example.com/thread',
+                  ),
+                ],
+                people: ['Ada (host)', 'Gus'],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Now'), findsOneWidget);
+    expect(find.text('Ada (host), Gus'), findsOneWidget);
+    expect(find.text('Join chat'), findsOneWidget);
+    expect(find.text('activitypub'), findsOneWidget);
+  });
 }

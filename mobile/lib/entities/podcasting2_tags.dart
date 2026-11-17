@@ -168,6 +168,11 @@ class LiveItem {
   final String? enclosureType;
   final String? guid;
   final String? enclosureUrl;
+  final P2Chat? chat;
+  final List<SocialInteract> socialInteracts;
+
+  /// `Name (role)` or `Name`, one entry per credited person.
+  final List<String> people;
 
   const LiveItem({
     required this.status,
@@ -178,6 +183,9 @@ class LiveItem {
     this.enclosureType,
     this.guid,
     this.enclosureUrl,
+    this.chat,
+    this.socialInteracts = const [],
+    this.people = const [],
   });
 
   factory LiveItem.fromJson(Map<String, dynamic> json) {
@@ -185,6 +193,17 @@ class LiveItem {
     final tagMap = tags is Map
         ? Map<String, dynamic>.from(tags)
         : const <String, dynamic>{};
+    final people = <String>[];
+    final rawPeople = tagMap['people'];
+    if (rawPeople is List) {
+      for (final person in rawPeople.whereType<Map>()) {
+        final name = '${person['name'] ?? ''}'.trim();
+        if (name.isEmpty) continue;
+        final role = '${person['role'] ?? ''}'.trim();
+        people.add(role.isEmpty ? name : '$name ($role)');
+      }
+    }
+    final rawChat = tagMap['chat'];
     return LiveItem(
       status: '${json['status'] ?? ''}',
       start: '${json['start'] ?? ''}',
@@ -194,6 +213,9 @@ class LiveItem {
       enclosureType: json['enclosure_type'] as String?,
       guid: tagMap['guid'] as String?,
       enclosureUrl: tagMap['enclosure_url'] as String?,
+      chat: rawChat is Map<String, dynamic> ? P2Chat.fromJson(rawChat) : null,
+      socialInteracts: _list(tagMap['social_interacts'], SocialInteract.fromJson),
+      people: people,
     );
   }
 
@@ -262,11 +284,15 @@ class P2Chapter {
   final String? imageUrl;
   final String? url;
 
+  /// `false` for chapters that only change the artwork and stay out of the chapter list.
+  final bool toc;
+
   const P2Chapter({
     required this.title,
     required this.startTime,
     this.imageUrl,
     this.url,
+    this.toc = true,
   });
 
   factory P2Chapter.fromJson(Map<String, dynamic> json) {
@@ -275,6 +301,7 @@ class P2Chapter {
       startTime: _asDouble(json['startTime'] ?? json['start_time']) ?? 0,
       imageUrl: (json['img'] ?? json['image']) as String?,
       url: httpLink(json['url'] as String?),
+      toc: json['toc'] != false && '${json['toc']}'.toLowerCase() != 'false',
     );
   }
 }
@@ -946,5 +973,6 @@ List<P2Chapter> chaptersFromPodcasting2(Map<String, dynamic>? data) {
       .whereType<Map<String, dynamic>>()
       .map(P2Chapter.fromJson)
       .where((c) => c.title.isNotEmpty || c.startTime >= 0)
+      .where((c) => c.toc)
       .toList();
 }
