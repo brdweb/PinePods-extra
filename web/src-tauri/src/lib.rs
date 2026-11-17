@@ -12,6 +12,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use tauri::command;
 
+mod local_files;
+use local_files::{episode_filename, extension_from_disposition, EPISODE_EXTENSIONS};
+
 fn deserialize_categories<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -133,6 +136,55 @@ async fn download_file(url: String, filename: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Downloads an episode through the PinePods server (`/api/episodes/{id}/download`),
+/// which applies the chosen version, feed credentials and the integrity check.
+/// Returns the saved file name.
+#[command]
+async fn download_episode(url: String, episode_id: i32, api_key: String) -> Result<String, String> {
+    let proj_dirs = get_project_dirs()?;
+    let app_dir: PathBuf = proj_dirs.data_dir().to_path_buf();
+    if !app_dir.exists() {
+        fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::Agent::config_builder()
+            .max_redirects(20)
+            .build()
+            .new_agent();
+
+        let mut response = agent
+            .get(&url)
+            .header("Api-Key", &api_key)
+            .call()
+            .map_err(|e| e.to_string())?;
+        let extension = extension_from_disposition(
+            response
+                .headers()
+                .get("content-disposition")
+                .and_then(|value| value.to_str().ok()),
+        );
+        let filename = format!("episode_{}.{}", episode_id, extension);
+        let final_path = app_dir.join(&filename);
+        let part_path = app_dir.join(format!("{}.part", filename));
+
+        let written = (|| -> Result<(), String> {
+            let mut reader = response.body_mut().with_config().reader();
+            let mut file = File::create(&part_path).map_err(|e| e.to_string())?;
+            copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
+            file.flush().map_err(|e| e.to_string())?;
+            fs::rename(&part_path, &final_path).map_err(|e| e.to_string())
+        })();
+        if let Err(e) = written {
+            let _ = fs::remove_file(&part_path);
+            return Err(e);
+        }
+        Ok(filename)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Serialize)]
 #[serde(default)] 
 pub struct EpisodeInfo {
@@ -179,14 +231,18 @@ pub struct EpisodeDownload {
 }
 
 #[command]
-async fn update_local_db(mut episode_info: EpisodeInfo) -> Result<(), String> {
+async fn update_local_db(
+    mut episode_info: EpisodeInfo,
+    filename: Option<String>,
+) -> Result<(), String> {
     let proj_dirs = get_project_dirs().map_err(|e| e.to_string())?;
     let db_path = proj_dirs.data_dir().join("local_episodes.json");
 
     // Calculate the downloaded location
-    let download_dir = proj_dirs
-        .data_dir()
-        .join(format!("episode_{}.mp3", episode_info.episodeid));
+    let download_dir = proj_dirs.data_dir().join(episode_filename(
+        episode_info.episodeid,
+        filename.as_deref(),
+    ));
     episode_info.downloadedlocation = Some(download_dir.to_string_lossy().into_owned());
 
     let mut episodes = if db_path.exists() {
@@ -238,16 +294,17 @@ async fn remove_multiple_from_local_db(episode_ids: Vec<i32>) -> Result<(), Stri
 
     // Delete the audio files and artwork for each episode
     for episodeid in episode_ids {
-        let audio_file_path = proj_dirs
-            .data_dir()
-            .join(format!("episode_{}.mp3", episodeid));
+        for ext in EPISODE_EXTENSIONS {
+            let audio_file_path = proj_dirs
+                .data_dir()
+                .join(format!("episode_{}.{}", episodeid, ext));
+            if audio_file_path.exists() {
+                std::fs::remove_file(audio_file_path).map_err(|e| e.to_string())?;
+            }
+        }
         let artwork_file_path = proj_dirs
             .data_dir()
             .join(format!("artwork_{}.jpg", episodeid));
-
-        if audio_file_path.exists() {
-            std::fs::remove_file(audio_file_path).map_err(|e| e.to_string())?;
-        }
 
         if artwork_file_path.exists() {
             std::fs::remove_file(artwork_file_path).map_err(|e| e.to_string())?;
@@ -280,16 +337,17 @@ async fn remove_from_local_db(episodeid: i32) -> Result<(), String> {
     serde_json::to_writer(file, &episodes).map_err(|e| e.to_string())?;
 
     // Delete the audio file and artwork
-    let audio_file_path = proj_dirs
-        .data_dir()
-        .join(format!("episode_{}.mp3", episodeid));
+    for ext in EPISODE_EXTENSIONS {
+        let audio_file_path = proj_dirs
+            .data_dir()
+            .join(format!("episode_{}.{}", episodeid, ext));
+        if audio_file_path.exists() {
+            std::fs::remove_file(audio_file_path).map_err(|e| e.to_string())?;
+        }
+    }
     let artwork_file_path = proj_dirs
         .data_dir()
         .join(format!("artwork_{}.jpg", episodeid));
-
-    if audio_file_path.exists() {
-        std::fs::remove_file(audio_file_path).map_err(|e| e.to_string())?;
-    }
 
     if artwork_file_path.exists() {
         std::fs::remove_file(artwork_file_path).map_err(|e| e.to_string())?;
@@ -599,6 +657,7 @@ pub fn run() {
             list_dir,
             get_app_dir,
             download_file,
+            download_episode,
             delete_file,
             update_local_db,
             remove_from_local_db,

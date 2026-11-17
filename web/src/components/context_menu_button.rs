@@ -4,7 +4,8 @@ use crate::components::context::current_playing_anchor;
 use crate::components::context::UIState;
 #[cfg(not(feature = "server_build"))]
 use crate::pages::downloads_tauri::{
-    download_file, remove_episode_from_local_db, update_local_database, update_podcast_database,
+    download_episode, download_file, remove_episode_from_local_db, update_local_database,
+    update_podcast_database,
 };
 use crate::requests::episode::Episode;
 
@@ -799,13 +800,13 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
             let api_key = api_key_copy.clone().flatten();
 
             let episode = episode.clone();
+            let is_youtube = episode.is_youtube;
             let future = async move {
                 match call_get_episode_metadata(&server_name, ep_api_key, &request).await {
                     Ok(episode_info) => {
                         let audio_url = episode_info.episodeurl.clone();
                         let artwork_url = episode_info.episodeartwork.clone();
                         let podcast_id = episode_info.podcastid.clone();
-                        let filename = format!("episode_{}.mp3", episode_id);
                         let artwork_filename = format!("artwork_{}.jpg", episode_id);
                         Dispatch::<EpisodeStatusState>::global().reduce_mut(|state| {
                             state.downloaded_episodes.push_local(episode);
@@ -813,10 +814,34 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
                         Dispatch::<NotificationState>::global().reduce_mut(|state| {
                             state.info_message = Some(format!("Episode download queued!"));
                         });
-                        // Download audio
-                        match download_file(audio_url, filename.clone()).await {
-                            Ok(_) => {}
+                        // Download audio. Non-YouTube episodes go through the server's
+                        // download route, which applies the chosen version, feed
+                        // credentials and the integrity check.
+                        let audio_result = if is_youtube {
+                            download_file(audio_url, format!("episode_{}.mp3", episode_id))
+                                .await
+                                .map(|_| None)
+                        } else {
+                            let mut url =
+                                format!("{}/api/episodes/{}/download", server_name, episode_id);
+                            if let Some(option_id) = preferred_media_option(episode_id) {
+                                url.push_str("?media_option_id=");
+                                url.push_str(
+                                    &js_sys::encode_uri_component(&option_id)
+                                        .as_string()
+                                        .unwrap_or(option_id),
+                                );
+                            }
+                            download_episode(url, episode_id, api_key.clone().unwrap_or_default())
+                                .await
+                                .map(|name| Some(name).filter(|name| !name.is_empty()))
+                        };
+                        let saved_name = match audio_result {
+                            Ok(name) => name,
                             Err(e) => {
+                                Dispatch::<EpisodeStatusState>::global().reduce_mut(|state| {
+                                    state.downloaded_episodes.remove_local(episode_id);
+                                });
                                 let formatted_error = format_error_message(&format!("{:?}", e));
                                 Dispatch::<NotificationState>::global().reduce_mut(|state| {
                                     state.error_message = Some(format!(
@@ -825,8 +850,9 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
                                     ))
                                 });
                                 web_sys::console::log_1(&format!("audio fail: {:?}", e).into());
+                                return;
                             }
-                        }
+                        };
 
                         // Download artwork
                         if let Err(e) = download_file(artwork_url, artwork_filename.clone()).await {
@@ -841,7 +867,7 @@ pub fn context_button(props: &ContextButtonProps) -> Html {
                         }
 
                         // Update local JSON database
-                        if let Err(e) = update_local_database(episode_info.clone()).await {
+                        if let Err(e) = update_local_database(episode_info.clone(), saved_name).await {
                             let formatted_error = format_error_message(&format!("{:?}", e));
                             Dispatch::<NotificationState>::global().reduce_mut(|state| {
                                 state.error_message = Some(format!(
