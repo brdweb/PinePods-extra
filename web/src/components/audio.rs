@@ -1366,6 +1366,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                 .as_ref()
                 .map(|cs| {
                     cs.iter()
+                        .filter(|c| c.toc != Some(false))
                         .filter_map(|c| c.startTime.map(|t| (t as f64, c.title.clone())))
                         .collect()
                 })

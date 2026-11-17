@@ -8,7 +8,7 @@ use yew::prelude::*;
 
 use crate::components::gen_funcs::format_time_rm_hour;
 use crate::requests::pod_req::Chapter;
-use crate::requests::podcasting2::{chapter_bounds, chapter_progress, http_link};
+use crate::requests::podcasting2::{chapter_bounds, chapter_progress, http_link, toc_chapters};
 
 #[derive(Properties, PartialEq)]
 pub(crate) struct ChapterListProps {
@@ -30,7 +30,8 @@ pub(crate) fn chapter_list(props: &ChapterListProps) -> Html {
     let (i18n, _) = use_translation();
     let close = props.on_close.reform(|_: MouseEvent| ());
     let stop_propagation = Callback::from(|e: MouseEvent| e.stop_propagation());
-    let bounds = chapter_bounds(&props.chapters, props.duration);
+    let chapters = toc_chapters(&props.chapters);
+    let bounds = chapter_bounds(&chapters, props.duration);
 
     html! {
         <div id="chapter-select-modal" tabindex="-1" aria-hidden="true"
@@ -51,10 +52,10 @@ pub(crate) fn chapter_list(props: &ChapterListProps) -> Html {
                     </div>
 
                     <div class="p-4 md:p-5 max-h-[70vh] overflow-y-auto">
-                        if props.chapters.is_empty() {
+                        if chapters.is_empty() {
                             <div class="text-center p-4">{ i18n.t("audio.no_chapters_available") }</div>
                         }
-                        { for props.chapters.iter().zip(bounds).map(|(chapter, (start, end))| {
+                        { for chapters.iter().zip(bounds).map(|(chapter, (start, end))| {
                             let is_current = props.position >= start && props.position < end;
                             let progress = chapter_progress(props.position, start, end);
                             let activate = {
