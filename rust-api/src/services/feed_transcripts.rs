@@ -14,6 +14,7 @@ use crate::database::dialect::dialect_match;
 use crate::database::DatabasePool;
 use crate::error::AppResult;
 use crate::services::podcasting2::Transcript;
+use crate::services::transcription::cue_timestamp;
 
 pub const SOURCE_FEED: &str = "feed";
 /// Episodes fetched per run.
@@ -198,6 +199,26 @@ fn parse_json(body: &str) -> Option<Parsed> {
     }
     let text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n");
     Some(Parsed { text, segments })
+}
+
+/// A Podcasting 2.0 JSON transcript re-expressed as SRT, so clients that only read timed cues can
+/// show it. `None` when the body is not JSON or holds no timed segments.
+pub fn json_as_srt(body: &str) -> Option<String> {
+    let parsed = parse_json(body)?;
+    if parsed.segments.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for (i, seg) in parsed.segments.iter().enumerate() {
+        out.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            i + 1,
+            cue_timestamp(seg.start, ','),
+            cue_timestamp(seg.end, ','),
+            seg.text
+        ));
+    }
+    Some(out)
 }
 
 fn ends_sentence(s: &str) -> bool {
@@ -401,6 +422,22 @@ mod tests {
         let texts: Vec<&str> = p.segments.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, vec!["Hello world.", "Next", "Other"]);
         assert_eq!(p.segments[0].end, 0.9);
+    }
+
+    #[test]
+    fn json_transcripts_are_served_as_srt() {
+        let json = r#"{"version":"1.0.0","segments":[
+            {"speaker":"A","startTime":0.0,"endTime":0.4,"body":"Hello"},
+            {"speaker":"A","startTime":0.4,"endTime":0.9,"body":"world."},
+            {"speaker":"A","startTime":1.0,"endTime":1.3,"body":"Next"},
+            {"speaker":"B","startTime":1.3,"endTime":1.6,"body":"Other"}
+        ]}"#;
+        let srt = json_as_srt(json).unwrap();
+        assert!(srt.starts_with("1\n00:00:00,"));
+        assert!(srt.contains(" --> "));
+        assert_eq!(srt.matches(" --> ").count(), parse_json(json).unwrap().segments.len());
+        assert!(json_as_srt("WEBVTT\n\n00:01.000 --> 00:02.000\nHi").is_none());
+        assert!(json_as_srt(r#"{"segments":[]}"#).is_none());
     }
 
     #[test]

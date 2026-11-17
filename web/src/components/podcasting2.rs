@@ -34,7 +34,7 @@ use crate::components::context::UIState;
 use crate::requests::episode::Episode;
 use crate::requests::podcasting2::{
     artwork_choice, cadence_of, chat_url, format_clock, format_numbers_badge, http_link, location_map_url,
-    live_playback, normalize_live_status, resolve_numbers, safe_link, social_url, soundbite_window,
+    live_people_line, live_playback, normalize_live_status, resolve_numbers, safe_link, social_url, soundbite_window,
     time_splits_of, trailer_groups, trailer_is_video, visible_live_items, ArtworkChoice, Cadence,
     ChannelTags, EpisodeNumber, ImageSet, ItemTags, PodcastImage, RemoteItem, Season,
 };
@@ -376,7 +376,6 @@ pub fn podcasting2_extras(props: &Podcasting2ExtrasProps) -> Html {
     let label_subscribed = i18n.t("podcasting2.subscribed").to_string();
     let label_subscribing = i18n.t("podcasting2.subscribing").to_string();
     let label_unresolved = i18n.t("podcasting2.unresolved").to_string();
-    let label_display_only = i18n.t("podcasting2.display_only").to_string();
     let label_subscribe_ok = i18n.t("podcasting2.subscribe_ok").to_string();
     let label_subscribe_failed = i18n.t("podcasting2.subscribe_failed").to_string();
 
@@ -409,7 +408,6 @@ pub fn podcasting2_extras(props: &Podcasting2ExtrasProps) -> Html {
                             </div>
                         }
                     }) }
-                    <p class="p2-disclaimer">{ label_display_only }</p>
                 </section>
             } } }
             { if shows.is_empty() { html! {} } else { html! {
@@ -1298,6 +1296,18 @@ pub fn show_tags_panel(props: &ShowTagsPanelProps) -> Html {
                             let title = item.title.as_deref().map(str::trim).filter(|title| !title.is_empty()).unwrap_or(status_label.as_str()).to_string();
                             let description = item.description.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(preview_text);
                             let page = item.link.as_deref().and_then(http_link).map(|url| url.to_string());
+                            let people = live_people_line(&item.tags.people);
+                            let chat = item.tags.chat.as_ref().and_then(chat_url);
+                            let socials: Vec<(String, String)> = item.tags.social_interacts.iter().filter_map(|social| {
+                                social_url(social).map(|url| {
+                                    let label = if social.protocol.trim().is_empty() {
+                                        i18n.t("podcasting2.comment_thread").to_string()
+                                    } else {
+                                        social.protocol.clone()
+                                    };
+                                    (url, label)
+                                })
+                            }).collect();
                             let playback = item.tags.enclosure_url.as_deref().and_then(|url| live_playback(item.enclosure_type.as_deref(), url));
                             let play_label = if status == "ended" {
                                 i18n.t("podcasting2.play_recording").to_string()
@@ -1351,6 +1361,13 @@ pub fn show_tags_panel(props: &ShowTagsPanelProps) -> Html {
                                     { if let Some(description) = description {
                                         html! { <p class="p2-row-meta">{ description }</p> }
                                     } else { html! {} } }
+                                    { if let Some(people) = people {
+                                        html! { <p class="p2-row-meta">{ people }</p> }
+                                    } else { html! {} } }
+                                    { if let Some(chat) = chat {
+                                        html! { { external_link(chat, i18n.t("podcasting2.join_chat").to_string()) } }
+                                    } else { html! {} } }
+                                    { for socials.into_iter().map(|(url, label)| external_link(url, label)) }
                                 </li>
                             }
                         }) }

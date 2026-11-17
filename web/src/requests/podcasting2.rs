@@ -80,6 +80,43 @@ pub struct LiveItemTags {
     pub guid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosure_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<Chat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub social_interacts: Vec<SocialInteract>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<LivePerson>,
+}
+
+/// A `podcast:person` on a live item. Only the name and role are shown.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LivePerson {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+/// `Name (role), Name`: the people on a live item as one line. `None` when no name is left.
+pub fn live_people_line(people: &[LivePerson]) -> Option<String> {
+    let entries: Vec<String> = people
+        .iter()
+        .filter_map(|p| {
+            let name = p.name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            match p.role.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+                Some(role) => Some(format!("{name} ({role})")),
+                None => Some(name.to_string()),
+            }
+        })
+        .collect();
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join(", "))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -600,6 +637,12 @@ pub fn http_link(url: &str) -> Option<&str> {
     }
 }
 
+/// Chapters that belong in a chapter list. The spec uses `toc: false` entries only to change the
+/// artwork, so they stay out of lists and tick marks.
+pub fn toc_chapters(chapters: &[crate::requests::pod_req::Chapter]) -> Vec<crate::requests::pod_req::Chapter> {
+    chapters.iter().filter(|c| c.toc != Some(false)).cloned().collect()
+}
+
 /// Start and end of each chapter in seconds. A chapter ends where the next
 /// one starts, and the last one at `duration`.
 pub fn chapter_bounds(chapters: &[crate::requests::pod_req::Chapter], duration: f64) -> Vec<(f64, f64)> {
@@ -645,6 +688,22 @@ pub struct TranscriptCue {
     pub start: f64,
     pub end: f64,
     pub text: String,
+}
+
+/// The transcript to load when an episode lists several: timed WebVTT first, then SRT, then JSON
+/// (which the server turns into SRT cues), then whatever comes first.
+pub fn preferred_transcript(transcripts: &[crate::requests::pod_req::Transcript]) -> Option<&crate::requests::pod_req::Transcript> {
+    let mime = |t: &crate::requests::pod_req::Transcript| t.mime_type.trim().to_ascii_lowercase();
+    transcripts
+        .iter()
+        .find(|t| mime(t) == "text/vtt")
+        .or_else(|| {
+            transcripts
+                .iter()
+                .find(|t| matches!(mime(t).as_str(), "application/srt" | "application/x-subrip" | "text/srt"))
+        })
+        .or_else(|| transcripts.iter().find(|t| mime(t).contains("json")))
+        .or_else(|| transcripts.first())
 }
 
 /// Parse an SRT/VTT timestamp (`HH:MM:SS,mmm`, `MM:SS.mmm`, …) into seconds.
@@ -1063,6 +1122,7 @@ mod tests {
             title: String::new(),
             url: None,
             img: img.map(|s| s.to_string()),
+            toc: None,
         }
     }
 
@@ -1433,5 +1493,65 @@ mod tests {
         let legacy = r#"{"chapters": [], "transcripts": [], "people": []}"#;
         let legacy: Wrap = serde_json::from_str(legacy).unwrap();
         assert!(legacy.tags.soundbites.is_empty());
+    }
+
+    fn transcript(mime: &str) -> crate::requests::pod_req::Transcript {
+        crate::requests::pod_req::Transcript {
+            url: format!("https://example.invalid/{mime}"),
+            mime_type: mime.to_string(),
+            language: None,
+            rel: None,
+        }
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn preferred_transcript_ranks_timed_formats_first() {
+        let html_and_json = [transcript("text/html"), transcript("application/json")];
+        assert_eq!(preferred_transcript(&html_and_json).unwrap().mime_type, "application/json");
+        let with_subrip = [transcript("text/html"), transcript("application/json"), transcript("application/x-subrip")];
+        assert_eq!(preferred_transcript(&with_subrip).unwrap().mime_type, "application/x-subrip");
+        let with_vtt = [transcript("application/srt"), transcript("text/vtt")];
+        assert_eq!(preferred_transcript(&with_vtt).unwrap().mime_type, "text/vtt");
+        let only_html = [transcript("text/html"), transcript("text/plain")];
+        assert_eq!(preferred_transcript(&only_html).unwrap().mime_type, "text/html");
+        assert!(preferred_transcript(&[]).is_none());
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn toc_chapters_drops_artwork_only_entries() {
+        let raw = r#"[
+            {"startTime": 0, "title": "Intro"},
+            {"startTime": 30, "title": "Art boolean", "toc": false},
+            {"startTime": 60, "title": "Art string", "toc": "False"},
+            {"startTime": 90, "title": "Listed", "toc": true},
+            {"startTime": 120, "title": "Null", "toc": null}
+        ]"#;
+        let chapters: Vec<crate::requests::pod_req::Chapter> = serde_json::from_str(raw).unwrap();
+        assert_eq!(chapters[1].toc, Some(false));
+        assert_eq!(chapters[2].toc, Some(false));
+        assert_eq!(chapters[0].toc, None);
+        let titles: Vec<String> = toc_chapters(&chapters).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles, vec!["Intro", "Listed", "Null"]);
+    }
+
+    #[test]
+    #[wasm_bindgen_test]
+    fn live_items_carry_chat_socials_and_people() {
+        let raw = r##"{
+            "status": "live",
+            "start": "2026-01-01T00:00:00Z",
+            "tags": {
+                "chat": {"server": "matrix.example.invalid", "protocol": "matrix", "space": "#live"},
+                "social_interacts": [{"protocol": "activitypub", "uri": "https://example.invalid/ap/live"}],
+                "people": [{"name": " Ada ", "role": "host"}, {"name": "Gus", "role": " "}, {"name": "  "}]
+            }
+        }"##;
+        let item: LiveItem = serde_json::from_str(raw).unwrap();
+        assert!(item.tags.chat.as_ref().and_then(chat_url).is_some());
+        assert_eq!(item.tags.social_interacts.len(), 1);
+        assert_eq!(live_people_line(&item.tags.people).as_deref(), Some("Ada (host), Gus"));
+        assert!(live_people_line(&[]).is_none());
     }
 }

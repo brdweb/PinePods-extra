@@ -10917,17 +10917,11 @@ body.search-takeover-open .drawer-icon { display: none; }
     color: var(--text-color);
 }
 .p2-note,
-.p2-disclaimer,
 .p2-method,
 .p2-recipients-label {
     margin: 0 0 8px;
     font-size: 13px;
     color: var(--text-secondary-color);
-}
-.p2-disclaimer {
-    margin: 10px 0 0;
-    font-size: 12px;
-    opacity: .8;
 }
 .p2-recipients-label {
     font-size: 11px;

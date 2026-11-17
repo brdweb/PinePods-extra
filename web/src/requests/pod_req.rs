@@ -1796,6 +1796,86 @@ pub struct Chapter {
     pub title: String,
     pub url: Option<String>,
     pub img: Option<String>,
+    /// `false` marks a chapter that only changes the artwork, so it stays out of the chapter list.
+    #[serde(default, deserialize_with = "deserialize_toc", skip_serializing_if = "Option::is_none")]
+    pub toc: Option<bool>,
+}
+
+fn deserialize_toc<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct TocVisitor;
+
+    impl<'de> Visitor<'de> for TocVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a boolean, or the string \"true\" or \"false\"")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Some(value))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            })
+        }
+
+        fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_option(TocVisitor)
 }
 
 fn deserialize_start_time<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>

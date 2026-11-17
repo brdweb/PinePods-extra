@@ -2748,6 +2748,8 @@ pub async fn fetch_transcript(
         Ok(response) => {
             match response.text().await {
                 Ok(content) => {
+                    // Word-level JSON transcripts become SRT so the web cue parser can read them.
+                    let content = crate::services::feed_transcripts::json_as_srt(&content).unwrap_or(content);
                     Ok(Json(serde_json::json!({
                         "success": true,
                         "content": content

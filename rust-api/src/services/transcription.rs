@@ -446,7 +446,7 @@ pub async fn get_episode_transcript(
 }
 
 /// A seconds value as a cue timestamp `HH:MM:SS<sep>mmm` (`,` for SRT, `.` for WebVTT).
-fn cue_timestamp(seconds: f64, sep: char) -> String {
+pub(crate) fn cue_timestamp(seconds: f64, sep: char) -> String {
     let ms_total = (seconds.max(0.0) * 1000.0).round() as i64;
     let ms = ms_total % 1000;
     let s = (ms_total / 1000) % 60;

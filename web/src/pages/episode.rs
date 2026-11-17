@@ -16,7 +16,7 @@ use crate::components::safehtml::SafeHtml;
 use crate::components::transcript_hits::{highlight_terms, play_from};
 use crate::requests::people_req::{call_get_episode_people, CreditedPerson};
 use crate::requests::podcasting2::{
-    follows_after, parse_transcript_cues, TranscriptFollow,
+    follows_after, parse_transcript_cues, preferred_transcript, toc_chapters, TranscriptFollow,
 };
 use crate::requests::pod_req;
 use crate::requests::pod_req::{
@@ -298,13 +298,7 @@ pub fn transcript_inline(props: &TranscriptInlineProps) -> Html {
         let api_key = props.api_key.clone();
 
         use_effect_with(transcripts, move |transcripts| {
-            if !transcripts.is_empty() {
-                let transcript = transcripts
-                    .iter()
-                    .find(|t| t.mime_type == "text/vtt")
-                    .or_else(|| transcripts.iter().find(|t| t.mime_type == "application/srt"))
-                    .unwrap_or(&transcripts[0])
-                    .clone();
+            if let Some(transcript) = preferred_transcript(transcripts).cloned() {
 
                 let url = transcript.url.clone();
                 let mime_type = transcript.mime_type.clone();
@@ -688,18 +682,8 @@ pub fn transcript_modal(props: &TranscriptModalProps) -> Html {
         let api_key = props.api_key.clone();
 
         use_effect_with(transcripts, move |transcripts| {
-            if !transcripts.is_empty() {
-                // Clone the transcripts at the beginning to avoid lifetime issues
-                let transcript = transcripts
-                    .iter()
-                    .find(|t| t.mime_type == "text/vtt")
-                    .or_else(|| {
-                        transcripts
-                            .iter()
-                            .find(|t| t.mime_type == "application/srt")
-                    })
-                    .unwrap_or(&transcripts[0])
-                    .clone(); // Clone here to avoid lifetime issues
+            if let Some(transcript) = preferred_transcript(transcripts).cloned() {
+                // Clone the transcript up front to avoid lifetime issues
 
                 let url = transcript.url.clone();
                 let mime_type = transcript.mime_type.clone();
@@ -3094,7 +3078,7 @@ pub fn epsiode() -> Html {
 
                                     // ===== TABBED BODY (notes / chapters / transcript / people) =====
                                     {{
-                                        let chapter_count = audio_state.episode_page_chapters.as_ref().map_or(0, |c| c.len());
+                                        let chapter_count = audio_state.episode_page_chapters.as_deref().map_or(0, |c| toc_chapters(c).len());
                                         let has_chapters = chapter_count > 0;
                                         let has_feed_transcript = audio_state.episode_page_transcript.as_ref().map_or(false, |t| !t.is_empty());
                                         // The Transcript tab is available if there's a built-in transcript OR the AI
@@ -3150,7 +3134,7 @@ pub fn epsiode() -> Html {
                                                     </div>
                                                 },
                                                 EpisodeTab::Chapters => {
-                                                    let chapters = audio_state.episode_page_chapters.as_deref().unwrap_or(&[]);
+                                                    let chapters = toc_chapters(audio_state.episode_page_chapters.as_deref().unwrap_or(&[]));
                                                     let loaded = audio_state.currently_playing.as_ref().map_or(false, |c| c.episode_id == episode_id);
                                                     let now_playing = audio_state.audio_playing.unwrap_or(false);
                                                     let cur = audio_state.current_time_seconds;
