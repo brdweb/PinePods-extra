@@ -205,6 +205,10 @@ async fn search_handler(
                 println!("Using /search/byperson endpoint");
                 format!("https://api.podcastindex.org/api/1.0/search/byperson?q={}", encoded_search_term)
             },
+            "guid" => {
+                println!("Using /podcasts/byguid endpoint");
+                format!("https://api.podcastindex.org/api/1.0/podcasts/byguid?guid={}", encoded_search_term)
+            },
             _ => {
                 println!("Using /search/byterm endpoint");
                 format!("https://api.podcastindex.org/api/1.0/search/byterm?q={}", encoded_search_term)
