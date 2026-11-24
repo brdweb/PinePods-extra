@@ -41,7 +41,7 @@ use crate::pages::episode::TranscriptInline;
 use crate::requests::episode::Episode;
 use crate::requests::people_req::CreditedPerson;
 use crate::requests::podcasting2::{chapter_image_at, http_link};
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use yew_router::history::{BrowserHistory, History};
 
 fn session() -> Option<(String, String, i32)> {

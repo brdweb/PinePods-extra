@@ -33,7 +33,7 @@ use crate::requests::pod_req::{
     AdSegmentReviewRequest,
 };
 use crate::requests::search_pods::{call_get_podcast_details_dynamic, call_parse_podcast_url};
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use regex::Regex;
 use std::rc::Rc;
 use wasm_bindgen::closure::Closure;
@@ -264,13 +264,13 @@ pub struct TranscriptInlineProps {
 }
 
 /// Episode artwork with the default episode art as fallback. Responsive (srcset) artwork from
-/// Podcasting 2.0 keeps its own rendering.
-fn episode_cover_html(choice: &crate::requests::podcasting2::ArtworkChoice, alt: String, class: String) -> Html {
+/// Podcasting 2.0 keeps its own rendering. `size` is the thumbnail width asked of the image proxy.
+fn episode_cover_html(choice: &crate::requests::podcasting2::ArtworkChoice, alt: String, class: String, size: u32) -> Html {
     if choice.srcset.is_some() {
-        cover_html(choice, alt, class)
+        cover_html(choice, alt, class, None)
     } else {
         html! {
-            <FallbackImage
+            <FallbackImage size={Some(size)}
                 src={choice.src.clone()}
                 fallback={DEFAULT_EPISODE_ART}
                 {alt}
@@ -933,9 +933,11 @@ fn spawn_transcribe(
     started_msg: String,
     error_msg: String,
 ) {
+    // Regenerating replaces a finished transcript, which the server only does when forced.
+    let force = transcript.as_ref().is_some_and(|t| t.status == "complete");
     submitting.set(true);
     wasm_bindgen_futures::spawn_local(async move {
-        match call_transcribe_episode(&server_name, &api_key, episode_id, user_id, false).await {
+        match call_transcribe_episode(&server_name, &api_key, episode_id, user_id, force).await {
             Ok(_) => {
                 Dispatch::<NotificationState>::global()
                     .reduce_mut(|s| s.info_message = Some(started_msg));
@@ -1637,6 +1639,13 @@ pub fn epsiode() -> Html {
     }
 
     let page_state = use_state(|| PageState::Loading);
+    // Artwork colour for the whole page (play button, tabs, chapters, progress follow it).
+    let page_art = match &*page_state {
+        PageState::Ok(e) if !e.episodeartwork.is_empty() => e.episodeartwork.clone(),
+        PageState::Ok(e) => e.artworkurl.clone(),
+        _ => String::new(),
+    };
+    let page_accent = crate::components::art_accent::use_art_accent(&page_art);
 
     {
         let audio_dispatch = audio_dispatch.clone();
@@ -2277,7 +2286,10 @@ pub fn epsiode() -> Html {
     let page_state = page_state.clone();
     html! {
         <>
-        <div class="main-container">
+        <div
+            class={classes!("main-container", page_accent.is_some().then_some("art-scope"))}
+            style={crate::components::art_accent::accent_style(&page_accent)}
+        >
             <Search_nav />
             <UseScrollToTop />
             {
@@ -2776,7 +2788,7 @@ pub fn epsiode() -> Html {
 
                                     // ── Compact header: artwork + meta ──
                                     <div class="ep-mobile-header">
-                                        { episode_cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string()) }
+                                        { episode_cover_html(&cover, cover_alt.clone(), "ep-mobile-art rounded-corners".to_string(), 256) }
                                         <div class="ep-mobile-meta">
                                             <p class="ep-mobile-podcast-name" onclick={on_title_click.clone()}>
                                                 { &episode.podcastname }
@@ -2977,8 +2989,13 @@ pub fn epsiode() -> Html {
                                 <div class="episode-layout-container">
                                     // ===== HERO =====
                                     <div class="ep-hero">
+                                        <div
+                                            class="ep-hero-backdrop"
+                                            style={format!("background-image: url('{}');", crate::components::art_accent::css_url_escape(if episode.episodeartwork.is_empty() { &episode.artworkurl } else { &episode.episodeartwork }))}
+                                        ></div>
+                                        <div class="ep-hero-scrim"></div>
                                         <div class="ep-hero-cover" onclick={on_title_click.clone()} title={episode.podcastname.clone()}>
-                                            { episode_cover_html(&cover, cover_alt.clone(), "ep-hero-cover-img".to_string()) }
+                                            { episode_cover_html(&cover, cover_alt.clone(), "ep-hero-cover-img".to_string(), 512) }
                                         </div>
                                         <div class="ep-hero-body">
                                             <div class="ep-hero-show" onclick={on_title_click.clone()}>

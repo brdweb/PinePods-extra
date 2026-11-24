@@ -484,10 +484,8 @@ pub async fn download_episode_file(
                 .header("Accept", "*/*");
             // Feed credentials stay on the original enclosure, not alternate hosts.
             if step.uri == original_episode_url {
-                if let (Some(ref username), Some(ref password)) = (&feed_username, &feed_password) {
-                    if !username.is_empty() {
-                        request = request.basic_auth(username, Some(password));
-                    }
+                if let Some((username, password)) = crate::services::http::feed_credentials(feed_username.as_deref(), feed_password.as_deref()) {
+                    request = request.basic_auth(username, Some(password));
                 }
             }
             request

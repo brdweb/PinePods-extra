@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use yew::prelude::*;
 
 use crate::components::gen_funcs::format_time_rm_hour;

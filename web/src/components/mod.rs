@@ -10,6 +10,8 @@ pub(crate) mod transcript_hits;
 pub(crate) mod people;
 pub(crate) mod podcasting2;
 pub(crate) mod player_ui;
+pub(crate) mod media_session;
+pub(crate) mod progress;
 pub(crate) mod loading;
 pub mod misc_func;
 pub(crate) mod navigation;
@@ -25,13 +27,17 @@ pub(crate) mod value4value;
 pub(crate) mod youtube_video_filter;
 
 pub(crate) mod audio;
+pub(crate) mod art_accent;
+pub(crate) mod page_cache;
 pub(crate) mod click_events;
 pub(crate) mod queue_panel;
 pub(crate) mod queue_manage_modal;
 pub(crate) mod context;
 pub(crate) mod desc_impl;
 pub(crate) mod gen_components;
+pub(crate) mod i18n;
 pub mod gen_funcs;
+pub mod home_cards;
 // #[cfg(feature = "server_build")]
 // pub(crate) mod login;
 pub mod setting_components;

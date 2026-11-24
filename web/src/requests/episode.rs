@@ -76,6 +76,9 @@ pub struct Episode {
     /// iTunes episode number, when a client already has it.
     #[serde(default)]
     pub itunes_episode: Option<i32>,
+    /// Set on search results from one podcast: 0/1 when the title matched, 2 when only the
+    /// description did.
+    pub match_rank: Option<i32>,
 }
 
 impl Episode {

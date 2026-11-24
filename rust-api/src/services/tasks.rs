@@ -27,10 +27,8 @@ async fn download_one_source(
 ) -> Result<u64, String> {
     let build_request = |user_agent: &str| {
         let mut request = client.get(url).header("User-Agent", user_agent).header("Accept", "*/*");
-        if let (Some(user), Some(pass)) = (username, password) {
-            if !user.is_empty() {
-                request = request.basic_auth(user, Some(pass));
-            }
+        if let Some((user, pass)) = crate::services::http::feed_credentials(username, password) {
+            request = request.basic_auth(user, Some(pass));
         }
         request
     };
@@ -862,6 +860,9 @@ impl TaskSpawner {
         tokio::spawn(async move {
             let _turn = BULK_TRANSCRIBE.lock().await;
             for (task_id, episode_id) in jobs {
+                if !task_manager.still_queued(&task_id).await {
+                    continue;
+                }
                 run_transcribe_task(&db_pool, task_manager.clone(), task_id, episode_id, user_id, force).await;
             }
         });
@@ -1049,8 +1050,8 @@ impl TaskSpawner {
                     Ok(_) => {
                         tracing::info!("Successfully downloaded YouTube video: {}", video_title);
                         
-                        // Get duration from the downloaded MP3 file and update database
-                        if let Some(duration) = crate::handlers::youtube::get_mp3_duration(&output_path) {
+                        // Get duration from the downloaded file and update database
+                        if let Some(duration) = crate::services::audio_duration::audio_duration(std::path::Path::new(&output_path)) {
                             if let Err(e) = db_pool.update_youtube_video_duration(&youtube_video_id, duration).await {
                                 tracing::error!("Failed to update duration for video {}: {}", youtube_video_id, e);
                             } else {
@@ -1291,8 +1292,8 @@ impl TaskSpawner {
                             tracing::info!("Successfully downloaded: {}", video_title);
                             downloaded += 1;
                             
-                            // Get duration from the downloaded MP3 file and update database
-                            if let Some(duration) = crate::handlers::youtube::get_mp3_duration(&output_path) {
+                            // Get duration from the downloaded file and update database
+                            if let Some(duration) = crate::services::audio_duration::audio_duration(std::path::Path::new(&output_path)) {
                                 if let Err(e) = db_pool.update_youtube_video_duration(youtube_video_id, duration).await {
                                     tracing::error!("Failed to update duration for video {}: {}", youtube_video_id, e);
                                 } else {

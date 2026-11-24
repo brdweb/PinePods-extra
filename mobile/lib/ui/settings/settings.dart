@@ -278,6 +278,29 @@ class _SettingsState extends State<Settings> {
                   ),
                 ),
               ),
+              MergeSemantics(
+                child: ListTile(
+                  leading: const Icon(PhosphorIconsRegular.skipForward),
+                  title: Text(L.of(context)!.auto_play_queue),
+                  subtitle: Text(L.of(context)!.auto_play_queue_description),
+                  trailing: Switch.adaptive(
+                    value: snapshot.data!.autoPlayQueue,
+                    onChanged: (value) => settingsBloc.setAutoPlayQueue(value),
+                  ),
+                ),
+              ),
+              if (defaultTargetPlatform == TargetPlatform.android)
+                MergeSemantics(
+                  child: ListTile(
+                    leading: const Icon(PhosphorIconsRegular.bellSimple),
+                    title: Text(L.of(context)!.pause_for_interruptions),
+                    subtitle: Text(L.of(context)!.pause_for_interruptions_description),
+                    trailing: Switch.adaptive(
+                      value: snapshot.data!.pauseForInterruptions,
+                      onChanged: (value) => settingsBloc.setPauseForInterruptions(value),
+                    ),
+                  ),
+                ),
               const QueuePositionSetting(),
               const AutoQueueDefaultSetting(),
               const SearchProviderWidget(),

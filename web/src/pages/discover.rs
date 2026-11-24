@@ -10,7 +10,7 @@ use crate::requests::discover_req::{
 };
 use crate::requests::people_req::{self, DiscoverHost, DiscoverPodcast, DiscoverStats};
 use crate::requests::search_pods::UnifiedPodcast;
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 use yew_router::history::{BrowserHistory, History};
@@ -198,7 +198,7 @@ pub fn discover() -> Html {
         html! {
             <div class="discover-host-card flex flex-col items-center text-center p-3 cursor-pointer" onclick={onclick}>
                 <div class="w-20 h-20 rounded-full overflow-hidden mb-2">
-                    <FallbackImage src={host.img.clone()} alt={host.name.clone()} class={Some("w-full h-full object-cover".to_string())} />
+                    <FallbackImage size={Some(256)} src={host.img.clone()} alt={host.name.clone()} class={Some("w-full h-full object-cover".to_string())} />
                 </div>
                 <p class="item_container-text text-sm font-semibold">{ &host.name }</p>
                 { sub }

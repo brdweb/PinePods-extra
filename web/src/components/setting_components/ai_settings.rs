@@ -10,7 +10,7 @@ use crate::requests::pod_req::{
     call_ai_pull_model, call_get_ai_models, call_get_ai_settings, call_get_ai_status_full,
     call_update_ai_settings, AiModels, AiPullModelRequest, AiSettingsUpdate, AiStatus,
 };
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 use yewdux::prelude::*;
@@ -186,9 +186,9 @@ pub fn ai_settings() -> Html {
             let kind = (*pull_kind).clone();
             let request = AiPullModelRequest {
                 kind: kind.clone(),
-                model: (*pull_model).clone(),
-                repo: Some((*pull_repo).clone()).filter(|s| !s.is_empty()),
-                filename: Some((*pull_filename).clone()).filter(|s| !s.is_empty()),
+                model: pull_model.trim().to_string(),
+                repo: Some(pull_repo.trim().to_string()).filter(|s| !s.is_empty()),
+                filename: Some(pull_filename.trim().to_string()).filter(|s| !s.is_empty()),
                 url: if kind == "ollama" { Some((*llm_url).clone()).filter(|s| !s.is_empty()) } else { None },
             };
             let (started, err) = (started.clone(), err.clone());
