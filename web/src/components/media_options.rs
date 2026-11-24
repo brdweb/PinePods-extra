@@ -6,7 +6,7 @@
 
 use crate::components::context::UIState;
 use crate::requests::pod_req::{MediaOption, MediaPlan, PlaybackStep};
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use wasm_bindgen::JsCast;
 use web_sys::{window, Event, HtmlSelectElement, MouseEvent};
 use yew::prelude::*;

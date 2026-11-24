@@ -6,7 +6,7 @@ use crate::components::context::{AppState, NotificationState, PlaylistDataState}
 use crate::components::gen_funcs::format_error_message;
 use crate::requests::pod_req::{self, CreatePlaylistRequest, Playlist, Podcast};
 use gloo_events::EventListener;
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use std::collections::HashSet;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, HtmlInputElement};
@@ -560,7 +560,7 @@ pub fn podcast_selector(props: &PodcastSelectorProps) -> Html {
                                             if is_selected { "bg-gray-700" } else { "" }
                                         )}
                                     >
-                                        <FallbackImage
+                                        <FallbackImage size={Some(128)}
                                             src={podcast.artworkurl.clone().unwrap_or_else(|| "/static/assets/favicon.png".to_string())}
                                             alt={format!("Cover for {}", podcast.podcastname)}
                                             class="w-12 h-12 rounded object-cover"

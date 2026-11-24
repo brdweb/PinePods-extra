@@ -113,3 +113,34 @@ async fn the_auto_queue_default_is_private() {
         .assert_status(403);
     assert!(!default_of(&app, &user).await);
 }
+
+/// Upstream lets an episode be played without subscribing, under a podcast row that isn't a
+/// subscription. The default applies when the user subscribes, not to that row.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_waits_until_an_unsubscribed_podcast_is_subscribed_to() {
+    let app = TestApp::new().await;
+    let user = app.user("listener").await;
+    set_default(&app, &user, true).await;
+    let url = app.feed("later.xml", &Feed::with_episodes("Later Show", 3));
+
+    let body = app
+        .post("/api/data/resolve_feed_episode")
+        .key(&user)
+        .json(&json!({
+            "user_id": user.id,
+            "feed_url": url,
+            "episode_url": "https://cdn.example.invalid/audio/ep2.mp3",
+            "episode_title": "Episode 2",
+        }))
+        .send()
+        .await
+        .ok_json();
+    assert_eq!(body["subscribed"], false, "{body}");
+    let pod = body["podcast_id"].as_i64().unwrap() as i32;
+    let on = format!(r#"SELECT COUNT(*) FROM "Podcasts" WHERE PodcastID = {pod} AND AutoQueue = TRUE"#);
+    assert_eq!(int(&app, &on).await, Some(0), "playing an episode without subscribing leaves auto-queue off");
+
+    assert_eq!(app.subscribe(&user, &url, 3).await, pod, "the same row");
+    assert!(auto_queue(&app, &user, pod).await, "subscribing applies the default");
+    assert_eq!(queue_len(&app, &user).await, 0, "the back catalogue is not queued");
+}

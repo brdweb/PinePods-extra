@@ -4042,7 +4042,7 @@ async fn write_track_progress(
         match track.listen_marked_at {
             None => track.listen_marked_at = Some(Instant::now()),
             Some(started) if started.elapsed() >= Duration::from_secs(60) => {
-                if state.db_pool.increment_listen_time(user_id).await.is_ok() {
+                if state.db_pool.add_listen_seconds(user_id, 60).await.is_ok() {
                     track.listen_marked_at = Some(Instant::now());
                 }
             }
@@ -4158,13 +4158,28 @@ async fn write_listen_progress(
     duration_hint: f64,
     end_skip: i32,
 ) {
-    if let Err(e) = state
+    // The bridge reads the speaker's position now, so it is the newest observation and may
+    // move the stored position either way (a seek back on the speaker is kept).
+    let write = crate::database::ProgressWrite::now(
+        episode_id,
+        is_youtube,
+        position.max(0.0) as i32,
+        crate::database::WriteRule::Newest,
+    );
+    match state
         .db_pool
-        .record_podcast_history(episode_id, user_id, position as f32, is_youtube)
+        .write_progress(user_id, write, crate::services::sync::SyncOrigin::Pinepods)
         .await
     {
-        tracing::debug!("music assistant progress write failed: {e}");
-        return;
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            tracing::debug!("music assistant progress write skipped: episode {episode_id} is not the user's");
+            return;
+        }
+        Err(e) => {
+            tracing::debug!("music assistant progress write failed: {e}");
+            return;
+        }
     }
     let auto = state
         .db_pool

@@ -836,6 +836,65 @@ pub async fn call_check_episode_in_db(
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ResolvedFeedEpisode {
+    pub episode_id: i32,
+    pub podcast_id: i32,
+    pub subscribed: bool,
+}
+
+/// The server's id for an episode of any feed, subscribed or not, so it can be played with
+/// progress kept, queued, saved, downloaded or transcribed.
+pub async fn call_resolve_feed_episode(
+    server: &str,
+    api_key: &str,
+    user_id: i32,
+    feed_url: &str,
+    episode_url: &str,
+    episode_title: &str,
+) -> Result<ResolvedFeedEpisode, anyhow::Error> {
+    let body = serde_json::json!({
+        "user_id": user_id,
+        "feed_url": feed_url,
+        "episode_url": episode_url,
+        "episode_title": episode_title,
+    });
+    let resp = Request::post(&format!("{}/api/data/resolve_feed_episode", server))
+        .header("Api-Key", api_key)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())?
+        .send()
+        .await
+        .context("Network Request Error")?;
+    if resp.ok() {
+        Ok(resp.json::<ResolvedFeedEpisode>().await.context("Response Parsing Error")?)
+    } else {
+        Err(anyhow::anyhow!("Error resolving episode: {}", resp.status_text()))
+    }
+}
+
+/// Whether `episode` comes straight from a feed (no server id yet) and can be resolved.
+pub fn is_resolvable_feed_episode(episode: &crate::requests::episode::Episode) -> bool {
+    episode.episodeid <= 0
+        && !episode.is_youtube
+        && !episode.feedurl.is_empty()
+        && !episode.feedurl.starts_with("local://")
+}
+
+/// `episode` with its server ids filled in, for an episode straight from a feed.
+pub async fn resolve_feed_episode(
+    server: &str,
+    api_key: &str,
+    user_id: i32,
+    episode: &crate::requests::episode::Episode,
+) -> Result<crate::requests::episode::Episode, anyhow::Error> {
+    let r = call_resolve_feed_episode(server, api_key, user_id, &episode.feedurl, &episode.episodeurl, &episode.episodetitle).await?;
+    let mut resolved = episode.clone();
+    resolved.episodeid = r.episode_id;
+    resolved.podcastid = r.podcast_id;
+    Ok(resolved)
+}
+
 // Queue calls
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -5455,12 +5514,31 @@ pub async fn call_subscribe_to_channel(
             .context("Response Parsing Error")
     } else {
         let status = resp.status();
-        let error_text = resp.text().await.unwrap_or_default();
-        Err(anyhow::anyhow!(
-            "Error subscribing to channel. Status: {}, Error: {}",
-            status,
-            error_text
-        ))
+        let body = resp.text().await.unwrap_or_default();
+        Err(anyhow::anyhow!(server_error_text(status, &body)))
+    }
+}
+
+/// The readable part of an API error body (`{"error": "Service unavailable", "message":
+/// "Service unavailable: <reason>"}` gives `<reason>`), falling back to the HTTP status.
+pub fn server_error_text(status: u16, body: &str) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let field = |key: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    match (field("message").or_else(|| field("detail")), field("error")) {
+        (Some(message), Some(kind)) => message
+            .strip_prefix(&format!("{kind}: "))
+            .map(str::to_string)
+            .unwrap_or(message),
+        (Some(message), None) => message,
+        (None, Some(kind)) => kind,
+        (None, None) if !body.trim().is_empty() && body.len() < 300 => body.trim().to_string(),
+        (None, None) => format!("HTTP {status}"),
     }
 }
 
@@ -5596,7 +5674,7 @@ pub async fn call_update_episode_duration(
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct HomePodcast {
     pub podcastid: i32,
     pub podcastname: String,
@@ -5614,13 +5692,13 @@ pub struct HomePodcast {
     pub total_listen_time: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 pub struct WeeklyStats {
     pub seconds_listened: i64,
     pub episodes_completed: i32,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct HomeOverview {
     pub recent_episodes: Vec<Episode>,
     pub in_progress_episodes: Vec<Episode>,
@@ -5690,13 +5768,13 @@ pub async fn call_get_home_overview(
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PlaylistEpisode {
     pub title: String,
     pub artwork: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct Playlist {
     pub playlist_id: i32,
     pub user_id: i32,
@@ -6227,7 +6305,7 @@ pub async fn call_get_merged_podcasts(
 
 // ---- Collections ----------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Collection {
     pub collection_id: i32,
     pub user_id: i32,

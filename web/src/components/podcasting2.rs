@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::MouseEvent;
 use yew::prelude::*;
@@ -1487,7 +1487,9 @@ pub fn cover_art(images: &[PodcastImage], set: Option<&ImageSet>, fallback: &str
     artwork_choice(images, set, fallback)
 }
 
-pub fn cover_html(choice: &ArtworkChoice, alt: String, class: String) -> Html {
+/// A cover: the responsive Podcasting 2.0 artwork when the feed has a srcset, otherwise the
+/// usual image, loaded as a thumbnail `size` pixels wide when one is asked for.
+pub fn cover_html(choice: &ArtworkChoice, alt: String, class: String, size: Option<u32>) -> Html {
     if choice.srcset.is_some() {
         html! {
             <ResponsiveArtwork
@@ -1498,6 +1500,6 @@ pub fn cover_html(choice: &ArtworkChoice, alt: String, class: String) -> Html {
             />
         }
     } else {
-        html! { <img src={choice.src.clone()} {alt} {class} /> }
+        html! { <FallbackImage {size} src={choice.src.clone()} {alt} {class} /> }
     }
 }

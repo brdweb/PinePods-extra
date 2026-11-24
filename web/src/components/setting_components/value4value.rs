@@ -3,7 +3,7 @@
 
 use crate::components::context::AppState;
 use crate::requests::value4value::{get_settings, save_settings, test_wallet};
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yewdux::prelude::*;

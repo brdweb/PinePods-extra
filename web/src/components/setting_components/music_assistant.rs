@@ -6,7 +6,7 @@ use crate::requests::music_assistant::{
     apply_settings, explain_test, get_settings, refresh_music_assistant, save_settings,
     test_connection, MaProblem, TestExplanation,
 };
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yewdux::prelude::*;

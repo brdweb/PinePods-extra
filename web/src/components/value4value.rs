@@ -4,7 +4,7 @@
 use crate::components::context::{AppState, UIState};
 use crate::requests::login_requests::GetUserDetails;
 use crate::requests::value4value::{preview_episode, send_boost, ValuePreview};
-use i18nrs::yew::use_translation;
+use crate::components::i18n::use_translation;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yewdux::prelude::*;
