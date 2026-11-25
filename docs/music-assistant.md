@@ -299,7 +299,7 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 
 ## Deferred
 
-- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The resume, empty-queue and snapshot behaviour above was checked by hand against Music Assistant 2.10.13 with two squeezelite players. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
+- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. `rust-api/tests/live/music-assistant/` runs the bridge by hand against a real Music Assistant with two squeezelite players; the resume, empty-queue and snapshot behaviour above was checked that way on 2.10.13. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
 - No `player_queues/get` poll. Progress comes from queue events, the bridge's projection between them, and the 20 second player refresh.
 - No power, source select, or MA library sync.
 - Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
