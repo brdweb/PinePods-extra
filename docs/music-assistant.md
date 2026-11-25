@@ -123,13 +123,13 @@ Success:
 | 400 | Unknown action, missing arguments, MA rejected the command, the episode does not exist, or `next` has no PinePods episode loaded |
 | 503 | This process has no session for the user |
 
-The first MA command must succeed. The resume seek after `play_episode` is best-effort: a seek that fails in the first second shows up in `warnings`, and one that is still waiting for the speaker after that is only logged.
+The first MA command must succeed. Loading an episode at a resume point also needs its staging commands to succeed. If Music Assistant refuses to start at the offset, the episode starts from the beginning with a warning, and the fallback seek described under Playback takes over.
 
 A `next` with nothing up next succeeds with `"detail": "nothing_next"` and sends no command; the speaker keeps playing. A `next` on a speaker with no PinePods episode loaded is a 400.
 
 ## Playback
 
-`play_episode` loads the episode, then sends MA `player_queues/play_media` with `option: "replace"`.
+`play_episode` loads the episode. With nothing to resume it sends MA `player_queues/play_media` with `option: "replace"`. With a resume point it stages the episode and starts it there (see below).
 
 When the episode is already downloaded on PinePods, or it is a YouTube video, the URL is the PinePods stream:
 
@@ -143,7 +143,11 @@ When the episode is not downloaded, Music Assistant is given a playable `http`/`
 
 Optional `args.playlist_id` is the playlist the episode was started from. The bridge keeps it with the episode, so `next` plays the next item of that playlist.
 
-If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second is sent as one `player_queues/seek` after `play_media`, once the queue reports a duration. A speaker can take many seconds to report it, so the seek polls for up to 1 second in the command response and then up to 30 seconds more in the background. Starting an episode drops the queue's previous duration, so the old episode's length cannot release the new seek, and a newer `play_episode` on the same queue replaces a seek that is still waiting. Playback speed is not sent. Episodes are `media_type: track`, and Music Assistant only tempo-shifts podcast episodes and audiobooks, so a local speed other than 1x stays on the browser. An incoming `set_speed` is ignored and is not shown as an error.
+If `args.position_sec` is present, including `0`, playback seeks there. Otherwise the stored listen position is used. A position of at least 1 second starts the speaker once, at that position: `player_queues/clear`, then `play_media` with `option: "add"` (which only stages the item on an idle queue), then `player_queues/play_index` with `index: 0` and `seek_position`. `play_media` has no offset of its own, and a `replace` followed by a seek starts the stream twice within a moment. Music Assistant 2.10.13 then leaves some players stalled at the seek target while it reports `playing`: about one start in eight on a squeezelite player, with or without PinePods in between.
+
+If Music Assistant refuses `play_index` at the offset, the episode starts from the beginning and the older path runs: one `player_queues/seek` once the queue reports a duration. A speaker can take many seconds to report it, so that seek polls for up to 1 second in the command response and then up to 30 seconds more in the background. Starting an episode drops the queue's previous duration, so the old episode's length cannot release the new seek, and a newer `play_episode` on the same queue replaces a seek that is still waiting.
+
+A queue that held nothing (a new speaker, or a queue the user cleared) answers the load with `queue_updated` events that still say `current_item: null`, and only then makes the new item current. For up to 30 seconds after a load, and until a queue event shows the media PinePods sent, a null item is that empty queue and not a stop. Before this, the first play on such a queue lost its resume point, and an episode played from its feed URL was never shown or saved. Playback speed is not sent. Episodes are `media_type: track`, and Music Assistant only tempo-shifts podcast episodes and audiobooks, so a local speed other than 1x stays on the browser. An incoming `set_speed` is ignored and is not shown as an error.
 
 ## Now-playing relay
 
@@ -214,9 +218,9 @@ A Sonos speaker often reports `playback_state: idle` while a Music Assistant que
 
 The session listens for `player_updated`, `player_added`, `player_removed`, `queue_updated`, and `queue_time_updated`, and refreshes `players/all` every 20 seconds (inside the 45 second snapshot TTL).
 
-Music Assistant 2.10.4 does not send `queue_time_updated` every second. It sends it around a seek, or when a player corrects its clock. A Chromecast in flow mode can play for minutes without a queue event. The bridge therefore projects the position itself, the same way the Music Assistant frontend does: the last `elapsed_time`, plus the time since `elapsed_time_last_updated`, times the playback speed. A one-second clock re-anchors each playing queue every 10 seconds, writes history from that position, and republishes the snapshot, so clients (which stop extrapolating after 30 seconds) keep moving.
+Music Assistant 2.10.4 does not send `queue_time_updated` every second. It sends it around a seek, or when a player corrects its clock. A Chromecast in flow mode can play for minutes without a queue event. The bridge therefore projects the position itself, the same way the Music Assistant frontend does: the last `elapsed_time`, plus the time since `elapsed_time_last_updated`, times the playback speed. A one-second clock re-anchors each playing queue every 10 seconds, writes history from that position, and republishes the snapshot, so clients (which stop extrapolating after 30 seconds) keep moving. The relay stamps a snapshot with the time it is stored, so every snapshot carries the position projected to that moment, not the last anchor. A snapshot published between anchors (the 20 second player refresh, a volume change) would otherwise step back by up to 10 seconds and then catch up.
 
-Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. Nothing is written while the episode's resume seek is pending: the first samples are the start of the file and would overwrite the saved position. Played count and listen time follow the same samples. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
+Listen position is written with `record_podcast_history`, which stores the absolute position (a seek backward sticks). Writes happen on the first sample, every 10 seconds, on pause, on episode change, and when the position jumps by 8 seconds or more. Nothing is written while an episode with a resume point is still loading: the staged item reports position 0 before it starts, and that would overwrite the saved position. Played count and listen time follow the same samples. A stream URL whose `user_id` does not match the session is ignored. When the remaining time is within the user's auto-complete threshold, the episode is marked completed.
 
 Right after `play_media`, Music Assistant can still report the previous item for a moment. The bridge remembers the URL it sent. A queue event whose `current_item` does not mention that URL is about another item: it drops the loaded episode without writing history, and does not credit that item's position to the new episode. A bare `queue_time_updated` number says nothing about the item, so it keeps the episode already loaded. An episode change also drops the previous episode's duration, so the old length cannot complete the new episode.
 
@@ -294,7 +298,7 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 
 ## Deferred
 
-- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
+- No CI run against a live Music Assistant. Unit tests drive a mocked WebSocket. The resume, empty-queue and snapshot behaviour above was checked by hand against Music Assistant 2.10.13 with two squeezelite players. The web and mobile apps send these routes and relay actions; they do not open a Music Assistant socket themselves.
 - No `player_queues/get` poll. Progress comes from queue events, the bridge's projection between them, and the 20 second player refresh.
 - No power, source select, or MA library sync.
 - Playback speed is not offered for Music Assistant speakers. Local playback and other remote devices still use it.
@@ -302,7 +306,8 @@ MA must be able to open the stream URL. If playback starts and immediately stops
 - A video episode plays its audio on a speaker. There is no picture to show there.
 - Offline playback (a file only this browser can reach) is not offered to speakers; the picker and the devices drawer say it stays on this device.
 - A sync group member is shown as "In the <leader> group" in the speaker picker and has no Play button: playing on it alone would split it from the group. Play on the leader instead. A group player's members can still play on their own.
-- Seek right after `play_media` waits for the queue to report a duration, up to 31 seconds in all. A seek that fails in the first second is a warning. After that a failure is only logged, and history follows the real position.
+- The fallback seek (only when Music Assistant refuses a start at the offset) waits for the queue to report a duration, up to 31 seconds in all. A seek that fails in the first second is a warning. After that a failure is only logged, and history follows the real position.
+- Starting at a resume point clears the Music Assistant queue first. Items the user queued in Music Assistant itself are dropped, as `replace` already did.
 - Queue advance has a short gap between episodes while the next stream loads. It is not gapless.
 - Each API replica opens its own MA session. A command runs on the replica that holds the commanding client. Progress writes are absolute, so overlapping replicas do not stack time. There is no lock electing a single connection.
 - YouTube uses the same stream proxy (`type=youtube`) and is not covered by a separate test.
