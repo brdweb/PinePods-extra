@@ -1275,11 +1275,12 @@ fn track_media(media_url: &str, display: &MaTrackDisplay) -> Option<Value> {
 ///
 /// Episodes are sent as `media_type: track`. Music Assistant only tempo-shifts
 /// podcast episodes and audiobooks, so a speed other than 1x must not be
-/// carried onto the speaker. The resume offset is not in this list either.
+/// carried onto the speaker. The resume offset is not in this list either:
+/// an episode with a resume point is loaded by [`staged_start_commands`].
 /// Music Assistant seeks by rebuilding the stream, and a seek sent before the
 /// queue has a duration fails or plays the start and then jumps.
-/// [`resume_seek_command`] is the one seek, sent after a queue event reports a
-/// duration.
+/// [`resume_seek_command`] is the fallback seek, sent after a queue event
+/// reports a duration, when Music Assistant refuses the staged start.
 pub fn play_media_commands(
     queue_id: &str,
     media_url: &str,
@@ -1296,6 +1297,59 @@ pub fn play_media_commands(
             "option": "replace",
         }),
     }]
+}
+
+/// How an episode with a resume point is started: staged on an emptied queue, then started at
+/// the offset, so the speaker starts once.
+///
+/// `play_media` with `replace` starts at 0 and has no offset of its own. Following it with a
+/// seek starts the stream twice within a moment, and Music Assistant 2.10.13 then leaves some
+/// players stalled at the seek target while it reports `playing` (about one start in eight on a
+/// squeezelite player). An `add` only stages the item on an idle queue, and
+/// `play_index` takes the offset.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StagedStart {
+    /// `clear`, then `play_media` with `add`. Each has to succeed.
+    pub stage: Vec<MaCommand>,
+    /// `play_index` at the offset.
+    pub start: MaCommand,
+    /// `play_index` from the beginning, for a server that refuses the offset. The seek that
+    /// waits for the queue's duration takes over from there.
+    pub from_start: MaCommand,
+}
+
+/// `None` when the offset is under a second: [`play_media_commands`] plays from the start.
+pub fn staged_start_commands(
+    queue_id: &str,
+    media_url: &str,
+    display: Option<&MaTrackDisplay>,
+    position_sec: f64,
+) -> Option<StagedStart> {
+    let position = integer_seconds(position_sec);
+    if position_sec < 1.0 || position < 1 {
+        return None;
+    }
+    let media = display
+        .and_then(|display| track_media(media_url, display))
+        .unwrap_or_else(|| json!(media_url));
+    let play_index = |args: Value| MaCommand {
+        command: "player_queues/play_index".into(),
+        args,
+    };
+    Some(StagedStart {
+        stage: vec![
+            MaCommand {
+                command: "player_queues/clear".into(),
+                args: json!({ "queue_id": queue_id }),
+            },
+            MaCommand {
+                command: "player_queues/play_media".into(),
+                args: json!({ "queue_id": queue_id, "media": media, "option": "add" }),
+            },
+        ],
+        start: play_index(json!({ "queue_id": queue_id, "index": 0, "seek_position": position })),
+        from_start: play_index(json!({ "queue_id": queue_id, "index": 0 })),
+    })
 }
 
 /// One integer `player_queues/seek` once the queue has reported a duration.
@@ -1324,6 +1378,26 @@ pub const RESUME_SEEK_INLINE: Duration = Duration::from_secs(1);
 /// How long the background wait for the queue's duration lasts before the seek is abandoned.
 pub const RESUME_SEEK_PATIENCE: Duration = Duration::from_secs(30);
 const RESUME_SEEK_POLL: Duration = Duration::from_millis(350);
+/// How long after `play_media` a queue may still report that it holds nothing.
+pub const LOAD_GRACE: Duration = Duration::from_secs(30);
+
+/// Whether a null `current_item` is the empty queue from before the episode loaded.
+///
+/// A queue that held nothing (a new speaker, a cleared queue) answers `play_media` with
+/// `queue_items_updated` and `queue_updated` events that still say `current_item: null`, and
+/// only then makes the new item current. That is not a stop. Taking it for one forgot the
+/// episode and its resume seek: the speaker started at 0, and a remote enclosure was never
+/// matched to its episode again, so nothing was shown or saved. `loading_for` is the time since
+/// `play_episode` sent the media, while no queue event has shown that media yet.
+pub fn stale_empty_queue(media_cleared: bool, loading_for: Option<Duration>) -> bool {
+    media_cleared && loading_for.is_some_and(|waited| waited < LOAD_GRACE)
+}
+
+/// Whether a queue event's item is the media PinePods sent.
+pub fn item_is_sent_media(item_strings: Option<&[String]>, media_url: &str) -> bool {
+    !media_url.is_empty()
+        && item_strings.is_some_and(|strings| strings.iter().any(|s| s.contains(media_url)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeekPlan {
@@ -1512,6 +1586,21 @@ pub fn projected_position(position: f64, updated_at: i64, playing: bool, speed: 
     }
     let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
     (position + (now - updated_at).max(0) as f64 * speed).max(0.0)
+}
+
+/// The position to publish in a snapshot at `now`.
+///
+/// The relay stamps every snapshot with the time it is stored, and clients add the time since
+/// then. So the position has to be the one at `now`, not the last anchor: a snapshot published
+/// between anchors (a player refresh, a volume change) would otherwise jump back by up to
+/// `CLOCK_ANCHOR_EVERY_SECS` and then catch up. It never passes a known duration.
+pub fn snapshot_position(position: f64, updated_at: i64, playing: bool, speed: f64, duration: f64, now: i64) -> f64 {
+    let projected = projected_position(position, updated_at, playing, speed, now);
+    if duration > 0.0 {
+        projected.min(duration)
+    } else {
+        projected
+    }
 }
 
 /// Whether the loaded episode is finished and PinePods should play the next one.
@@ -2178,7 +2267,6 @@ pub struct ProbeReport {
 }
 
 pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
-    let token_owned = token.to_string();
     let connect = tokio::time::timeout(
         Duration::from_secs(10),
         tokio_tungstenite::connect_async(ws_url),
@@ -2191,6 +2279,19 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
         }
         Err(_) => return ProbeReport::fail("timed out connecting to Music Assistant"),
     };
+    probe_socket(socket, token).await
+}
+
+/// The probe on an open socket: authenticate, read the server info, list the players.
+async fn probe_socket<S>(socket: S, token: &str) -> ProbeReport
+where
+    S: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + Unpin
+        + Send
+        + 'static,
+{
+    let token_owned = token.to_string();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (note_tx, mut note_rx) = mpsc::unbounded_channel();
     let token_for_drive = token_owned.clone();
@@ -2199,11 +2300,20 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
     let mut info: Option<ServerInfo> = None;
     let mut player_count: Option<i64> = None;
     let mut drive_err: Option<String> = None;
+    let mut timed_out = false;
+    let driver_end = |res: Result<Result<(), String>, tokio::task::JoinError>| match res {
+        Ok(Ok(())) => "connection closed".to_string(),
+        Ok(Err(e)) => e,
+        Err(e) => format!("connection task stopped: {e}"),
+    };
     let deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            _ = &mut deadline => break,
+            _ = &mut deadline => {
+                timed_out = true;
+                break;
+            }
             note = note_rx.recv() => {
                 match note {
                     Some(SessionNote::Server(s)) => info = Some(s),
@@ -2212,21 +2322,28 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
                         break;
                     }
                     Some(_) => {}
-                    None => break,
+                    None => {
+                        // The driver ended and dropped its sender. Its result says why: a
+                        // rejected token ends it, and `select!` may see the closed channel
+                        // before the finished task. Breaking here without the result
+                        // reported a rejected token as "connected, 0 player(s)".
+                        drive_err = Some(driver_end((&mut driver).await));
+                        break;
+                    }
                 }
             }
             res = &mut driver => {
-                drive_err = Some(match res {
-                    Ok(Ok(())) => "connection closed".into(),
-                    Ok(Err(e)) => e,
-                    Err(e) => format!("connection task stopped: {e}"),
-                });
+                drive_err = Some(driver_end(res));
                 break;
             }
         }
     }
     drop(cmd_tx);
     driver.abort();
+    if timed_out && player_count.is_none() {
+        // Nothing listed the players, so nothing shows the token was accepted.
+        drive_err = Some("timed out waiting for Music Assistant".into());
+    }
 
     if let Some(err) = drive_err {
         if player_count.is_none() {
@@ -2689,6 +2806,9 @@ struct SessionLive {
     resume_arms: AtomicU64,
     /// Sleep timer per queue. In memory: a restart drops it.
     sleep: RwLock<HashMap<String, SleepTimer>>,
+    /// queue id → when `play_episode` sent its media, until a queue event shows that media.
+    /// See [`stale_empty_queue`].
+    loading: RwLock<HashMap<String, Instant>>,
 }
 
 impl SessionLive {
@@ -2705,7 +2825,20 @@ impl SessionLive {
             pending_resume: RwLock::new(HashMap::new()),
             resume_arms: AtomicU64::new(0),
             sleep: RwLock::new(HashMap::new()),
+            loading: RwLock::new(HashMap::new()),
         }
+    }
+
+    async fn begin_load(&self, queue_id: &str) {
+        self.loading.write().await.insert(queue_id.to_string(), Instant::now());
+    }
+
+    async fn end_load(&self, queue_id: &str) {
+        self.loading.write().await.remove(queue_id);
+    }
+
+    async fn loading_for(&self, queue_id: &str) -> Option<Duration> {
+        self.loading.read().await.get(queue_id).map(Instant::elapsed)
     }
 
     async fn sleep_timer(&self, queue_id: &str) -> Option<SleepTimer> {
@@ -2750,6 +2883,7 @@ impl SessionLive {
         self.queue_duration.write().await.remove(queue_id);
         self.pending_resume.write().await.remove(queue_id);
         self.sleep.write().await.remove(queue_id);
+        self.loading.write().await.remove(queue_id);
     }
 
     async fn note_queue_duration(&self, queue_id: &str, duration: f64) {
@@ -2948,31 +3082,47 @@ async fn play_on_queue(
     queue_id: &str,
     args: &Value,
 ) -> AppResult<ActionOutcome> {
-    let (commands, arm) = prepare_play_episode(state, user_id, queue_id, args).await?;
+    let (load, arm) = prepare_play_episode(state, user_id, queue_id, args).await?;
     let hub = state.music_assistant.clone();
     let queue_id = queue_id.to_string();
     // Its own task: a client that hangs up mid-command must neither strand the
     // resume seek nor leave its history hold armed.
-    tokio::spawn(async move { load_and_seek(&hub, user_id, &queue_id, commands, arm).await })
+    tokio::spawn(async move { load_and_seek(&hub, user_id, &queue_id, load, arm).await })
         .await
         .map_err(|e| AppError::internal(format!("play_episode: {e}")))?
 }
 
-/// Send the load commands, then land the resume seek armed for them. A seek
-/// still waiting after the inline second carries on in the background.
+/// How `play_episode` loads the episode on the queue.
+#[derive(Debug, Clone, PartialEq)]
+enum EpisodeLoad {
+    /// Nothing to resume: `play_media` replaces the queue and plays from the start.
+    FromStart(Vec<MaCommand>),
+    /// A resume point: see [`StagedStart`].
+    AtOffset(StagedStart),
+}
+
+/// Load the episode and get it to its resume point. History waits for `arm` until then.
+///
+/// A resume point starts the speaker at the offset. Only when Music Assistant refuses that
+/// does the episode start from the beginning, with the seek that waits for the queue's
+/// duration; a seek still waiting after the inline second carries on in the background.
 async fn load_and_seek(
     hub: &MusicAssistantHub,
     user_id: i32,
     queue_id: &str,
-    commands: Vec<MaCommand>,
+    load: EpisodeLoad,
     arm: Option<u64>,
 ) -> AppResult<ActionOutcome> {
-    let mut outcome = match hub.send_commands(user_id, commands).await {
-        Ok(outcome) => outcome,
+    let loaded = send_load(hub, user_id, load).await;
+    let (mut outcome, at_offset) = match loaded {
+        Ok(loaded) => loaded,
         Err(e) => {
             // Nothing loaded, so no seek follows and history must not wait for one.
             if let Some(arm) = arm {
                 release_resume(hub, user_id, queue_id, arm).await;
+            }
+            if let Some(live) = hub.session_live(user_id).await {
+                live.end_load(queue_id).await;
             }
             return Err(e);
         }
@@ -2980,12 +3130,43 @@ async fn load_and_seek(
     let Some(arm) = arm else {
         return Ok(outcome);
     };
+    if at_offset {
+        release_resume(hub, user_id, queue_id, arm).await;
+        return Ok(outcome);
+    }
     match land_resume_seek(hub, user_id, queue_id, arm, RESUME_SEEK_INLINE).await {
         ResumeSeek::Landed | ResumeSeek::Superseded => {}
         ResumeSeek::Failed(warning) => outcome.warnings.push(warning),
         ResumeSeek::TimedOut => resume_in_background(hub, user_id, queue_id, arm),
     }
     Ok(outcome)
+}
+
+/// Send the load. The flag is true when the speaker was started at its resume point, so no
+/// seek is owed.
+async fn send_load(
+    hub: &MusicAssistantHub,
+    user_id: i32,
+    load: EpisodeLoad,
+) -> AppResult<(ActionOutcome, bool)> {
+    let staged = match load {
+        EpisodeLoad::FromStart(commands) => {
+            return Ok((hub.send_commands(user_id, commands).await?, false));
+        }
+        EpisodeLoad::AtOffset(staged) => staged,
+    };
+    // One call each: `send_commands` only requires its first command to succeed.
+    for command in staged.stage {
+        hub.send_commands(user_id, vec![command]).await?;
+    }
+    match hub.send_commands(user_id, vec![staged.start]).await {
+        Ok(outcome) => Ok((outcome, true)),
+        Err(refused) => {
+            let mut outcome = hub.send_commands(user_id, vec![staged.from_start]).await?;
+            outcome.warnings.push(format!("player_queues/play_index at the resume point: {refused}"));
+            Ok((outcome, false))
+        }
+    }
 }
 
 /// Set or clear the sleep timer on the leader queue, then show it on the
@@ -3234,15 +3415,15 @@ async fn release_resume(hub: &MusicAssistantHub, user_id: i32, queue_id: &str, a
     }
 }
 
-/// The commands that load the episode, and the arm of the resume seek to land
-/// once the queue reports a duration. The arm is `None` when the offset is
-/// under a second or the user has no session.
+/// How to load the episode, and the arm that holds history back until the episode is at its
+/// resume point. The arm is `None` when the offset is under a second or the user has no
+/// session.
 async fn prepare_play_episode(
     state: &AppState,
     user_id: i32,
     queue_id: &str,
     args: &Value,
-) -> AppResult<(Vec<MaCommand>, Option<u64>)> {
+) -> AppResult<(EpisodeLoad, Option<u64>)> {
     let episode_id = args
         .get("episode_id")
         .and_then(json_i64)
@@ -3377,9 +3558,14 @@ async fn prepare_play_episode(
             },
         )
         .await;
+        live.begin_load(queue_id).await;
         arm = live.arm_resume(queue_id, position).await;
     }
-    Ok((play_media_commands(queue_id, &media, Some(&display)), arm))
+    let load = match staged_start_commands(queue_id, &media, Some(&display), position) {
+        Some(staged) if arm.is_some() => EpisodeLoad::AtOffset(staged),
+        _ => EpisodeLoad::FromStart(play_media_commands(queue_id, &media, Some(&display))),
+    };
+    Ok((load, arm))
 }
 
 pub fn spawn_supervisor(state: AppState) {
@@ -3756,8 +3942,18 @@ async fn apply_progress(
     let Some(queue_id) = update.queue_id.clone() else {
         return;
     };
+    // The queue held nothing when `play_episode` loaded it and still says so.
+    if stale_empty_queue(update.media_cleared, live.loading_for(&queue_id).await) {
+        return;
+    }
     let players = live.players.read().await.clone();
     let remembered = live.remembered(&queue_id).await;
+    if remembered
+        .as_ref()
+        .is_some_and(|row| item_is_sent_media(update.item_strings.as_deref(), &row.media_url))
+    {
+        live.end_load(&queue_id).await;
+    }
     let remembered_playlist = remembered
         .as_ref()
         .map(|row| ((row.episode_id, row.is_youtube), row.playlist_id));
@@ -4441,7 +4637,7 @@ fn snapshot_for(user_id: i32, player: &MaPlayer, track: Option<&QueueTrack>) -> 
                 is_youtube,
                 title,
                 t.artwork.clone(),
-                t.position,
+                snapshot_position(t.position, t.updated_at, t.playing, t.speed, t.duration, unix_secs()),
                 if t.duration > 0.0 { t.duration } else { 0.0 },
                 t.playing,
                 t.speed,
@@ -5180,6 +5376,55 @@ mod tests {
         assert_eq!(live.pending_resume("q").await, None);
     }
 
+    #[tokio::test]
+    async fn an_empty_queue_right_after_play_media_is_not_a_stop() {
+        // Music Assistant 2.10.13, first play on a queue that held nothing. After accepting
+        // play_media it sends this twice before the item becomes current.
+        let empty = json!({
+            "queue_id": "kitchen", "active": true, "state": "idle", "items": 1,
+            "current_index": null, "current_item": null, "elapsed_time": 0,
+        });
+        let loaded = json!({
+            "queue_id": "kitchen", "state": "playing", "items": 1, "elapsed_time": 0,
+            "current_item": {
+                "duration": 360,
+                "media_item": {"item_id": "http://feeds.example/ep1.mp3", "uri": "builtin://track/http://feeds.example/ep1.mp3"},
+            },
+        });
+        let live = SessionLive::new();
+        // Nothing loading: a null item is a real stop.
+        let update = progress_from_event(None, &empty, 1_800_000_000);
+        assert!(update.media_cleared);
+        assert!(!stale_empty_queue(update.media_cleared, live.loading_for("kitchen").await));
+
+        // play_episode remembers the episode, arms its seek and marks the queue loading.
+        live.begin_load("kitchen").await;
+        let arm = live.arm_resume("kitchen", 100.0).await;
+        assert!(stale_empty_queue(update.media_cleared, live.loading_for("kitchen").await));
+        // So the event is dropped and the seek stays armed.
+        assert_eq!(live.pending_resume("kitchen").await.map(|p| p.arm), arm);
+        // Another queue is not covered, and neither is an event that has an item.
+        assert!(!stale_empty_queue(true, live.loading_for("bedroom").await));
+        let update = progress_from_event(None, &loaded, 1_800_000_001);
+        assert!(!stale_empty_queue(update.media_cleared, live.loading_for("kitchen").await));
+
+        // The item showing up ends the load. A null item after that is a stop again.
+        assert!(item_is_sent_media(update.item_strings.as_deref(), "http://feeds.example/ep1.mp3"));
+        assert!(!item_is_sent_media(update.item_strings.as_deref(), "http://feeds.example/ep2.mp3"));
+        assert!(!item_is_sent_media(update.item_strings.as_deref(), ""));
+        assert!(!item_is_sent_media(None, "http://feeds.example/ep1.mp3"));
+        live.end_load("kitchen").await;
+        assert!(!stale_empty_queue(true, live.loading_for("kitchen").await));
+
+        // A load that never shows its item stops covering for the queue.
+        assert!(stale_empty_queue(true, Some(LOAD_GRACE - Duration::from_secs(1))));
+        assert!(!stale_empty_queue(true, Some(LOAD_GRACE)));
+        // A real stop forgets the load with everything else.
+        live.begin_load("kitchen").await;
+        live.forget("kitchen").await;
+        assert_eq!(live.loading_for("kitchen").await, None);
+    }
+
     /// A hub with one session whose outbound commands arrive on the receiver.
     async fn hub_with_session(
         user_id: i32,
@@ -5249,6 +5494,114 @@ mod tests {
         assert_eq!(live.pending_resume("other").await.unwrap().arm, arm);
         release_resume(&hub, 1, "other", arm).await;
         assert!(live.pending_resume("other").await.is_none());
+    }
+
+    #[test]
+    fn a_resume_point_is_staged_and_started_at_the_offset() {
+        let staged = staged_start_commands("kitchen", "http://feeds.example/ep1.mp3", None, 120.7).unwrap();
+        let sent: Vec<(&str, &Value)> = staged
+            .stage
+            .iter()
+            .chain([&staged.start])
+            .map(|c| (c.command.as_str(), &c.args))
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                ("player_queues/clear", &json!({ "queue_id": "kitchen" })),
+                (
+                    "player_queues/play_media",
+                    &json!({ "queue_id": "kitchen", "media": "http://feeds.example/ep1.mp3", "option": "add" })
+                ),
+                (
+                    "player_queues/play_index",
+                    &json!({ "queue_id": "kitchen", "index": 0, "seek_position": 120 })
+                ),
+            ]
+        );
+        // Nothing here plays from 0 first: `replace` would.
+        assert!(staged.stage.iter().all(|c| c.args.get("option") != Some(&json!("replace"))));
+        assert_eq!(staged.from_start.args, json!({ "queue_id": "kitchen", "index": 0 }));
+        // Under a second there is nothing to resume.
+        assert_eq!(staged_start_commands("kitchen", "http://feeds.example/ep1.mp3", None, 0.9), None);
+        assert_eq!(staged_start_commands("kitchen", "http://feeds.example/ep1.mp3", None, 0.0), None);
+    }
+
+    /// Answer the next command the hub sends, and return its name.
+    async fn answer(sent: &mut mpsc::UnboundedReceiver<Outbound>, reply: Result<Value, String>) -> String {
+        let outbound = tokio::time::timeout(Duration::from_secs(2), sent.recv())
+            .await
+            .expect("a command is sent")
+            .expect("the session is still open");
+        outbound.reply.expect("a reply channel").send(reply).unwrap();
+        match outbound.args.get("seek_position") {
+            Some(at) => format!("{} at {at}", outbound.command),
+            None => outbound.command,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resume_starts_the_speaker_once_at_the_offset() {
+        let (hub, live, mut sent) = hub_with_session(1).await;
+        let staged = staged_start_commands("q", "http://feeds.example/ep1.mp3", None, 90.0).unwrap();
+        live.begin_load("q").await;
+        let arm = live.arm_resume("q", 90.0).await;
+        let load = {
+            let hub = hub.clone();
+            tokio::spawn(async move { load_and_seek(&hub, 1, "q", EpisodeLoad::AtOffset(staged), arm).await })
+        };
+        let mut commands = Vec::new();
+        for _ in 0..3 {
+            commands.push(answer(&mut sent, Ok(Value::Null)).await);
+        }
+        assert_eq!(
+            commands,
+            ["player_queues/clear", "player_queues/play_media", "player_queues/play_index at 90"]
+        );
+        let outcome = load.await.unwrap().unwrap();
+        assert!(outcome.warnings.is_empty());
+        // No seek follows, and history no longer waits.
+        assert!(sent.try_recv().is_err());
+        assert!(live.pending_resume("q").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_refused_offset_falls_back_to_the_seek_and_a_failed_load_releases_history() {
+        let (hub, live, mut sent) = hub_with_session(1).await;
+        let staged = staged_start_commands("q", "http://feeds.example/ep1.mp3", None, 90.0).unwrap();
+        live.begin_load("q").await;
+        let arm = live.arm_resume("q", 90.0).await;
+        live.note_queue_duration("q", 3600.0).await;
+        let load = {
+            let hub = hub.clone();
+            let staged = staged.clone();
+            tokio::spawn(async move { load_and_seek(&hub, 1, "q", EpisodeLoad::AtOffset(staged), arm).await })
+        };
+        assert_eq!(answer(&mut sent, Ok(Value::Null)).await, "player_queues/clear");
+        assert_eq!(answer(&mut sent, Ok(Value::Null)).await, "player_queues/play_media");
+        assert_eq!(answer(&mut sent, Err("unknown argument".into())).await, "player_queues/play_index at 90");
+        // Started from the beginning instead, then the seek that waits for a duration.
+        assert_eq!(answer(&mut sent, Ok(Value::Null)).await, "player_queues/play_index");
+        assert_eq!(answer(&mut sent, Ok(Value::Null)).await, "player_queues/seek");
+        let outcome = load.await.unwrap().unwrap();
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("unknown argument"));
+        assert!(live.pending_resume("q").await.is_none());
+
+        // The item could not even be staged: an error, and neither the history hold nor the
+        // load stays behind.
+        live.begin_load("q").await;
+        let arm = live.arm_resume("q", 90.0).await;
+        let load = {
+            let hub = hub.clone();
+            tokio::spawn(async move { load_and_seek(&hub, 1, "q", EpisodeLoad::AtOffset(staged), arm).await })
+        };
+        assert_eq!(answer(&mut sent, Ok(Value::Null)).await, "player_queues/clear");
+        assert_eq!(answer(&mut sent, Err("no playable items".into())).await, "player_queues/play_media");
+        assert!(load.await.unwrap().is_err());
+        assert!(sent.try_recv().is_err());
+        assert!(live.pending_resume("q").await.is_none());
+        assert_eq!(live.loading_for("q").await, None);
     }
 
     #[test]
@@ -5421,6 +5774,19 @@ mod tests {
             history_stream(Some(&learned), None, false, 2, false, old_item.item_strings.as_deref()),
             HistoryEpisode::Write(_)
         ));
+    }
+
+    #[test]
+    fn a_snapshot_between_anchors_does_not_jump_back() {
+        // Anchored at 100s six seconds ago. A player refresh publishes now, and the relay
+        // stamps it with now: sending 100 would show 100 again where the client was at 106.
+        let anchored_at = 1_800_000_000;
+        let now = anchored_at + 6;
+        assert_eq!(snapshot_position(100.0, anchored_at, true, 1.0, 360.0, now), 106.0);
+        // A paused queue stays where it is, and the end of the file is the limit.
+        assert_eq!(snapshot_position(100.0, anchored_at, false, 1.0, 360.0, now), 100.0);
+        assert_eq!(snapshot_position(358.0, anchored_at, true, 1.0, 360.0, now), 360.0);
+        assert_eq!(snapshot_position(358.0, anchored_at, true, 1.0, 0.0, now), 364.0);
     }
 
     #[test]
@@ -5859,6 +6225,29 @@ mod tests {
         assert_eq!(progress.playing, Some(true));
 
         drive.abort();
+    }
+
+    #[tokio::test]
+    async fn the_probe_reports_a_rejected_token_every_time() {
+        // The driver's error and its closed channel become ready together. Which one the
+        // probe sees first is random, so one run proves nothing: half of them used to say
+        // "connected, 0 player(s)".
+        for round in 0..40 {
+            let (client_io, server_io) = tokio::io::duplex(8 * 1024);
+            let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+            let mut server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+            let probe = tokio::spawn(async move { probe_socket(client, "nope").await });
+            let auth = recv_json(&mut server).await;
+            let id = auth["message_id"].as_str().unwrap().to_string();
+            send_json(
+                &mut server,
+                json!({"message_id": id, "error_code": 1, "details": "Invalid or expired token"}),
+            )
+            .await;
+            let report = probe.await.unwrap();
+            assert!(!report.ok, "round {round}: {}", report.detail);
+            assert!(report.detail.contains("Invalid or expired token"), "round {round}: {}", report.detail);
+        }
     }
 
     #[tokio::test]
