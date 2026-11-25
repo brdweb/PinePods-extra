@@ -9,10 +9,6 @@
   "productName": "Pinepods",
   "version": "0.9.2",
   "app": {
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
-    },
     "withGlobalTauri": true,
     "security": {
       "csp": null
@@ -23,7 +19,9 @@
         "height": 1000,
         "resizable": true,
         "title": "Pinepods",
-        "width": 1200
+        "width": 1200,
+        "label": "main",
+        "visible": false
       }
     ]
   },
@@ -65,6 +63,24 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "pinepods",
+          "pinepods-subscribe",
+          "podcast",
+          "itpc"
+        ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDRDNENDlDMjVBRDNGNkEKUldScVA2MGxuTlRUN0xiVDVUOEgyRGFlSFJ5SXVNZ0J6eE44czdCdjhSYmtjcDdSTEVsOTVxdEQK",
+      "endpoints": [
+        "https://github.com/madeofpendletonwool/PinePods/releases/latest/download/latest.json"
+      ]
     }
   }
 }

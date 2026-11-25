@@ -29,3 +29,4 @@ pub mod user_self_settings;
 pub mod user_settings;
 pub mod shared_links;
 pub mod update_services;
+pub mod desktop_settings;
