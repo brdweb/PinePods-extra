@@ -70,7 +70,7 @@ Probes a server without saving. `server_url` and `token` override the stored val
 }
 ```
 
-`ok` is false when authentication fails or the server is older than 2.6. A warning (older than 2.10, newer than 2.x, unparsable version, low schema) still has `ok: true`.
+`ok` is false when authentication fails, when the server does not answer within 15 seconds, or when it is older than 2.6. A warning (older than 2.10, newer than 2.x, unparsable version, low schema) still has `ok: true`.
 
 ### `GET /api/data/music_assistant/players?user_id=`
 
@@ -120,7 +120,8 @@ Success:
 
 | Status | When |
 | --- | --- |
-| 400 | Unknown action, missing arguments, MA rejected the command, the episode does not exist, or `next` has no PinePods episode loaded |
+| 400 | Unknown action, missing arguments, MA rejected the command (its reason is the message, for example a mute on a player that has none), or `next` has no PinePods episode loaded |
+| 404 | The episode does not exist |
 | 503 | This process has no session for the user |
 
 The first MA command must succeed. Loading an episode at a resume point also needs its staging commands to succeed. If Music Assistant refuses to start at the offset, the episode starts from the beginning with a warning, and the fallback seek described under Playback takes over.

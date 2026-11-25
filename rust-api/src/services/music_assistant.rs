@@ -2267,7 +2267,6 @@ pub struct ProbeReport {
 }
 
 pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
-    let token_owned = token.to_string();
     let connect = tokio::time::timeout(
         Duration::from_secs(10),
         tokio_tungstenite::connect_async(ws_url),
@@ -2280,6 +2279,19 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
         }
         Err(_) => return ProbeReport::fail("timed out connecting to Music Assistant"),
     };
+    probe_socket(socket, token).await
+}
+
+/// The probe on an open socket: authenticate, read the server info, list the players.
+async fn probe_socket<S>(socket: S, token: &str) -> ProbeReport
+where
+    S: Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + Unpin
+        + Send
+        + 'static,
+{
+    let token_owned = token.to_string();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (note_tx, mut note_rx) = mpsc::unbounded_channel();
     let token_for_drive = token_owned.clone();
@@ -2288,11 +2300,20 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
     let mut info: Option<ServerInfo> = None;
     let mut player_count: Option<i64> = None;
     let mut drive_err: Option<String> = None;
+    let mut timed_out = false;
+    let driver_end = |res: Result<Result<(), String>, tokio::task::JoinError>| match res {
+        Ok(Ok(())) => "connection closed".to_string(),
+        Ok(Err(e)) => e,
+        Err(e) => format!("connection task stopped: {e}"),
+    };
     let deadline = tokio::time::sleep(Duration::from_secs(15));
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            _ = &mut deadline => break,
+            _ = &mut deadline => {
+                timed_out = true;
+                break;
+            }
             note = note_rx.recv() => {
                 match note {
                     Some(SessionNote::Server(s)) => info = Some(s),
@@ -2301,21 +2322,28 @@ pub async fn probe(ws_url: &str, token: &str) -> ProbeReport {
                         break;
                     }
                     Some(_) => {}
-                    None => break,
+                    None => {
+                        // The driver ended and dropped its sender. Its result says why: a
+                        // rejected token ends it, and `select!` may see the closed channel
+                        // before the finished task. Breaking here without the result
+                        // reported a rejected token as "connected, 0 player(s)".
+                        drive_err = Some(driver_end((&mut driver).await));
+                        break;
+                    }
                 }
             }
             res = &mut driver => {
-                drive_err = Some(match res {
-                    Ok(Ok(())) => "connection closed".into(),
-                    Ok(Err(e)) => e,
-                    Err(e) => format!("connection task stopped: {e}"),
-                });
+                drive_err = Some(driver_end(res));
                 break;
             }
         }
     }
     drop(cmd_tx);
     driver.abort();
+    if timed_out && player_count.is_none() {
+        // Nothing listed the players, so nothing shows the token was accepted.
+        drive_err = Some("timed out waiting for Music Assistant".into());
+    }
 
     if let Some(err) = drive_err {
         if player_count.is_none() {
@@ -6197,6 +6225,29 @@ mod tests {
         assert_eq!(progress.playing, Some(true));
 
         drive.abort();
+    }
+
+    #[tokio::test]
+    async fn the_probe_reports_a_rejected_token_every_time() {
+        // The driver's error and its closed channel become ready together. Which one the
+        // probe sees first is random, so one run proves nothing: half of them used to say
+        // "connected, 0 player(s)".
+        for round in 0..40 {
+            let (client_io, server_io) = tokio::io::duplex(8 * 1024);
+            let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+            let mut server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+            let probe = tokio::spawn(async move { probe_socket(client, "nope").await });
+            let auth = recv_json(&mut server).await;
+            let id = auth["message_id"].as_str().unwrap().to_string();
+            send_json(
+                &mut server,
+                json!({"message_id": id, "error_code": 1, "details": "Invalid or expired token"}),
+            )
+            .await;
+            let report = probe.await.unwrap();
+            assert!(!report.ok, "round {round}: {}", report.detail);
+            assert!(report.detail.contains("Invalid or expired token"), "round {round}: {}", report.detail);
+        }
     }
 
     #[tokio::test]
