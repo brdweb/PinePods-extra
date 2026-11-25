@@ -42,6 +42,8 @@ pub fn navigation_handler(props: &NavigationHandlerProps) -> Html {
 
         use_effect_with((), move |_| {
             if let Some(window) = web_sys::window() {
+                // Use the path (and query) only, not the full URL: in the desktop app the URL is
+                // "tauri://localhost" (no trailing "/"), which is not a route.
                 let location = window.location();
                 let current_route = route_from_location(
                     &location.pathname().unwrap_or_default(),
