@@ -354,7 +354,7 @@ mod progress {
     fn the_request_carries_both_clock_readings_as_whole_milliseconds() {
         let body: serde_json::Value = serde_json::from_str(&request_body(&[update(1, 12.5, T0 - 4000.0, 3.0)], T0 + 0.7)).unwrap();
         assert_eq!(body["sent_at"], 1_700_000_000_000i64);
-        assert_eq!(body["client"], crate::components::progress::CLIENT);
+        assert_eq!(body["client"], crate::desktop::client_name());
         assert_eq!(body["updates"][0]["at"], 1_699_999_996_000i64);
         assert_eq!(body["updates"][0]["position"], 12.5);
         assert_eq!(body["updates"][0]["listened"], 3.0);
@@ -370,5 +370,81 @@ mod progress {
         assert_eq!(resume_from(640.0, 0.0), 640.0, "length unknown");
         assert_eq!(resume_from(-3.0, 1800.0), 0.0);
         assert_eq!(resume_from(f64::NAN, 1800.0), 0.0);
+    }
+}
+
+mod desktop_downloads {
+    use crate::desktop_background::{plan_podcast, played};
+    use crate::requests::episode::Episode;
+    use std::collections::HashSet;
+    use wasm_bindgen_test::*;
+
+    fn ep(id: i32, completed: bool) -> Episode {
+        Episode { episodeid: id, podcastid: 1, completed, ..Episode::default() }
+    }
+
+    #[wasm_bindgen_test]
+    fn keeps_the_newest_unplayed_and_drops_older_automatic_ones() {
+        // Newest first; 9 is played, so the newest two unplayed are 8 and 7.
+        let episodes = [ep(9, true), ep(8, false), ep(7, false), ep(6, false), ep(5, false)];
+        let local: HashSet<i32> = [7, 6, 5, 9].into();
+        let automatic: HashSet<i32> = [6, 9].into();
+        let (download, remove) = plan_podcast(&episodes, 2, &local, &automatic);
+        assert_eq!(download.iter().map(|e| e.episodeid).collect::<Vec<_>>(), vec![8]);
+        // 6 fell out of the newest two; 9 was played. 5 was downloaded by hand, so it stays.
+        assert_eq!(remove, vec![9, 6]);
+    }
+
+    #[wasm_bindgen_test]
+    fn played_finds_only_downloaded_played_episodes() {
+        let episodes = [ep(3, true), ep(2, true), ep(1, false)];
+        let local: HashSet<i32> = [2, 1].into();
+        assert_eq!(played(&episodes, &local), vec![2]);
+    }
+}
+
+mod desktop_sign_in {
+    use crate::desktop::{read_sign_in_link, PendingSignIn, SignInResult};
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn a_link_only_signs_in_with_the_state_started_here() {
+        let pending = PendingSignIn { server: "https://pods.example".into(), state: "abc".into() };
+        assert_eq!(
+            read_sign_in_link("pinepods://auth/callback?api_key=k%2B1&state=abc", Some(&pending)),
+            SignInResult::SignedIn { server: "https://pods.example".into(), api_key: "k+1".into() }
+        );
+        assert_eq!(read_sign_in_link("pinepods://auth/callback?api_key=k&state=other", Some(&pending)), SignInResult::Mismatch);
+        assert_eq!(read_sign_in_link("pinepods://auth/callback?api_key=k", Some(&pending)), SignInResult::Mismatch);
+        assert_eq!(read_sign_in_link("pinepods://auth/callback?api_key=k&state=abc", None), SignInResult::NotStarted);
+        assert_eq!(
+            read_sign_in_link("pinepods://auth/callback?error=no_access", Some(&pending)),
+            SignInResult::Failed("no_access".into())
+        );
+    }
+}
+
+mod desktop_feed_downloads {
+    use crate::desktop::feed_download_url;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn a_feed_episode_downloads_through_the_server_with_the_chosen_version() {
+        assert_eq!(
+            feed_download_url("https://pods.example", 42, "key", None),
+            "https://pods.example/api/episodes/42/download?api_key=key"
+        );
+        assert_eq!(
+            feed_download_url("https://pods.example", 42, "key", Some("alt-2")),
+            "https://pods.example/api/episodes/42/download?api_key=key&media_option_id=alt-2"
+        );
+        assert_eq!(
+            feed_download_url("https://pods.example", 42, "key", Some("a b&c")),
+            "https://pods.example/api/episodes/42/download?api_key=key&media_option_id=a%20b%26c"
+        );
+        assert_eq!(
+            feed_download_url("https://pods.example", 42, "key", Some("")),
+            "https://pods.example/api/episodes/42/download?api_key=key"
+        );
     }
 }

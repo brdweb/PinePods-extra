@@ -806,6 +806,7 @@ pub fn downloads() -> Html {
                                             load_more_closure,
                                             i18n_load_more.clone(),
                                             on_episode_removed.clone(),
+                                            PageType::Downloads,
                                         )
                                     }) }
                                 </>
@@ -845,6 +846,7 @@ pub struct DownloadEpisodesProps {
     pub load_more: Callback<MouseEvent>,
     pub load_more_label: String,
     pub on_episode_removed: Callback<i32>,
+    pub page_type: PageType,
 }
 
 #[function_component(DownloadEpisodes)]
@@ -857,7 +859,7 @@ pub fn download_episodes(props: &DownloadEpisodesProps) -> Html {
                 episodes={props.episodes.clone()}
                 backend_can_load_more={false}
                 loading_more={false}
-                page_type={PageType::Downloads}
+                page_type={props.page_type.clone()}
                 is_delete_mode={props.is_delete_mode}
                 on_checkbox_change={props.on_checkbox_change.clone()}
                 on_episode_removed={props.on_episode_removed.clone()}
@@ -900,6 +902,7 @@ pub fn render_podcast_with_episodes(
     load_more: Callback<MouseEvent>,
     load_more_label: String,
     on_episode_removed: Callback<i32>,
+    page_type: PageType,
 ) -> Html {
     let on_podcast_checkbox_change = {
         let on_checkbox_change = on_checkbox_change.clone();
@@ -984,6 +987,7 @@ pub fn render_podcast_with_episodes(
                             load_more={load_more.clone()}
                             load_more_label={load_more_label.clone()}
                             on_episode_removed={on_episode_removed.clone()}
+                            page_type={page_type.clone()}
                         />
                     </div>
                 }
