@@ -4186,6 +4186,39 @@ pub struct AiStatus {
     pub ad_removal_ready: bool,
     #[serde(default)]
     pub downloads_enabled: bool,
+    /// Admin switch; when off every AI feature is hidden and `available` is false.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The AI container answers, whatever the admin switch says.
+    #[serde(default)]
+    pub connected: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub async fn call_set_ai_enabled(
+    server_name: &str,
+    api_key: &Option<String>,
+    enabled: bool,
+) -> Result<(), Error> {
+    let url = format!("{}/api/data/ai_enabled", server_name);
+    let api_key_ref = api_key
+        .as_deref()
+        .ok_or_else(|| anyhow::Error::msg("API key is missing"))?;
+    let response = Request::post(&url)
+        .header("Api-Key", api_key_ref)
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({ "enabled": enabled }).to_string())?
+        .send()
+        .await?;
+    if response.ok() {
+        Ok(())
+    } else {
+        let text = response.text().await.unwrap_or_default();
+        Err(Error::msg(text))
+    }
 }
 
 pub async fn call_get_ai_status_full(
@@ -5795,6 +5828,8 @@ pub struct Playlist {
     pub episode_count: Option<i32>,
     pub preview_episodes: Vec<PlaylistEpisode>,
     pub icon_name: Option<String>,
+    #[serde(default)]
+    pub label_ids: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -5863,6 +5898,7 @@ pub struct CreatePlaylistRequest {
     pub play_progress_min: Option<f32>,
     pub play_progress_max: Option<f32>,
     pub time_filter_hours: Option<i32>,
+    pub label_ids: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -5963,6 +5999,7 @@ pub struct UpdatePlaylistRequest {
     pub play_progress_min: Option<f32>,
     pub play_progress_max: Option<f32>,
     pub time_filter_hours: Option<i32>,
+    pub label_ids: Option<Vec<i32>>,
 }
 
 #[allow(dead_code)]
@@ -5996,11 +6033,22 @@ pub struct PlaylistEpisodesResponse {
     pub playlist_info: PlaylistInfo,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PlaylistFeedPage {
     pub episodes: Vec<Episode>,
     pub playlist_info: PlaylistInfo,
     pub total: i64,
+    /// Totals for the whole playlist; the server sends them with the first page.
+    #[serde(default)]
+    pub stats: Option<PlaylistStats>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct PlaylistStats {
+    pub total_seconds: i64,
+    pub remaining_seconds: i64,
+    pub podcast_count: i64,
+    pub in_progress: i64,
 }
 
 pub async fn call_get_playlist_episodes_paged(
@@ -6028,7 +6076,7 @@ pub async fn call_get_playlist_episodes_paged(
         .map_err(|e| anyhow::anyhow!("Failed to deserialize playlist page: {}", e))
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PlaylistInfo {
     pub name: String,
     pub description: Option<String>,
@@ -6047,6 +6095,8 @@ pub struct PlaylistInfo {
     pub play_progress_min: Option<f32>,
     pub play_progress_max: Option<f32>,
     pub time_filter_hours: Option<i32>,
+    #[serde(default)]
+    pub label_ids: Vec<i32>,
 }
 
 #[allow(dead_code)]
@@ -6089,6 +6139,7 @@ pub async fn call_get_playlist_episodes(
                     play_progress_min: None,
                     play_progress_max: None,
                     time_filter_hours: None,
+                    label_ids: Vec::new(),
                 },
                 episodes: vec![],
             });

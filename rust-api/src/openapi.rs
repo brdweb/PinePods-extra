@@ -30,6 +30,7 @@ use utoipa::{Modify, OpenApi};
         (name = "people", description = "Hosts and guests on podcasts and episodes, person pages, follows, and contributing to PodPeopleDB"),
         (name = "episodes", description = "Episode actions: download, save, share, bulk ops"),
         (name = "playlists", description = "Smart and manual playlists"),
+        (name = "inbox", description = "The inbox of new episodes not dealt with yet, and episode labels"),
         (name = "settings", description = "User and server settings"),
         (name = "music_assistant", description = "Music Assistant players as PinePods audio outputs"),
         (name = "value4value", description = "Opt-in Lightning boosts and streaming sats via the user's own wallet"),

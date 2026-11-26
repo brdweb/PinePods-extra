@@ -26,6 +26,7 @@ pub mod music_assistant;
 pub mod value4value;
 pub mod people;
 pub mod transcript_search;
+pub mod inbox;
 
 // Common handler utilities
 use axum::http::HeaderMap;

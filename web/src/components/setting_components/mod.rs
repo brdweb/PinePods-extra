@@ -9,6 +9,7 @@ pub mod email_settings;
 pub mod export_settings;
 pub mod feed_problems;
 pub mod import_options;
+pub mod inbox_settings;
 pub mod mfa_settings;
 pub mod music_assistant;
 pub mod value4value;
